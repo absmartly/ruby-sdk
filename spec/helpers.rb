@@ -1,15 +1,14 @@
 # frozen_string_literal: true
 
 require "arraybuffer"
-require "digest"
 
 module Helpers
-  def hashUnit(value)
-    unit = value.class == String ? value : value.to_i
-    (Digest::MD5.hexdigest(string_to_uint8_array(unit)))
+  def hash_unit(value)
+    Absmartly::Md5.process(string_to_uint8_array(value))
+    # base_64_url_no_padding(Absmartly::Md5.process(string_to_uint8_array(value)))
   end
 
-  def base_64_url_no_padding
+  def base_64_url_no_padding(value)
   end
 
   def string_to_uint8_array(value)
@@ -35,7 +34,6 @@ module Helpers
         k+=1
         array[k] = (c & 63) | 128
         k+=1
-
       end
     end
 

@@ -4,43 +4,6 @@ require "arraybuffer"
 
 module Absmartly
   class Md5
-    def self.test
-      value  = "e791e240fcd3df7d238cfc285f475e8152fcc0ec"
-      unit   = value.class == String ? value : value.to_i
-      buffer = string_to_uint8_array(unit)
-      self.process buffer
-    end
-
-    def self.string_to_uint8_array(value)
-      n     = value.length
-      array = ArrayBuffer.new(value.length)
-
-      k = 0
-      (0..n - 1).each do |index|
-        c = value[index].ord
-
-        if c < 0x80
-          array[k] = c
-          k        += 1
-        elsif c < 0x800
-          array[k] = (c >> 6) | 192
-          k        += 1
-          array[k] = (c & 63) | 128
-          k        += 1
-        else
-          array[k] = (c >> 12) | 224
-          k        += 1
-          array[k] = ((c >> 6) & 63) | 128
-          k        += 1
-          array[k] = (c & 63) | 128
-          k        += 1
-
-        end
-      end
-
-      array
-    end
-
     def self.cmn (q, a, b, x, s, t)
       a = a + q + (x >> 0) + t # TODO >>>
       ((a << s) | (a >> (32 - s))) + b # TODO >>>
@@ -162,7 +125,7 @@ module Absmartly
 
         md5_cycle(state, block)
 
-        i+=64
+        i += 64
       end
 
       w = 0

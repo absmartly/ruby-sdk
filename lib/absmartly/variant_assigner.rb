@@ -8,11 +8,6 @@ module Absmartly
   class VariantAssigner
     def initialize(_unit)
       # this._unitHash = murmur3_32(stringToUint8Array(unit).buffer);
-      puts "hello"
-    end
-
-    def self.hi
-      "hello hi1 kela"
     end
 
     def assign(split, seed_hi, seed_lo)
