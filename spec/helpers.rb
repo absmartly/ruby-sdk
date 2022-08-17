@@ -10,7 +10,8 @@ module Helpers
 
   def base_64_url_no_padding(value)
   end
-
+  
+  #converting string to byte
   def string_to_uint8_array(value)
     n     = value.length
     array = ArrayBuffer.new(value.length)
