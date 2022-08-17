@@ -1,10 +1,15 @@
 # frozen_string_literal: true
-
+require 'digest/md5'
 require "arraybuffer"
 
 module Helpers
   def hash_unit(value)
-    Absmartly::Md5.process(string_to_uint8_array(value))
+
+    Digest::MD5.base64digest(value)
+    # todo convert base64 string to base64url string
+    # refernce link to replace pattern https://stackoverflow.com/questions/55389211/string-based-data-encoding-base64-vs-base64url
+
+    #Absmartly::Md5.process(string_to_uint8_array(value))
     # base_64_url_no_padding(Absmartly::Md5.process(string_to_uint8_array(value)))
   end
 
