@@ -5,7 +5,17 @@ require "arraybuffer"
 module Helpers
   def hash_unit(value)
 
-    Digest::MD5.base64digest(value)
+    value.is_a?(String) ? value : value.round(0)
+    base64 = Digest::MD5.base64digest(value)
+
+    base64 = base64.include?("+") ? base64.gsub!('+','-') : base64
+    base64 = base64.include?("/") ? base64.gsub!('/','_') : base64
+
+    padding = true
+    while padding == true
+      base64[-1] == "=" ? base64 = base64.chop : padding = false
+    end
+    base64url = base64
     # todo convert base64 string to base64url string
     # refernce link to replace pattern https://stackoverflow.com/questions/55389211/string-based-data-encoding-base64-vs-base64url
 
