@@ -56,7 +56,7 @@ RSpec.describe Absmartly::VariantAssigner do
 
       test_cases.keys.each do |key|
         puts hash_unit(key)
-        # assigner = new VariantAssigner(hash_unit(key))
+        assigner = hash_unit(key)
         # tests = test_cases[key]
         #
         # tests.each do |test_case|

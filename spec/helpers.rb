@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 require 'digest/md5'
 require "arraybuffer"
+require 'murmurhash3'
 
 module Helpers
   def hash_unit(value)
@@ -10,20 +11,17 @@ module Helpers
 
     base64 = base64.include?("+") ? base64.gsub!('+','-') : base64
     base64 = base64.include?("/") ? base64.gsub!('/','_') : base64
+    murmur3_32_str_hash(base_64_url_no_padding(base64))
 
+  end
+
+  def base_64_url_no_padding(base64)
     padding = true
     while padding == true
       base64[-1] == "=" ? base64 = base64.chop : padding = false
     end
+
     base64url = base64
-    # todo convert base64 string to base64url string
-    # refernce link to replace pattern https://stackoverflow.com/questions/55389211/string-based-data-encoding-base64-vs-base64url
-
-    #Absmartly::Md5.process(string_to_uint8_array(value))
-    # base_64_url_no_padding(Absmartly::Md5.process(string_to_uint8_array(value)))
-  end
-
-  def base_64_url_no_padding(value)
   end
   
   #converting string to byte
