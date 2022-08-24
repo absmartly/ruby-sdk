@@ -4,10 +4,15 @@ require_relative 'mock_evaluator'
 RSpec.describe Absmartly::Jsonexpr::Operators::AndOperator do
   context "evaluate" do
     let(:combinator) { Absmartly::Jsonexpr::Operators::AndOperator.new }
-    let!(:evaluator) { MockEvaluator.new }
+    # let!(:evaluator) { MockEvaluator.new }
     
     it "should return true if all arguments evaluate to true" do
+      evaluator = double(:evaluator, evaluate: true, boolean_convert: true)
       expect(combinator.evaluate(evaluator, [true])).to eq true
+      expect(evaluator).to have_received(:evaluate).once
+      expect(evaluator).to have_received(:evaluate).with(true)
+      expect(evaluator).to have_received(:boolean_convert).once
+      expect(evaluator).to have_received(:boolean_convert).with(true)
     end
     
     it "should return true if all arguments evaluate to false" do
