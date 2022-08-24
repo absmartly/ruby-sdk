@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 
 module Absmartly
   module Jsonexpr
@@ -9,4 +10,3 @@ module Absmartly
     end
   end
 end
-

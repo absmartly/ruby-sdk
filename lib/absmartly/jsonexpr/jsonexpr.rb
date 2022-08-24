@@ -1,5 +1,7 @@
+# frozen_string_literal: true
+
 Dir[File.dirname(__FILE__) + "/operators/*.rb"].each { |file| require_relative file }
-require_relative './evaluator'
+require_relative "./evaluator"
 
 module Absmartly
   module Jsonexpr
@@ -19,12 +21,12 @@ module Absmartly
           lt:    Operators::LtOperator.new,
           lte:   Operators::LteOperator.new,
       }
-      
+
       def evaluate_boolean_expr(expr, vars)
         evaluator = new Evaluator(OPERATORS, vars)
         evaluator.boolean_convert(evaluator.evaluate(expr))
       end
-      
+
       def evaluate_expr(expr, vars)
         evaluator = new Evaluator(OPERATORS, vars)
         evaluator.evaluate(expr)

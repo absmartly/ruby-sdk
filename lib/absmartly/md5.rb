@@ -115,11 +115,11 @@ module Absmartly
       state = ArrayBuffer.new(4)
 
       [1732584193, -271733879, -1732584194, 271733878].each_with_index do |el, index|
-        bytes = el.to_s.bytes
-        state[index] = [el].pack('L').unpack('L').first
+        bytes        = el.to_s.bytes
+        state[index] = [el].pack("L").unpack("L").first
       end
-      
-      
+
+
       (0...n).step(64).each do |val|
         (0...16).each do |w|
           block[w] = key.getU32(val + (w << 2))

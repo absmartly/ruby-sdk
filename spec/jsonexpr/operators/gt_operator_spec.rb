@@ -1,3 +1,4 @@
-RSpec.describe Absmartly::Jsonexpr::Operators::GtOperator do
+# frozen_string_literal: true
 
+RSpec.describe Absmartly::Jsonexpr::Operators::GtOperator do
 end

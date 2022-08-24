@@ -1,18 +1,19 @@
 # frozen_string_literal: true
-require 'digest/md5'
+
+require "digest/md5"
 require "arraybuffer"
-require 'murmurhash3'
+require "murmurhash3"
 
 module Helpers
-  def hash_unit(value)
+  include MurmurHash3::V32
 
+  def hash_unit(value)
     value.is_a?(String) ? value : value.round(0)
     base64 = Digest::MD5.base64digest(value)
 
-    base64 = base64.include?("+") ? base64.gsub!('+','-') : base64
-    base64 = base64.include?("/") ? base64.gsub!('/','_') : base64
+    base64 = base64.include?("+") ? base64.gsub!("+", "-") : base64
+    base64 = base64.include?("/") ? base64.gsub!("/", "_") : base64
     murmur3_32_str_hash(base_64_url_no_padding(base64))
-
   end
 
   def base_64_url_no_padding(base64)
@@ -23,8 +24,8 @@ module Helpers
 
     base64url = base64
   end
-  
-  #converting string to byte
+
+  # converting string to byte
   def string_to_uint8_array(value)
     n     = value.length
     array = ArrayBuffer.new(value.length)

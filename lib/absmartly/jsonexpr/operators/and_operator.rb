@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Absmartly
   module Jsonexpr
     module Operators
@@ -9,11 +11,11 @@ module Absmartly
                 return false
               end
             end
-            
+
             return true
           end
-          
-          return nil
+
+          nil
         end
       end
     end
