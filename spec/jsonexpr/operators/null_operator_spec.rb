@@ -4,7 +4,7 @@ require_relative 'mock_evaluator'
 RSpec.describe Absmartly::Jsonexpr::Operators::NullOperator do
   context "evaluate" do
     let(:operator) { Absmartly::Jsonexpr::Operators::NullOperator.new }
-    let!(:evaluator) { MockEvaluator.new }
+    # let!(:evaluator) { MockEvaluator.new }
 
     it "should return true if argument is null" do
       evaluator = double(:evaluator, evaluate: nil, boolean_convert: true)
