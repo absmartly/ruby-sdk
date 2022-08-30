@@ -4,7 +4,8 @@ module Absmartly
   module Jsonexpr
     module Operators
       class ValueOperator
-        def initialize
+        def evaluate(evaluate, value)
+          value
         end
       end
     end

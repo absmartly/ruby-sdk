@@ -4,7 +4,9 @@ module Absmartly
   module Jsonexpr
     module Operators
       class UnaryOperator
-        def initialize
+        def evaluate(evaluator, arg)
+          arg = evaluator.evaluate(arg)
+          unary(evaluator, arg)
         end
       end
     end
