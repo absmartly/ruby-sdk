@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "expr_evaluator"
-Dir["lib/json_expr/operators/*.rb"].each { |file| require_relative "./#{file}" }
+Dir["lib/json_expr/operators/*.rb"].each { |file| require "./#{file}" }
 
 class JsonExpr
   attr_accessor :operators
