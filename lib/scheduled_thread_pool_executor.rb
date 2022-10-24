@@ -2,8 +2,11 @@
 
 require_relative "audience_deserializer"
 
-class DefaultAudienceDeserializer < AudienceDeserializer
+class ScheduledThreadPoolExecutor < AudienceDeserializer
   attr_accessor :log, :reader
+
+  def initialize(timer = 1)
+  end
 
   def deserialize(bytes, offset, length)
     @reader.read_value(bytes, offset, length)

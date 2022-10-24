@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "expr_evaluator"
+require_relative "./expr_evaluator"
 Dir["lib/json_expr/operators/*.rb"].each { |file| require "./#{file}" }
 
 class JsonExpr

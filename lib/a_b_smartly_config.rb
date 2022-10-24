@@ -3,7 +3,7 @@
 class ABSmartlyConfig
   attr_accessor :context_data_provider, :context_event_handler,
                 :variable_parser, :scheduler, :context_event_logger,
-                :client
+                :client, :audience_deserializer
   def self.create
     ABSmartlyConfig.new
   end
@@ -44,6 +44,13 @@ class ABSmartlyConfig
   end
 
   attr_reader :context_event_logger
+
+  def audience_deserializer=(audience_deserializer)
+    @audience_deserializer = audience_deserializer
+    self
+  end
+
+  attr_reader :audience_deserializer
 
   def client=(client)
     @client = client

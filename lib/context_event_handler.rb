@@ -2,7 +2,7 @@
 
 class ContextEventHandler
   # @interface method
-  def context_data
-    raise NotImplementedError.new("You must implement context_data method.")
+  def publish
+    raise NotImplementedError.new("You must implement publish method.")
   end
 end

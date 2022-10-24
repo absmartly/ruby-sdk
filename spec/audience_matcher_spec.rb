@@ -20,9 +20,9 @@ RSpec.describe AudienceMatcher do
   end
 
   it "evaluate returns boolean" do
-    # expect(matcher.evaluate("{\"filter\":[{\"value\":5}]}", nil).get).to be_truthy
-    # expect(matcher.evaluate("{\"filter\":[{\"value\":true}]}", nil).get).to be_truthy
-    # expect(matcher.evaluate("{\"filter\":[{\"value\":1}]}", nil).get).to be_truthy
+    expect(matcher.evaluate("{\"filter\":[{\"value\":5}]}", nil).get).to be_truthy
+    expect(matcher.evaluate("{\"filter\":[{\"value\":true}]}", nil).get).to be_truthy
+    expect(matcher.evaluate("{\"filter\":[{\"value\":1}]}", nil).get).to be_truthy
     expect(matcher.evaluate("{\"filter\":[{\"value\":null}]}", nil).get).to be_falsey
     expect(matcher.evaluate("{\"filter\":[{\"value\":0}]}", nil).get).to be_falsey
 
