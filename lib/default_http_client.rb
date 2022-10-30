@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-require_relative "variable_parser"
+require_relative "http_client"
 
-class DefaultVariableParser < VariableParser
+class DefaultHttpClient < HttpClient
   attr_accessor :reader, :log
 
   def parse(context, experiment_name, variant_name, config)

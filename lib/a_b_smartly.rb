@@ -25,7 +25,7 @@ class ABSmartly
 
     if @context_data_provider.nil? || context_event_handler.nil?
       @client = config.client
-      raise ArgumentError.new("Missing Client instance") if @client.nil?
+      raise ArgumentError.new("Missing Client instance configuration") if @client.nil?
 
       if @context_data_provider.nil?
         @context_data_provider = DefaultContextDataProvider.new(@client)
