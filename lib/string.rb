@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 class String
   def compare_to(another_string)
     value = self.bytes
