@@ -49,7 +49,7 @@ RSpec.describe ABSmartlyConfig do
     provider = ContextDataProvider.new
     parser = VariableParser.new
     scheduler = ScheduledExecutorService.new
-    client = Client.new
+    client = instance_double(Client)
     config = described_class.create
     config.variable_parser = parser
     config.context_data_provider = provider

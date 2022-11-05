@@ -3,6 +3,11 @@
 class PublishEvent
   attr_accessor :hashed, :units, :published_at, :exposures, :goals, :attributes
 
+  def initialize
+    @published_at = 0
+    @hashed = false
+  end
+
   def ==(o)
     return true if self.object_id == o.object_id
     return false if o.nil? || self.class != o.class
@@ -27,10 +32,10 @@ class PublishEvent
   def to_s
     "PublishEvent{" +
       "hashedUnits=" + @hashed +
-      ", units=" + @units.join +
+      ", units=" + @units.inspect +
       ", publishedAt=" + @published_at +
-      ", exposures=" + @exposures.join +
-      ", goals=" + @goals.join +
+      ", exposures=" + @exposures.inspect +
+      ", goals=" + @goals.inspect +
       ", attributes=" + @attributes.join +
       "}"
   end
