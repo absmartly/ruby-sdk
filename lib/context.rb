@@ -24,21 +24,15 @@ class Context
     @audience_matcher = audience_matcher
     @scheduler = scheduler
 
-    @units = {}
-
-    units = config.units()
-    @units = units unless units.nil?
+    @units = config.units || {}
 
     @assigners = {}
     @hashed_units = {}
 
-    attributes = config.attributes
-    @attributes = attributes unless attributes.nil?
+    @attributes = config.attributes
 
-    overrides = config.overrides
-    @overrides = overrides { }
+    @overrides = config.overrides
 
-    cassignments = config.custom_assignments
-    @cassignments = cassignments || {}
+    @cassignments = config.custom_assignments || {}
   end
 end

@@ -53,8 +53,6 @@ class ABSmartly
     self
   end
 
-  attr_reader :context_data_provider
-
   def context_event_handler=(context_event_handler)
     @context_event_handler = context_event_handler
     self
@@ -69,26 +67,18 @@ class ABSmartly
     self
   end
 
-  attr_reader :variable_parser
-
   def scheduler=(scheduler)
     @scheduler = scheduler
     self
   end
-
-  attr_reader :scheduler
 
   def context_event_logger=(context_event_logger)
     @context_event_logger = context_event_logger
     self
   end
 
-  attr_reader :context_event_logger
-
   def client=(client)
     @client = client
     self
   end
-
-  attr_reader :client
 end
