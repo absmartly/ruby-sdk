@@ -4,7 +4,6 @@ require "default_audience_deserializer"
 require "context"
 require "client"
 require "json/publish_event"
-require "byebug"
 
 RSpec.describe DefaultAudienceDeserializer do
   it ".deserialize" do

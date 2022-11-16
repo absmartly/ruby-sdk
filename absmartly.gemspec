@@ -1,13 +1,12 @@
 # frozen_string_literal: true
 
-$:.push File.expand_path("../lib", __FILE__)
-require_relative "lib/absmartly/version"
-
+# $:.push File.expand_path("../lib", __FILE__)
+require File.expand_path("lib/absmartly/version", __dir__)
 Gem::Specification.new do |spec|
   spec.name = "absmartly"
   spec.version = Absmartly::VERSION
-  spec.authors = ["omairazam"]
-  spec.email = ["omairr.azam@gmail.com"]
+  spec.authors = ["absmartly"]
+  spec.email = ["hi@absmartly.ir"]
 
   spec.summary = "Absmartly gem"
   spec.description = "Absmartly gem"

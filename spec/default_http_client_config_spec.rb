@@ -2,7 +2,6 @@
 
 require "default_http_client_config"
 require "context"
-require "byebug"
 
 RSpec.describe DefaultHttpClientConfig do
   it ".connect_timeout" do

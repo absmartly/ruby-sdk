@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "time"
+require_relative "context"
 require_relative "default_context_data_provider"
 require_relative "default_context_event_handler"
 require_relative "default_variable_parser"
@@ -11,11 +13,16 @@ class ABSmartly
                 :variable_parser, :scheduler, :context_event_logger,
                 :audience_deserializer, :client
 
+  def self.configure_client(&block)
+    @@init_http = block
+  end
+
   def self.create(config)
     ABSmartly.new(config)
   end
 
   def initialize(config)
+    @@init_http = nil
     @context_data_provider = config.context_data_provider
     @context_event_handler = config.context_event_handler
     @context_event_logger = config.context_event_logger
@@ -48,37 +55,24 @@ class ABSmartly
     end
   end
 
-  def context_data_provider=(context_data_provider)
-    @context_data_provider = context_data_provider
-    self
+  def create_context(config)
+    Context.create(get_utc_format, config, scheduler, context_data_provider.context_data,
+                   context_data_provider, context_event_handler, context_event_logger, variable_parser,
+                   AudienceMatcher.new(audience_deserializer))
   end
 
-  def context_event_handler=(context_event_handler)
-    @context_event_handler = context_event_handler
-    self
+  def create_context_with(config, data)
+    Context.create(get_utc_format, config, scheduler, data,
+                   context_data_provider, context_event_handler, context_event_logger, variable_parser,
+                   AudienceMatcher.new(audience_deserializer))
   end
 
-  def context_data_provide
-    @context_event_handler
+  def context_data
+    context_data_provider.context_data
   end
 
-  def variable_parser=(variable_parser)
-    @variable_parser = variable_parser
-    self
-  end
-
-  def scheduler=(scheduler)
-    @scheduler = scheduler
-    self
-  end
-
-  def context_event_logger=(context_event_logger)
-    @context_event_logger = context_event_logger
-    self
-  end
-
-  def client=(client)
-    @client = client
-    self
-  end
+  private
+    def get_utc_format
+      Time.now.utc.iso8601(3)
+    end
 end

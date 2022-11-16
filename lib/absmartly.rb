@@ -3,8 +3,47 @@
 require_relative "absmartly/version"
 require_relative "absmartly/variant_assigner"
 require_relative "absmartly/md5"
+require_relative "a_b_smartly"
+require_relative "a_b_smartly_config"
+require_relative "client"
+require_relative "client_config"
+require_relative "context_config"
 
 module Absmartly
+  @@init_config = nil
+
   class Error < StandardError
+  end
+
+  class << self
+    attr_accessor :endpoint, :api_key, :application, :environment
+
+    def configure_client
+      yield self
+    end
+
+    def create
+      ABSmartly.create(sdk_config)
+    end
+
+    def create_context_config
+      ContextConfig.create
+    end
+
+    private
+      def client_config
+        @client_config = ClientConfig.create
+        @client_config.endpoint = @endpoint
+        @client_config.api_key = @api_key
+        @client_config.application = @application
+        @client_config.environment = @endpoint
+        @client_config
+      end
+
+      def sdk_config
+        @sdk_config = ABSmartlyConfig.create
+        @sdk_config.client = Client.create(client_config)
+        @sdk_config
+      end
   end
 end

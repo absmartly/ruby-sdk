@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "string"
+require_relative "../string"
 require_relative "experiment_application"
 require_relative "experiment_variant"
 

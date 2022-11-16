@@ -1,10 +1,9 @@
 # frozen_string_literal: true
 
-require "byebug"
-require "default_http_client"
-require "default_http_client_config"
-require "default_context_data_deserializer"
-require "default_context_event_serializer"
+require_relative "default_http_client"
+require_relative "default_http_client_config"
+require_relative "default_context_data_deserializer"
+require_relative "default_context_event_serializer"
 
 class Client
   attr_accessor :url, :query, :headers, :http_client, :executor, :deserializer, :serializer

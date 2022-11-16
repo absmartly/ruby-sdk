@@ -8,7 +8,6 @@ require "json/publish_event"
 require "json/experiment"
 require "json/experiment_application"
 require "json/experiment_variant"
-require "byebug"
 
 RSpec.describe DefaultContextDataDeserializer do
   it ".deserialize" do

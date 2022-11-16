@@ -2,7 +2,6 @@
 
 require "default_variable_parser"
 require "context"
-require "byebug"
 
 RSpec.describe DefaultVariableParser do
   it ".parse" do
