@@ -9,16 +9,20 @@ Absmartly.configure_client do |config|
 end
 
 # main project
-sdk = ABSmartly.create
-
-context_config = ABSmartly.create_context_config
+context_config = Absmartly.create_context_config
 context_config.set_unit("session_id", "bf06d8cb5d8137290c4abb64155584fbdb64d8")
 context_config.set_unit("user_id", "123456")
 
-ctx = sdk.create_context(context_config)
+ctx = Absmartly.create_context(context_config)
 
-treatment = ctx.getTreatment("exp_test_ab")
-puts(treatment)
+treatment = ctx.treatment("exp_test_ab")
+puts(treatment) # 0
+treatment1 = ctx.treatment("net_seasons")
+puts(treatment1) # 1
+treatment2 = ctx.treatment("Experimento!")
+puts(treatment2) # 1
+treatment3 = ctx.treatment("test")
+puts(treatment3) # 1
 
 properties = {
   value: 125,

@@ -9,6 +9,7 @@ class ContextData
     @experiments = experiments.map do |experiment|
       Experiment.new(experiment)
     end unless experiments.nil?
+    self
   end
 
   def ==(o)

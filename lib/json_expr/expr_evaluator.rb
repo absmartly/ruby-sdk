@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-require "string"
 require "bigdecimal"
-require_relative "evaluator"
+require_relative "../string"
+require_relative "./evaluator"
 EMPTY_MAP = {}
 EMPTY_LIST = []
 

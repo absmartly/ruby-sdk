@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "murmurhash3"
-require "hashing"
+require_relative "./hashing"
 
 class VariantAssigner
   attr_reader :key

@@ -2,6 +2,7 @@
 
 require "time"
 require_relative "context"
+require_relative "audience_matcher"
 require_relative "default_context_data_provider"
 require_relative "default_context_event_handler"
 require_relative "default_variable_parser"
@@ -30,7 +31,7 @@ class ABSmartly
     @audience_deserializer = config.audience_deserializer
     @scheduler = config.scheduler
 
-    if @context_data_provider.nil? || context_event_handler.nil?
+    if @context_data_provider.nil? || @context_event_handler.nil?
       @client = config.client
       raise ArgumentError.new("Missing Client instance configuration") if @client.nil?
 
@@ -56,23 +57,36 @@ class ABSmartly
   end
 
   def create_context(config)
-    Context.create(get_utc_format, config, scheduler, context_data_provider.context_data,
-                   context_data_provider, context_event_handler, context_event_logger, variable_parser,
-                   AudienceMatcher.new(audience_deserializer))
+    validate_params(config)
+    Context.create(get_utc_format, config, @scheduler, @context_data_provider.context_data,
+                   @context_data_provider, @context_event_handler, @context_event_logger, @variable_parser,
+                   AudienceMatcher.new(@audience_deserializer))
   end
 
   def create_context_with(config, data)
     Context.create(get_utc_format, config, scheduler, data,
-                   context_data_provider, context_event_handler, context_event_logger, variable_parser,
-                   AudienceMatcher.new(audience_deserializer))
+                   @context_data_provider, @context_event_handler, @context_event_logger, @variable_parser,
+                   AudienceMatcher.new(@audience_deserializer))
   end
 
   def context_data
-    context_data_provider.context_data
+    @context_data_provider.context_data
   end
 
   private
     def get_utc_format
       Time.now.utc.iso8601(3)
+    end
+
+    def validate_params(params)
+      params.units.each do |key, value|
+        unless value.is_a?(String) || value.is_a?(Numeric)
+          raise ArgumentError.new("Unit '#{key}' UID is of unsupported type '#{value.class}'. UID must be one of ['string', 'number']")
+        end
+
+        if value.to_s.size.zero?
+          raise ArgumentError.new("Unit '#{key}' UID length must be >= 1")
+        end
+      end
     end
 end

@@ -30,13 +30,17 @@ module Absmartly
       ContextConfig.create
     end
 
+    def create_context(context_config)
+      sdk.create_context(context_config)
+    end
+
     private
       def client_config
         @client_config = ClientConfig.create
         @client_config.endpoint = @endpoint
         @client_config.api_key = @api_key
         @client_config.application = @application
-        @client_config.environment = @endpoint
+        @client_config.environment = @environment
         @client_config
       end
 
@@ -44,6 +48,10 @@ module Absmartly
         @sdk_config = ABSmartlyConfig.create
         @sdk_config.client = Client.create(client_config)
         @sdk_config
+      end
+
+      def sdk
+        @sdk ||= create
       end
   end
 end

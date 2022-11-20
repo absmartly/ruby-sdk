@@ -7,6 +7,7 @@ require_relative "default_context_event_serializer"
 
 class Client
   attr_accessor :url, :query, :headers, :http_client, :executor, :deserializer, :serializer
+  attr_reader :data_future, :promise, :exception
 
   def self.create(config, http_client = nil)
     Client.new(config, http_client || DefaultHttpClient.create(DefaultHttpClientConfig.create))
@@ -49,13 +50,15 @@ class Client
   end
 
   def context_data
-    data_future = ContextData.new
-    response = @http_client.get(@url, @query, nil)
-    return Exception.new(response.body) unless response.success?
+    @promise = @http_client.get(@url, @query, @headers)
+    unless @promise.success?
+      @exception = Exception.new(@promise.body)
+      return @exception
+    end
 
-    content = (response.body || {}).to_s
-    @deserializer.deserialize(content, 0, content.size)
-    data_future
+    content = (@promise.body || {}).to_s
+    @data_future = @deserializer.deserialize(content, 0, content.size)
+    self
   end
 
   def publish(event)
@@ -68,5 +71,9 @@ class Client
 
   def close
     @http_client.close
+  end
+
+  def success?
+    @promise.success?
   end
 end

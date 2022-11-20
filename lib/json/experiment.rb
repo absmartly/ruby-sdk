@@ -20,6 +20,7 @@ class Experiment
       end
     end
     @audience_strict ||= false
+    self
   end
 
   def assign_to_klass(klass, arr)

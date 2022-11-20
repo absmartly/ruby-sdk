@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "json"
 require_relative "context_data_deserializer"
 require_relative "json/context_data"
 
