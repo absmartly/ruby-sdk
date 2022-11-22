@@ -110,7 +110,7 @@ class Context
   end
 
   def units=(units)
-    units.each { |key, value| unit = key, value }
+    units.each { |key, value| self.unit = key, value }
   end
 
   def attribute=(name, value)
@@ -118,7 +118,7 @@ class Context
   end
 
   def attributes=(attributes)
-    attributes.each { |key, value| attribute = key, value }
+    attributes.each { |key, value| self.attribute = key, value }
   end
 
   def treatment(experiment_name)
