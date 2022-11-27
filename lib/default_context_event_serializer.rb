@@ -23,7 +23,7 @@ class DefaultContextEventSerializer < ContextEventSerializer
       }
     end unless event.goals.nil?
 
-    req[:exposures] = event.exposures.select{|x| !x.id.nil? }.map do |x|
+    req[:exposures] = event.exposures.select { |x| !x.id.nil? }.map do |x|
       {
         id: x.id,
         name: x.name,
