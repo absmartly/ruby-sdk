@@ -36,11 +36,12 @@ class Client
     @serializer = DefaultContextEventSerializer.new if @serializer.nil?
 
     @headers = {
+      "Content-Type": "application/json",
       "X-API-Key": api_key,
       "X-Application": application,
       "X-Environment": environment,
       "X-Application-Version": "0",
-      "X-Agent": "absmartly-java-sdk"
+      "X-Agent": "absmartly-ruby-sdk"
     }
 
     @query = {

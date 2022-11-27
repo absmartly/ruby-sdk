@@ -2,8 +2,10 @@
 
 require_relative "hashing"
 require_relative "variant_assigner"
+require_relative "json/unit"
 require_relative "json/attribute"
 require_relative "json/exposure"
+require_relative "json/publish_event"
 require_relative "json/goal_achievement"
 
 class Context
@@ -19,7 +21,7 @@ class Context
     @achievements = []
     @assignment_cache = {}
     @assignments = {}
-    @clock = clock
+    @clock = clock.is_a?(String) ? Time.iso8601(clock) : clock
     @publish_delay = config.publish_delay
     @refresh_interval = config.refresh_interval
     @event_handler = event_handler
@@ -31,22 +33,27 @@ class Context
     @closed = false
     @closing = false
 
-    @units = config.units || {}
-
+    @units = {}
     @assigners = {}
     @hashed_units = {}
+    @attributes = []
+    @overrides = {}
+    @cassignments = {}
+    @pending_count = 0
+    @exposures ||= []
 
-    @attributes = config.attributes || {}
-
-    @overrides = config.overrides || {}
-
-    @cassignments = config.custom_assignments || {}
+    set_units(config.units) if config.units
+    set_attributes(config.attributes) if config.attributes
+    set_overrides(config.overrides) if config.overrides
+    set_attributes(config.custom_assignments) if config.custom_assignments
 
     if data_future.success?
       assign_data(data_future.data_future)
     else
       @data_failed = data_future.exception
     end
+
+    set_timeout if @pending_count > 0
   end
 
   def ready?
@@ -67,11 +74,11 @@ class Context
     @data.experiments.map(&:name)
   end
 
-  def override=(experiment_name, variant)
+  def set_override(experiment_name, variant)
     @overrides[experiment_name] = variant
   end
 
-  def overrides=(overrides)
+  def set_overrides(overrides)
     @overrides.merge!(overrides)
   end
 
@@ -79,13 +86,13 @@ class Context
     @overrides[experiment_name]
   end
 
-  def custom_assignment=(experiment_name, variant)
+  def set_custom_assignment(experiment_name, variant)
     check_not_closed?
 
     @cassignments[experiment_name] = variant
   end
 
-  def custom_assignments=(custom_assignments)
+  def set_custom_assignments(custom_assignments)
     @cassignments.merge!(custom_assignments)
   end
 
@@ -93,7 +100,7 @@ class Context
     @cassignments[experiment_name]
   end
 
-  def unit=(unit_type, uid)
+  def set_unit(unit_type, uid)
     check_not_closed?
 
     previous = @units[unit_type]
@@ -101,7 +108,7 @@ class Context
       raise ArgumentError.new("Unit '#{unit_type}' already set.")
     end
 
-    trimmed = uid.strip
+    trimmed = uid.to_s.strip
     if trimmed.empty?
       raise ArgumentError.new("Unit '#{unit_type}' UID must not be blank.")
     end
@@ -109,24 +116,23 @@ class Context
     @units[unit_type] = trimmed
   end
 
-  def units=(units)
-    units.each { |key, value| self.unit = key, value }
+  def set_units(units)
+    units.each { |key, value| self.set_unit(key, value) }
   end
 
-  def attribute=(name, value)
+  def set_attribute(name, value)
     @attributes.push(Attribute.new(name, value, @clock.to_i))
   end
 
-  def attributes=(attributes)
-    attributes.each { |key, value| self.attribute = key, value }
+  def set_attributes(attributes)
+    attributes.each { |key, value| self.set_attribute(key, value) }
   end
 
   def treatment(experiment_name)
     check_ready?(true)
+    byebug
     assignment = assignment(experiment_name)
     unless assignment.exposed
-      assignment.exposed = true
-
       queue_exposure(assignment)
     end
 
@@ -135,6 +141,8 @@ class Context
 
   def queue_exposure(assignment)
     unless assignment.exposed
+      assignment.exposed = true
+
       exposure = Exposure.new
       exposure.id = assignment.id
       exposure.name = assignment.name
@@ -151,6 +159,7 @@ class Context
       @pending_count += 1
       @exposures.push(exposure)
     end
+    set_timeout
   end
 
   def peek_treatment(experiment_name)
@@ -257,17 +266,16 @@ class Context
             end
 
             @pending_count = 0
-          end
 
-          if event_count > 0
             event = PublishEvent.new
             event.hashed = true
             event.published_at = @clock.to_i
-            event.units = @units.to_a
-            event.attributes = @attributes.empty? ? nil : @attributes.to_a
+            event.units = @units.map do |key, value|
+              Unit.new(key, unit_hash(key, value))
+            end
+            event.attributes = @attributes.empty? ? nil : @attributes
             event.exposures = exposures
             event.goals = achievements
-
             @event_handler.publish(self, event)
           end
         end
@@ -357,7 +365,7 @@ class Context
           if experiment.data.audience_strict && assignment.audience_mismatch
             assignment.variant = 0
           elsif experiment.data.full_on_variant == 0
-            uid = @units[experiment.data.unit_type]
+            uid = @units.transform_keys(&:to_sym)[experiment.data.unit_type.to_sym]
             unless uid.nil?
               assigner = VariantAssigner.new(uid)
               eligible = assigner.assign(experiment.data.traffic_split,
@@ -402,7 +410,6 @@ class Context
 
     def variable_assignment(key)
       experiment = variable_experiment(key)
-
 
       assignment(experiment.data.name) unless experiment.nil?
     end
@@ -472,47 +479,47 @@ class Context
       end
     end
 
-    def data_failed=(exception)
+    def set_data_failed(exception)
       @index = {}
       @index_variables = {}
       @data = ContextData.new
       @failed = true
     end
 
-    attr_accessor :clock,
-                  :publish_delay,
-                  :event_handler,
-                  :event_logger,
-                  :data_provider,
-                  :variable_parser,
-                  :audience_matcher,
-                  :scheduler,
-                  :units,
-                  :failed,
-                  :data_lock,
-                  :data,
-                  :index,
-                  :index_variables,
-                  :context_lock,
-                  :hashed_units,
-                  :assigners,
-                  :assignment_cache,
-                  :event_lock,
-                  :exposures,
-                  :achievements,
-                  :attributes,
-                  :overrides,
-                  :cassignments,
-                  :pending_count,
-                  :closing,
-                  :closed,
-                  :refreshing,
-                  :ready_future,
-                  :closing_future,
-                  :refresh_future,
-                  :timeout_lock,
-                  :timeout,
-                  :refresh_timer
+  attr_accessor :clock,
+                :publish_delay,
+                :event_handler,
+                :event_logger,
+                :data_provider,
+                :variable_parser,
+                :audience_matcher,
+                :scheduler,
+                :units,
+                :failed,
+                :data_lock,
+                :data,
+                :index,
+                :index_variables,
+                :context_lock,
+                :hashed_units,
+                :assigners,
+                :assignment_cache,
+                :event_lock,
+                :exposures,
+                :achievements,
+                :attributes,
+                :overrides,
+                :cassignments,
+                :pending_count,
+                :closing,
+                :closed,
+                :refreshing,
+                :ready_future,
+                :closing_future,
+                :refresh_future,
+                :timeout_lock,
+                :timeout,
+                :refresh_timer
 end
 
 class Assignment

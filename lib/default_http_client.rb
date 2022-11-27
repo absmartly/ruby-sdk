@@ -53,8 +53,9 @@ class DefaultHttpClient < HttpClient
     def add_tracking(url, params)
       parsed = URI.parse(url)
       query = parsed.query ? CGI.parse(parsed.query) : {}
-      query = query.merge(params) if params.present? && params.is_a?(Hash)
+      query = query.merge(params) if params && params.is_a?(Hash)
       parsed.query = URI.encode_www_form(query)
-      parsed.to_s
+      str = parsed.to_s
+      str[-1] == "?" ? str.chop : str
     end
 end

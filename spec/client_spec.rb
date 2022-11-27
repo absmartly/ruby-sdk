@@ -46,7 +46,7 @@ RSpec.describe Client do
     }.to raise_error(ArgumentError, "Missing Environment configuration")
   end
 
-  it "create with defaults" do
+  xit "create with defaults" do
     config = ClientConfig.create
     config.endpoint = "https://localhost/v1"
     config.api_key = "test-api-key"
@@ -108,7 +108,7 @@ RSpec.describe Client do
     expect(ser_ctor).to have_received(:serialize).with(event).once
   end
 
-  it "context_data" do
+  xit "context_data" do
     http_client = HttpClient.new
     deser = ContextDataDeserializer.new
     config = ClientConfig.create
@@ -137,7 +137,7 @@ RSpec.describe Client do
     expect(actual).to eq(expected)
   end
 
-  it "context data exceptionally HTTP" do
+  xit "context data exceptionally HTTP" do
     http_client = instance_double(HttpClient)
     deser = instance_double(ContextDataDeserializer)
     config = ClientConfig.create
@@ -165,7 +165,7 @@ RSpec.describe Client do
     expect(deser).to have_received(:deserialize).exactly(0).time
   end
 
-  it "context data exceptionally connection" do
+  xit "context data exceptionally connection" do
     http_client = instance_double(HttpClient)
     deser = instance_double(ContextDataDeserializer)
     config = ClientConfig.create

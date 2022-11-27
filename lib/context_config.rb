@@ -14,6 +14,10 @@ class ContextConfig
     self
   end
 
+  def set_units(units)
+    units.map { |k, v| set_unit(k, v) }
+  end
+
   def unit(unit_type)
     @units[unit_type.to_sym]
   end

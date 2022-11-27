@@ -1,3 +1,4 @@
+require "byebug"
 require_relative "../lib/absmartly"
 
 # config file
@@ -24,12 +25,25 @@ puts(treatment2) # 1
 treatment3 = ctx.treatment("test")
 puts(treatment3) # 1
 
+ctx.set_unit("db_user_id", 1000013)
+ctx.set_units(db_user_id2: 1000013, session_id: 12311)
+
+ctx.set_attribute("user_agent", "Chrome 2022")
+ctx.set_attributes(
+  customer_age: "new_customer",
+  customer_point: 20,
+)
+
+ctx.set_override("new_exp", 3)
+ctx.set_overrides(
+  exp_test_experiment: 1,
+  exp_another_experiment: 0,
+)
+ctx.publish
 properties = {
   value: 125,
   fee: 125
 }
-
 ctx.track("payment", properties)
 
 ctx.close
-sdk.close
