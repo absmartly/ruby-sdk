@@ -130,7 +130,6 @@ class Context
 
   def treatment(experiment_name)
     check_ready?(true)
-    byebug
     assignment = assignment(experiment_name)
     unless assignment.exposed
       queue_exposure(assignment)
