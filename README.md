@@ -109,9 +109,7 @@ They can be set using the `context.set_attribute()` or `context.set_attributes()
 ```Ruby
 context.set_attribute('session_id', session_id)
 context.set_attributes(
-    [
-        'customer_age' => 'new_customer'
-    ]
+    'customer_age' => 'new_customer'
 )
 ```  
 
