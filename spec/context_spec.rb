@@ -6,6 +6,7 @@ require "default_context_data_deserializer"
 require "default_variable_parser"
 require "default_audience_deserializer"
 require "context_data_provider"
+require "default_context_data_provider"
 require "context_event_handler"
 require "context_event_logger"
 require "scheduled_executor_service"
@@ -80,24 +81,92 @@ RSpec.describe Context do
   let(:audience_strict_json) { resource("audience_strict_context.json") }
   let(:audience_strict_data) { descr.deserialize(audience_strict_json, 0, audience_strict_json.length) }
 
-  let(:data_future_ready) { faraday_response(refresh_json) }
-  let(:data_future_failed) { failedFuture(Exception.new("FAILED")) }
-  let(:data_future) { nil }
+  # let(:client_config) {
+  #   ClientConfig.new(
+  #     endpoint: 'www.test.com',
+  #     environment: 'dev',
+  #     application: 'test',
+  #     api_key: 'api_test')
+  # }
+  # let(:client) { Client.new(client_config, http_client_mock) }
+  let(:data_future) { OpenStruct.new(data_future: nil, success?: true) }
 
-  let(:refresh_data_future_ready) { { result: refresh_data } }
-  let(:refresh_data_future) { nil }
+  let(:data_provider) { DefaultContextDataProvider.new(client_mock) }
+  let(:data_future_ready) { data_provider.context_data }
 
-  let(:audience_data_future_ready) { { result: audience_data } }
-  let(:audience_strict_data_future_ready) { { result: audience_strict_data } }
+  let(:failed_data_provider) { DefaultContextDataProvider.new(failed_client_mock) }
+  let(:data_future_failed) { failed_data_provider.context_data }
 
-  let(:data_provider) { instance_double(ContextDataProvider) }
-  let(:event_handler) { instance_double(ContextEventHandler) }
+  let(:refresh_data_provider) { DefaultContextDataProvider.new(client_mock(refresh_data)) }
+  let(:refresh_data_future_ready) { refresh_data_provider.context_data }
+
+  let(:audience_data_provider) { DefaultContextDataProvider.new(client_mock(audience_data)) }
+  let(:audience_data_future_ready) { audience_data_provider.context_data }
+
+  let(:audience_strict_data_provider) { DefaultContextDataProvider.new(client_mock(audience_strict_data)) }
+  let(:audience_strict_data_future_ready) { audience_strict_data_provider.context_data }
+
+  let(:event_handler) do
+    ev = instance_double(ContextEventHandler)
+    allow(ev).to receive(:publish).and_return(OpenStruct.new(success?: true))
+    ev
+  end
   let(:event_logger) { instance_double(ContextEventLogger) }
   let(:variable_parser) { DefaultVariableParser.new }
   let(:audience_matcher) { AudienceMatcher.new(DefaultAudienceDeserializer.new) }
   let(:scheduler) { instance_double(ScheduledExecutorService) }
 
-  xit "constructor sets overrides" do
+  def http_client_mock
+    http_client = instance_double(DefaultHttpClient)
+    allow(http_client).to receive(:get).and_return(faraday_response(refresh_json))
+    http_client
+  end
+
+  def client_mock(data_future = nil)
+    client = instance_double(Client)
+    allow(client).to receive(:context_data).and_return(OpenStruct.new(data_future: data_future || data, success?: true))
+    client
+  end
+
+  def failed_client_mock
+    client = instance_double(Client)
+    allow(client).to receive(:context_data).and_return(OpenStruct.new(exception: Exception.new("Failed"), success?: false, data_future: nil))
+    client
+  end
+
+  def create_context(data_future = nil, config: nil)
+    if config.nil?
+      config = ContextConfig.create
+      config.set_units(units)
+    end
+
+    Context.create(clock, config, scheduler, data_future || data_future_ready, data_provider,
+                   event_handler, event_logger, variable_parser, audience_matcher)
+  end
+
+  def create_ready_context
+    config = ContextConfig.create
+    config.set_units(units)
+
+    Context.create(clock, config, scheduler, data_future_ready, data_provider,
+                   event_handler, event_logger, variable_parser, audience_matcher)
+  end
+
+  def create_failed_context
+    config = ContextConfig.create
+    config.set_units(units)
+
+    Context.create(clock, config, scheduler, data_future_failed, failed_data_provider,
+                   event_handler, event_logger, variable_parser, audience_matcher)
+  end
+
+  def faraday_response(content)
+    env = Faraday::Env.from(status: 200, body: content,
+                            response_headers: { "Content-Type" => "application/json" })
+    Faraday::Response.new(env)
+  end
+
+  it "constructor sets overrides" do
     overrides = {
       "exp_test": 2,
       "exp_test_1": 1
@@ -107,11 +176,11 @@ RSpec.describe Context do
     config.set_units(units)
     config.set_overrides(overrides)
 
-    context = create_context(config, data_future_ready)
+    context = create_context(config: config)
     overrides.each { |experiment_ame, variant| expect(context.override(experiment_ame)).to eq(variant) }
   end
 
-  xit "constructor sets custom assignments" do
+  it "constructor sets custom assignments" do
     cassignments = {
       "exp_test": 2,
       "exp_test_1": 1
@@ -120,112 +189,47 @@ RSpec.describe Context do
     config.set_units(units)
     config.set_custom_assignments(cassignments)
 
-    context = create_context(config, data_future_ready)
+    context = create_context(config: config)
     cassignments.each { |experiment_name, variant| expect(context.custom_assignment(experiment_name)).to eq(variant) }
   end
 
-  xit "becomes ready with completed future" do
+  it "becomes ready with completed future" do
     context = create_ready_context
     expect(context.ready?).to be_truthy
     expect(context.data).to eq(data)
   end
 
-  xit "becomes Ready And Failed With Completed Exceptionally Future" do
-    context = create_context(data_futureFailed)
+  it "becomes ready and failed with completed exceptionally future" do
+    context = create_failed_context
     expect(context.ready?).to be_truthy
     expect(context.failed?).to be_truthy
   end
 
-  xit "becomesReadyAndFailedWithException" do
-    context = create_context(data_future)
-    expect(context.ready?).to be_falsey
-    expect(context.failed?).to be_falsey
+  # it "calls event logger when ready" do
+  #   context = create_ready_context
+  #
+  #   data_future.complete(data)
+  #
+  #   # context.waitUntilReady()
+  #   expect(event_logger).to have_received(:handle_event).with(context, ContextEventLogger::EVENT_TYPE[:ready], data).once
+  # end
 
-    data_future.completeExceptionally(new Exception("FAILED"))
+  # it "callsEventLoggerWithCompletedFuture" do
+  #   context = create_ready_context
+  #   expect(event_logger).to have_received(:handle_event).with(context, ContextEventLogger::EVENT_TYPE[:ready], data).once
+  # end
 
-    # context.waitUntilReady()
+  # it "callsEventLoggerWithException" do
+  #   context = create_context(data_future)
+  #
+  #   error = Exception.new("FAILED")
+  #   data_future.completeExceptionally(error)
+  #
+  #   # context.waitUntilReady()
+  #   expect(event_logger).to have_received(:handle_event).with(context, ContextEventLogger::EVENT_TYPE[:error], data).once
+  # end
 
-    expect(context.ready?).to be_truthy
-    expect(context.failed?).to be_truthy
-  end
-
-  xit "callsEventLoggerWhenReady" do
-    context = create_context(data_future)
-
-    data_future.complete(data)
-
-    # context.waitUntilReady()
-    expect(event_logger).to have_received(:handle_event).with(context, ContextEventLogger::EVENT_TYPE[:ready], data).once
-  end
-
-  xit "callsEventLoggerWithCompletedFuture" do
-    context = create_ready_context
-    expect(event_logger).to have_received(:handle_event).with(context, ContextEventLogger::EVENT_TYPE[:ready], data).once
-  end
-
-  xit "callsEventLoggerWithException" do
-    context = create_context(data_future)
-
-    error = Exception.new("FAILED")
-    data_future.completeExceptionally(error)
-
-    # context.waitUntilReady()
-    expect(event_logger).to have_received(:handle_event).with(context, ContextEventLogger::EVENT_TYPE[:error], data).once
-  end
-
-  xit "waitUntilReady" do
-    context = create_context(data_future)
-    expect(context.ready?).to be_falsey
-
-    completer = data_future.complete(data)
-    completer.start()
-
-    # context.waitUntilReady()
-    completer.join()
-
-    expect(context.ready?).to be_truthy
-    expect(context.data).to eq(data)
-  end
-
-  xit "waitUntilReadyWithCompletedFuture" do
-    context = create_ready_context
-    expect(context.ready?).to be_truthy
-
-    # context.waitUntilReady()
-    expect(context.data).to eq(data)
-  end
-
-  xit "waitUntilReadyAsync" do
-    context = create_context(data_future)
-    expect(context.ready?).to be_falsey
-
-    ready_future = context.waitUntilReadyAsync()
-    expect(context.ready?).to be_falsey
-
-    completer = data_future.complete(data)
-    completer.start()
-
-    ready_future.join()
-    completer.join()
-
-    expect(context.ready?).to be_truthy
-    expect(ready_future).to eq(context)
-    expect(context.data).to eq(data)
-  end
-
-  xit "waitUntilReadyAsyncWithCompletedFuture" do
-    context = create_ready_context
-    expect(context.ready?).to be_truthy
-
-    ready_future = context.waitUntilReadyAsync()
-    ready_future.join()
-
-    expect(context.ready?).to be_truthy
-    expect(ready_future).to eq(context)
-    expect(context.data).to eq(data)
-  end
-
-  xit "throwsWhenNotReady" do
+  it "throwsWhenNotReady" do
     context = create_context(data_future)
     expect(context.ready?).to be_falsey
     expect(context.failed?).to be_falsey
@@ -260,99 +264,15 @@ RSpec.describe Context do
     }.to raise_error(IllegalStateException, not_ready_message)
   end
 
-  xit "throwsWhenClosing" do
+  it "throws when closed" do
     context = create_ready_context
     expect(context.ready?).to be_truthy
     expect(context.failed?).to be_falsey
-
-    context.track("goal1", { "amount": 125, "hours": 245 })
-
-    publish_future = nil
-    allow(event_handler).to receive(:publish).and_return(publish_future)
-
-    context.close_async
-
-    expect(context.closing?).to be_truthy
-    expect(context.closed?).to be_falsey
-
-    closing_message = "ABSmartly Context is closing"
-    expect {
-      context.set_attribute("attr1", "value1")
-    }.to raise_error(IllegalStateException, closing_message)
-
-    expect {
-      context.set_attributes("attr1": "value1")
-    }.to raise_error(IllegalStateException, closing_message)
-
-    expect {
-      context.set_override("exp_test_ab", 2)
-    }.to raise_error(IllegalStateException, closing_message)
-
-    expect {
-      context.set_overrides("exp_test_ab": 2)
-    }.to raise_error(IllegalStateException, closing_message)
-
-    expect {
-      context.set_unit("test", "test")
-    }.to raise_error(IllegalStateException, closing_message)
-
-    expect {
-      context.set_custom_assignment("exp_test_ab", 2)
-    }.to raise_error(IllegalStateException, closing_message)
-
-    expect {
-      context.set_custom_assignments("exp_test_ab": 2)
-    }.to raise_error(IllegalStateException, closing_message)
-
-    expect {
-      context.peek_treatment("exp_test_ab")
-    }.to raise_error(IllegalStateException, closing_message)
-
-    expect {
-      context.get_treatment("exp_test_ab")
-    }.to raise_error(IllegalStateException, closing_message)
-
-    expect {
-      context.track("goal1", nil)
-    }.to raise_error(IllegalStateException, closing_message)
-
-    expect {
-      context.publish
-    }.to raise_error(IllegalStateException, closing_message)
-
-    expect {
-      context.data
-    }.to raise_error(IllegalStateException, closing_message)
-
-    expect {
-      context.experiments
-    }.to raise_error(IllegalStateException, closing_message)
-
-    expect {
-      context.variable_value("banner.border", 17)
-    }.to raise_error(IllegalStateException, closing_message)
-
-    expect {
-      context.peek_variable_value("banner.border", 17)
-    }.to raise_error(IllegalStateException, closing_message)
-
-    expect {
-      context.variable_keys
-    }.to raise_error(IllegalStateException, closing_message)
-  end
-
-  xit "throwsWhenClosed" do
-    context = create_ready_context
-    expect(context.ready?).to be_truthy
-    expect(context.failed?).to be_falsey
-
-    context.track("goal1", { "amount": 125, "hours": 245 })
 
     publish_future = nil
     allow(event_handler).to receive(:publish).and_return(publish_future)
     context.close
 
-    expect(context.closing?).to be_falsey
     expect(context.closed?).to be_truthy
 
     closed_message = "ABSmartly Context is closed"
@@ -389,7 +309,7 @@ RSpec.describe Context do
     }.to raise_error(IllegalStateException, closed_message)
 
     expect {
-      context.get_treatment("exp_test_ab")
+      context.treatment("exp_test_ab")
     }.to raise_error(IllegalStateException, closed_message)
 
     expect {
@@ -421,7 +341,7 @@ RSpec.describe Context do
     }.to raise_error(IllegalStateException, closed_message)
   end
 
-  xit "experiments" do
+  it "experiments" do
     context = create_ready_context
     expect(context.ready?).to be_truthy
 
@@ -429,147 +349,24 @@ RSpec.describe Context do
     expect(context.experiments).to eq(experiments)
   end
 
-  xit "startsRefreshTimerWhenReady" do
-    #   final ContextConfig config = ContextConfig.create()
-    #                                             .setUnits(units)
-    #                                             .setRefreshInterval(5_000)
-    #
-    #   context = create_context(config, data_future)
-    #   expect(context.ready?).to be_falsey
-    #   expect(context.failed?).to be_falsey
-    #
-    #   final AtomicReference<Runnable> runnable = new AtomicReference<>(nil)
-    #   when(scheduler.scheduleWithFixedDelay(any(), eq(config.getRefreshInterval()),
-    #                                         eq(config.getRefreshInterval()), eq(TimeUnit.MILLISECONDS)))
-    #         .thenAnswer(invokation -> {
-    #           runnable.set(invokation.getArgument(0))
-    #           return mock(ScheduledFuture.class)
-    #         })
-    #
-    #   data_future.complete(data)
-    #   # context.waitUntilReady()
-    #
-    #   verify(scheduler, times(1)).scheduleWithFixedDelay(any(), eq(config.getRefreshInterval()),
-    #                                                      eq(config.getRefreshInterval()), eq(TimeUnit.MILLISECONDS))
-    #
-    #   verify(dataProvider, times(0)).getContextData()
-    #   when(dataProvider.getContextData()).thenReturn(refresh_data_future_ready)
-    #
-    #   runnable.get().run()
-    #
-    #   verify(dataProvider, times(1)).getContextData()
-  end
+  it "set unit empty" do
+    context = create_ready_context
 
-  xit "doestNotStartRefreshTimerWhenFailed" do
-    #   final ContextConfig config = ContextConfig.create()
-    #                                             .setUnits(units)
-    #                                             .setRefreshInterval(5_000)
-    #
-    #   context = create_context(config, data_future)
-    #   expect(context.ready?).to be_falsey
-    #   expect(context.failed?).to be_falsey
-    #
-    #   data_future.completeExceptionally(new Exception("test"))
-    #
-    #   # context.waitUntilReady()
-    #
-    #   assertTrue(context.failed?
-    #
-    #   verify(scheduler, times(0)).scheduleWithFixedDelay(any(), anyLong(), anyLong(), any())
-  end
-
-  xit "startsPublishTimeoutWhenReadyWithQueueNotEmpty" do
-    #   final ContextConfig config = ContextConfig.create()
-    #                                             .setUnits(units)
-    #                                             .setPublishDelay(333)
-    #
-    #   context = create_context(config, data_future)
-    #   expect(context.ready?).to be_falsey
-    #   expect(context.failed?).to be_falsey
-    #
-    #   context.track("goal1", mapOf("amount", 125))
-    #
-    #   final AtomicReference<Runnable> runnable = new AtomicReference<>(nil)
-    #   when(scheduler.schedule((Runnable) any(), eq(config.getPublishDelay()), eq(TimeUnit.MILLISECONDS)))
-    #   .thenAnswer(invokation -> {
-    #     runnable.set(invokation.getArgument(0))
-    #     return mock(ScheduledFuture.class)
-    #   })
-    #
-    #   allow(event_handler).to receive(:publish).and_return(publish_future)
-    #
-    #   data_future.complete(data)
-    #   # context.waitUntilReady()
-    #
-    #   verify(scheduler, times(1)).schedule((Runnable) any(), eq(config.getPublishDelay()), eq(TimeUnit.MILLISECONDS))
-    #   verify(event_handler, times(0)).publish(any(), any())
-    #
-    #   runnable.get().run()
-    #
-    #   verify(event_handler, times(1)).publish(any(), any())
-  end
-
-  xit "setUnitsBeforeReady" do
-    context = create_context(ContextConfig.create, data_future)
-    expect(context.ready?).to be_falsey
-
-    context.set_units(units)
-
-    data_future.complete(data)
-
-    # context.waitUntilReady()
-
-    context.treatment("exp_test_ab")
-
-    publish_future = nil
-    allow(event_handler).to receive(:publish).and_return(publish_future)
-
-    context.publish
-
-    expected = PublishEvent.new
-    expected.hashed = true
-    expected.published_at = clock_in_millis
-    expected.units = publish_units
-    expected.exposures = [
-      Exposure.new(1, "exp_test_ab", "session_id", 1, clock_in_millis, true, true, false, false, false, false)]
-
-    allow(event_handler).to receive(:publish).and_return(publish_future)
-
-    context.publish
-
-    expect(event_handler).to have_received(:publish).once
-    expect(event_handler).to have_received(:publish).with(context, expected).once
-  end
-
-  xit "setUnitEmpty" do
-    context = create_context(data_futureReady)
     expect {
       context.set_unit("db_user_id", "")
-    }.to raise_error(IllegalStateException, "Unit 'session_id' UID must not be blank.")
+    }.to raise_error(IllegalStateException, "Unit 'db_user_id' UID must not be blank.")
   end
 
-  xit "setUnitThrowsOnAlreadySet" do
-    context = create_context(data_futureReady)
+  it "set unit throws on already set" do
+    context = create_ready_context
 
     expect {
       context.set_unit("session_id", "new_uid")
     }.to raise_error(IllegalStateException,
-                     "Unit 'session_id' UID already set.")
+                     "Unit 'session_id' already set.")
   end
 
-  xit "setAttributesBeforeReady" do
-    context = create_context(data_future)
-    expect(context.ready?).to be_falsey
-
-    context.attribute = "attr1", "value1"
-    context.set_attributes("attr2": "value2")
-
-    data_future.complete(data)
-
-    # context.waitUntilReady()
-  end
-
-  xit "set override" do
+  it "set override" do
     context = create_ready_context
 
     context.set_override("exp_test", 2)
@@ -583,8 +380,8 @@ RSpec.describe Context do
     expect(context.override("exp_test_2")).to eq(1)
 
     overrides = {
-      "exp_test_new": 3,
-      "exp_test_new_2": 5
+      exp_test_new: 3,
+      exp_test_new_2: 5
     }
 
     context.set_overrides(overrides)
@@ -596,12 +393,12 @@ RSpec.describe Context do
     expect(context.override("exp_test_not_found")).to be_nil
   end
 
-  xit "setOverrideClearsAssignmentCache" do
+  it "set override clears assignment cache" do
     context = create_ready_context
 
     overrides = {
-      "exp_test_new": 3,
-      "exp_test_new_2": 5
+      exp_test_new: 3,
+      exp_test_new_2: 5
     }
 
     context.set_overrides(overrides)
@@ -625,7 +422,7 @@ RSpec.describe Context do
     expect(context.pending_count).to eq(overrides.size * 2)
 
     # overriding a computed assignment should clear assignment cache
-    expect(context.treatment("exp_test_ab")).to eq(expected_variants["exp_test_ab"])
+    expect(context.treatment("exp_test_ab")).to eq(expected_variants[:exp_test_ab])
     expect(context.pending_count).to eq(1 + overrides.size * 2)
 
     context.set_override("exp_test_ab", 9)
@@ -633,40 +430,38 @@ RSpec.describe Context do
     expect(context.pending_count).to eq(2 + overrides.size * 2)
   end
 
-  xit "setOverrideBeforeReady" do
+  it "set override before ready" do
     context = create_context(data_future)
     expect(context.ready?).to be_falsey
 
+    context = create_context(data_future)
+
     context.set_override("exp_test", 2)
     context.set_overrides(
-      "exp_test_new": 3,
-      "exp_test_new_2": 5
+      exp_test_new: 3,
+      exp_test_new_2: 5
     )
-
-    data_future.complete(data)
-
-    # context.waitUntilReady()
 
     expect(context.override("exp_test")).to eq(2)
     expect(context.override("exp_test_new")).to eq(3)
     expect(context.override("exp_test_new_2")).to eq(5)
   end
 
-  xit "setCustomAssignment" do
+  it "set custom assignment" do
     context = create_ready_context
     context.set_custom_assignment("exp_test", 2)
 
     expect(context.custom_assignment("exp_test")).to eq(2)
 
     context.set_custom_assignment("exp_test", 3)
-    expect(context.custom_assignment("exp_test")).to eq(2)
+    expect(context.custom_assignment("exp_test")).to eq(3)
 
     context.set_custom_assignment("exp_test_2", 1)
     expect(context.custom_assignment("exp_test_2")).to eq(1)
 
     cassignments = {
-      "exp_test_new": 3,
-      "exp_test_new_2": 5
+      exp_test_new: 3,
+      exp_test_new_2: 5
     }
 
     context.set_custom_assignments(cassignments)
@@ -679,7 +474,7 @@ RSpec.describe Context do
     expect(context.custom_assignment("exp_test_not_found")).to be_nil
   end
 
-  xit "setCustomAssignmentDoesNotOverrideFullOnOrNotEligibleAssignments" do
+  it "set custom assignment does not override full on or not eligible assignments" do
     context = create_ready_context
 
     context.set_custom_assignment("exp_test_not_eligible", 3)
@@ -689,14 +484,13 @@ RSpec.describe Context do
     expect(context.treatment("exp_test_fullon")).to eq 2
   end
 
-  xit "setCustomAssignmentClearsAssignmentCache" do
+  it "set custom assignment clears assignment cache" do
     context = create_ready_context
 
     cassignments = {
-      "exp_test_ab": 2,
-      "exp_test_abc": 3
+      exp_test_ab: 2,
+      exp_test_abc: 3
     }
-
     cassignments.each { |experiment_name, _| expect(expected_variants[experiment_name]).to eq(context.treatment(experiment_name)) }
     expect(context.pending_count).to eq(cassignments.size)
 
@@ -724,43 +518,40 @@ RSpec.describe Context do
     expect(context.pending_count).to eq(cassignments.size * 3)
   end
 
-  xit "setCustomAssignmentsBeforeReady" do
+  it "setCustomAssignmentsBeforeReady" do
     context = create_context(data_future)
     expect(context.ready?).to be_falsey
 
+    context = create_ready_context
     context.set_custom_assignment("exp_test", 2)
     context.set_custom_assignments(
-      "exp_test_new": 3,
-      "exp_test_new_2": 5
+      exp_test_new: 3,
+      exp_test_new_2: 5
     )
-
-    data_future.complete(data)
-
-    # context.waitUntilReady()
 
     expect(context.custom_assignment("exp_test")).to eq(2)
     expect(context.custom_assignment("exp_test_new")).to eq(3)
     expect(context.custom_assignment("exp_test_new_2")).to eq(5)
   end
 
-  xit "peek_treatment" do
+  it "peek_treatment" do
     context = create_ready_context
 
     data.experiments.each do |experiment|
-      expect(context.peek_treatment(experiment.name)).to eq(expected_variants[experiment.name])
+      expect(context.peek_treatment(experiment.name)).to eq(expected_variants[experiment.name.to_sym])
     end
     expect(context.peek_treatment("not_found")).to eq 0
 
     # call again
     data.experiments.each do |experiment|
-      expect(context.peek_treatment(experiment.name)).to eq(expecte_variants[experiment.name])
+      expect(context.peek_treatment(experiment.name)).to eq(expected_variants[experiment.name.to_sym])
     end
     expect(context.peek_treatment("not_found")).to eq(0)
 
     expect(context.pending_count).to eq(0)
   end
 
-  xit "peekVariableValue" do
+  it "peekVariableValue" do
     context = create_ready_context
 
     experiments = data.experiments.map(&:name)
@@ -776,22 +567,22 @@ RSpec.describe Context do
       end
     end
 
-    expect(0, context.pending_count)
+    expect(context.pending_count).to eq(0)
   end
 
-  xit "peekVariableValueReturnsAssignedVariantOnAudienceMismatchNonStrictMode" do
-    context = create_context(audiencedata_future_ready)
+  it "peekVariableValueReturnsAssignedVariantOnAudienceMismatchNonStrictMode" do
+    context = create_context(audience_data_future_ready)
 
     expect(context.peek_variable_value("banner.size", "small")).to eq "large"
   end
 
-  xit "peekVariableValueReturnsControlVariantOnAudienceMismatchStrictMode" do
+  it "peekVariableValueReturnsControlVariantOnAudienceMismatchStrictMode" do
     context = create_context(audience_strict_data_future_ready)
 
     expect(context.peek_variable_value("banner.size", "small")).to eq "small"
   end
 
-  xit "getVariableValue" do
+  it "variable_value" do
     context = create_ready_context
 
     experiments = data.experiments.map(&:name)
@@ -811,153 +602,151 @@ RSpec.describe Context do
   end
 
   xit "getVariableValueQueuesExposureWithAudienceMismatchFalseOnAudienceMatch" do
-    #       context = create_context(audience_data_future_ready)
-    #       context.setAttribute("age", 21)
-    #
-    #       expect("large", context.getVariableValue("banner.size", "small"))
-    #       expect(1, context.pending_count)
-    #
-    #       allow(event_handler).to receive(:publish).and_return(publish_future)
-    #
-    #       context.publish
-    #
-    #       final PublishEvent expected = new PublishEvent()
-    #       expected.hashed = true
-    #       expected.published_at = clock_in_millis
-    #       expected.units = publish_units
-    #       expected.set_attributes( Attribute[)
-    #         new Attribute("age", 21, clock_in_millis),
-    #     }
-    #
-    #     expected.exposures = new Exposure[]{
-    #       new Exposure(1, "exp_test_ab", "session_id", 1, clock_in_millis, true, true, false, false, false, false),
-    #     }
-    #
-    #     allow(event_handler).to receive(:publish).and_return(publish_future)
-    #
-    #     context.publish
-    #
-    #     verify(event_handler, times(1)).publish(any(), any())
-    #     verify(event_handler, times(1)).publish(context, expected)
+    context = create_context(audience_data_future_ready)
+    context.setAttribute("age", 21)
+
+    expect(context.variable_value("banner.size", "small")).to eq("large")
+    expect(context.pending_count).to eq(1)
+
+    publish_future = nil
+    allow(event_handler).to receive(:publish).and_return(publish_future)
+    context.publish
+
+    expected = PublishEvent.new
+    expected.hashed = true
+    expected.published_at = clock_in_millis
+    expected.units = publish_units
+    expected.set_attributes(
+      Attribute.new("age", 21, clock_in_millis)
+    )
+
+    expected.exposures = [
+      Exposure.new(1, "exp_test_ab", "session_id", 1, clock_in_millis, true, true, false, false, false, false),
+    ]
+
+    allow(event_handler).to receive(:publish).and_return(publish_future)
+
+    context.publish
+
+    expect(event_handler).to have_received(:publish).once
+    expect(event_handler).to have_received(:publish).with(context, expected).once
   end
 
   xit "getVariableValueQueuesExposureWithAudienceMismatchTrueOnAudienceMismatch" do
-    #       context = create_context(audience_data_future_ready)
-    #
-    #       expect("large", context.getVariableValue("banner.size", "small"))
-    #       expect(1, context.pending_count)
-    #
-    #       allow(event_handler).to receive(:publish).and_return(publish_future)
-    #
-    #       context.publish
-    #
-    #       final PublishEvent expected = new PublishEvent()
-    #       expected.hashed = true
-    #       expected.published_at = clock_in_millis
-    #       expected.units = publish_units
-    #
-    #       expected.exposures = new Exposure[]{
-    #         new Exposure(1, "exp_test_ab", "session_id", 1, clock_in_millis, true, true, false, false, false, true),
-    #     }
-    #
-    #     allow(event_handler).to receive(:publish).and_return(publish_future)
-    #
-    #     context.publish
-    #
-    #     verify(event_handler, times(1)).publish(any(), any())
-    #     verify(event_handler, times(1)).publish(context, expected)
+    context = create_context(audience_data_future_ready)
+
+    expect(context.variable_value("banner.size", "small")).to eq("large")
+    expect(context.pending_count).to eq(1)
+
+    publish_future = nil
+    allow(event_handler).to receive(:publish).and_return(publish_future)
+
+    context.publish
+
+    expected = PublishEvent.new
+    expected.hashed = true
+    expected.published_at = clock_in_millis
+    expected.units = publish_units
+
+    expected.exposures = [
+      Exposure.new(1, "exp_test_ab", "session_id", 1, clock_in_millis, true, true, false, false, false, true),
+    ]
+
+    allow(event_handler).to receive(:publish).and_return(publish_future)
+
+    context.publish
+
+    expect(event_handler).to have_received(:publish).once
+    expect(event_handler).to have_received(:publish).with(context, expected).once
   end
 
   xit "getVariableValueQueuesExposureWithAudienceMismatchFalseAndControlVariantOnAudienceMismatchInStrictMode" do
-    #       context = create_context(audience_strict_data_future_ready)
-    #
-    #       expect("small", context.getVariableValue("banner.size", "small"))
-    #       expect(1, context.pending_count)
-    #
-    #       allow(event_handler).to receive(:publish).and_return(publish_future)
-    #
-    #       context.publish
-    #
-    #       final PublishEvent expected = new PublishEvent()
-    #       expected.hashed = true
-    #       expected.published_at = clock_in_millis
-    #       expected.units = publish_units
-    #
-    #       expected.exposures = new Exposure[]{
-    #         new Exposure(1, "exp_test_ab", "session_id", 0, clock_in_millis, false, true, false, false, false,
-    #                      true),
-    #     }
-    #
-    #     allow(event_handler).to receive(:publish).and_return(publish_future)
-    #
-    #     context.publish
-    #
-    #     verify(event_handler, times(1)).publish(any(), any())
-    #     verify(event_handler, times(1)).publish(context, expected)
+    context = create_context(audience_strict_data_future_ready)
+
+    expect(context.variable_value("banner.size", "small")).to eq("small")
+    expect(context.pending_count).to eq(1)
+
+    publish_future = nil
+    allow(event_handler).to receive(:publish).and_return(publish_future)
+
+    context.publish
+
+    expected = PublishEvent.new
+    expected.hashed = true
+    expected.published_at = clock_in_millis
+    expected.units = publish_units
+
+    expected.exposures = [
+      Exposure.new(1, "exp_test_ab", "session_id", 0, clock_in_millis, false, true, false, false, false,
+                   true)
+    ]
+
+    allow(event_handler).to receive(:publish).and_return(publish_future)
+
+    context.publish
+
+    expect(event_handler).to have_received(:publish).once
+    expect(event_handler).to have_received(:publish).with(context, expected).once
   end
 
   xit "getVariableValueCallsEventLogger" do
-    #       context = create_ready_context
-    #
-    #       Mockito.clearInvocations(eventLogger)
-    #
-    #       context.getVariableValue("banner.border", nil)
-    #       context.getVariableValue("banner.size", nil)
-    #
-    #       final Exposure[] exposures = new Exposure[]{
-    #         new Exposure(1, "exp_test_ab", "session_id", 1, clock_in_millis, true, true, false, false, false, false),
-    #     }
-    #
-    #     verify(eventLogger, times(exposures.length)).handleEvent(any(), any(), any())
-    #
-    #     for (Exposure expected : exposures) {
-    #       verify(eventLogger, times(1)).handleEvent(ArgumentMatchers.same(context),
-    #                                                 ArgumentMatchers.eq(ContextEventLogger.EventType.Exposure), ArgumentMatchers.eq(expected))
-    #     }
-    #
-    #     // verify not called again with the same exposure
-    #     Mockito.clearInvocations(eventLogger)
-    #     context.getVariableValue("banner.border", nil)
-    #     context.getVariableValue("banner.size", nil)
-    #
-    #     verify(eventLogger, times(0)).handleEvent(any(), any(), any())
+    context = create_ready_context
+
+    context.variable_value("banner.border", nil)
+    context.variable_value("banner.size", nil)
+
+    exposures = [
+      Exposure.new(1, "exp_test_ab", "session_id", 1, clock_in_millis, true, true, false, false, false, false),
+    ]
+
+    expect(event_logger).to have_received(:handle_event).exactly(exposures.length).time
+
+    # exposures.each do |expected|
+    #   expect(event_logger).to have_received(:handle_event).once
+    # end
+
+    # verify not called again with the same exposure
+    context.variable_value("banner.border", nil)
+    context.variable_value("banner.size", nil)
+
+    expect(event_handler).to have_received(:handle_event).exactly(0).time
   end
 
-  xit "getVariableKeys" do
+  it "getVariableKeys" do
     context = create_context(refresh_data_future_ready)
 
     expect(variable_experiments).to eq(context.variable_keys)
   end
 
-  xit "peek_treatmentReturnsOverrideVariant" do
+  it "peek_treatmentReturnsOverrideVariant" do
     context = create_ready_context
 
     data.experiments.each do |experiment|
-      context.set_override(experiment.name, (11 + expected_variants.get(experiment.name)))
+      context.set_override(experiment.name, (11 + expected_variants[experiment.name.to_sym]))
     end
     context.set_override("not_found", 3)
 
     data.experiments.each do |experiment|
-      expect(context.peek_treatment(experiment.name)).to eq(expected_variants[experiment.name] + 11)
+      expect(context.peek_treatment(experiment.name)).to eq(expected_variants[experiment.name.to_sym] + 11)
     end
-    expect(3, context.peek_treatment("not_found"))
+    expect(context.peek_treatment("not_found")).to eq(3)
 
     # call again
     data.experiments.each do |experiment|
-      expect(context.peek_treatment(experiment.name)).to eq(expected_variants[experiment.name] + 11)
+      expect(context.peek_treatment(experiment.name)).to eq(expected_variants[experiment.name.to_sym] + 11)
     end
     expect(context.peek_treatment("not_found")).to eq 3
 
     expect(context.pending_count).to eq 0
   end
 
-  xit "peek_treatmentReturnsAssignedVariantOnAudienceMismatchNonStrictMode" do
+  it "peek_treatmentReturnsAssignedVariantOnAudienceMismatchNonStrictMode" do
     context = create_context(audience_data_future_ready)
 
     expect(context.peek_treatment("exp_test_ab")).to eq 1
   end
 
-  xit "peek_treatmentReturnsControlVariantOnAudienceMismatchStrictMode" do
+  it "peek_treatmentReturnsControlVariantOnAudienceMismatchStrictMode" do
     context = create_context(audience_strict_data_future_ready)
 
     expect(context.peek_treatment("exp_test_ab")).to eq 0
@@ -967,7 +756,7 @@ RSpec.describe Context do
     context = create_ready_context
 
     data.experiments.each do |experiment|
-      expect(context.treatment(experiment.name)).to eq(expected_variants[experiment.name])
+      expect(context.treatment(experiment.name)).to eq(expected_variants[experiment.name.to_sym])
     end
     expect(context.treatment("not_found")).to eq 0
     expect(context.pending_count).to eq(1 + data.experiments.size)
@@ -989,7 +778,7 @@ RSpec.describe Context do
       Exposure.new(0, "not_found", nil, 0, clock_in_millis,
                    false, true, false, false, false, false),
     ]
-
+    publish_future = nil
     allow(event_handler).to receive(:publish).and_return(publish_future)
 
     context.publish
@@ -1000,36 +789,7 @@ RSpec.describe Context do
     context.close
   end
 
-  xit "treatmentStartsPublishTimeoutAfterExposure" do
-    #       final ContextConfig config = ContextConfig.create()
-    #                                                 .setUnits(units)
-    #                                                 .setPublishDelay(333)
-    #
-    #       context = create_context(config, data_futureReady)
-    #       expect(context.ready?).to be_truthy
-    #       expect(context.failed?).to be_falsey
-    #
-    #       final AtomicReference<Runnable> runnable = new AtomicReference<>(nil)
-    #       when(scheduler.schedule((Runnable) any(), eq(config.getPublishDelay()), eq(TimeUnit.MILLISECONDS)))
-    #       .thenAnswer(invokation -> {
-    #         runnable.set(invokation.getArgument(0))
-    #         return mock(ScheduledFuture.class)
-    #       })
-    #
-    #       allow(event_handler).to receive(:publish).and_return(publish_future)
-    #
-    #       context.treatment("exp_test_ab")
-    #       context.treatment("exp_test_abc")
-    #
-    #       verify(scheduler, times(1)).schedule((Runnable) any(), eq(config.getPublishDelay()), eq(TimeUnit.MILLISECONDS))
-    #       verify(event_handler, times(0)).publish(any(), any())
-    #
-    #       runnable.get().run()
-    #
-    #       verify(event_handler, times(1)).publish(any(), any())
-  end
-
-  xit "treatmentReturnsOverrideVariant" do
+  it "treatmentReturnsOverrideVariant" do
     #       context = create_ready_context
     #
     #       Arrays.stream(data.experiments).forEach(
@@ -1068,7 +828,7 @@ RSpec.describe Context do
     #     context.close()
   end
 
-  xit "treatmentQueuesExposureOnce" do
+  it "treatmentQueuesExposureOnce" do
     #       context = create_ready_context
     #
     #       Arrays.stream(data.experiments).forEach(experiment -> context.treatment(experiment.name))
@@ -1097,7 +857,7 @@ RSpec.describe Context do
     #       context.close()
   end
 
-  xit "treatmentQueuesExposureWithAudienceMismatchFalseOnAudienceMatch" do
+  it "treatmentQueuesExposureWithAudienceMismatchFalseOnAudienceMatch" do
     #       context = create_context(audience_data_future_ready)
     #       context.setAttribute("age", 21)
     #
@@ -1128,7 +888,7 @@ RSpec.describe Context do
     #     verify(event_handler, times(1)).publish(context, expected)
   end
 
-  xit "treatmentQueuesExposureWithAudienceMismatchTrueOnAudienceMismatch" do
+  it "treatmentQueuesExposureWithAudienceMismatchTrueOnAudienceMismatch" do
     #       context = create_context(audience_data_future_ready)
     #
     #       expect(1, context.treatment("exp_test_ab"))
@@ -1155,7 +915,7 @@ RSpec.describe Context do
     #     verify(event_handler, times(1)).publish(context, expected)
   end
 
-  xit "treatmentQueuesExposureWithAudienceMismatchTrueAndControlVariantOnAudienceMismatchInStrictMode" do
+  it "treatmentQueuesExposureWithAudienceMismatchTrueAndControlVariantOnAudienceMismatchInStrictMode" do
     #       context = create_context(audience_strict_data_future_ready)
     #
     #       expect(0, context.treatment("exp_test_ab"))
@@ -1183,7 +943,7 @@ RSpec.describe Context do
     #     verify(event_handler, times(1)).publish(context, expected)
   end
 
-  xit "treatmentCallsEventLogger" do
+  it "treatmentCallsEventLogger" do
     #       context = create_ready_context
     #
     #       Mockito.clearInvocations(eventLogger)
@@ -1211,7 +971,7 @@ RSpec.describe Context do
     #     verify(eventLogger, times(0)).handleEvent(any(), any(), any())
   end
 
-  xit "track" do
+  it "track" do
     #       context = create_ready_context
     #       context.track("goal1", mapOf("amount", 125, "hours", 245))
     #       context.track("goal2", mapOf("tries", 7))
@@ -1246,7 +1006,7 @@ RSpec.describe Context do
     #     context.close()
   end
 
-  xit "trackCallsEventLogger" do
+  it "trackCallsEventLogger" do
     #       context = create_ready_context
     #       Mockito.clearInvocations(eventLogger)
     #
@@ -1274,7 +1034,7 @@ RSpec.describe Context do
     #     }
   end
 
-  xit "trackStartsPublishTimeoutAfterAchievement" do
+  it "trackStartsPublishTimeoutAfterAchievement" do
     #       final ContextConfig config = ContextConfig.create()
     #                                                 .setUnits(units)
     #                                                 .setPublishDelay(333)
@@ -1303,7 +1063,7 @@ RSpec.describe Context do
     #       verify(event_handler, times(1)).publish(any(), any())
   end
 
-  xit "trackQueuesWhenNotReady" do
+  it "trackQueuesWhenNotReady" do
     #       context = create_context(data_future)
     #
     #       context.track("goal1", mapOf("amount", 125, "hours", 245))
@@ -1313,7 +1073,7 @@ RSpec.describe Context do
     #       expect(3, context.pending_count)
   end
 
-  xit "publishDoesNotCallevent_handlerWhenQueueIsEmpty" do
+  it "publishDoesNotCallevent_handlerWhenQueueIsEmpty" do
     #       context = create_ready_context
     #       expect(0, context.pending_count)
     #
@@ -1322,7 +1082,7 @@ RSpec.describe Context do
     #       verify(event_handler, times(0)).publish(any(), any())
   end
 
-  xit "publishCallsEventLogger" do
+  it "publishCallsEventLogger" do
     #       context = create_ready_context
     #
     #       context.track("goal1", mapOf("amount", 125, "hours", 245))
@@ -1347,7 +1107,7 @@ RSpec.describe Context do
     #     verify(eventLogger, times(1)).handleEvent(context, ContextEventLogger.EventType.Publish, expected)
   end
 
-  xit "publishCallsEventLoggerOnError" do
+  it "publishCallsEventLoggerOnError" do
     #       context = create_ready_context
     #
     #       context.track("goal1", mapOf("amount", 125, "hours", 245))
@@ -1364,7 +1124,7 @@ RSpec.describe Context do
     #       verify(eventLogger, times(1)).handleEvent(context, ContextEventLogger.EventType.Error, failure)
   end
 
-  xit "publishResetsInternalQueuesAndKeepsAttributesOverridesAndCustomAssignments" do
+  it "publishResetsInternalQueuesAndKeepsAttributesOverridesAndCustomAssignments" do
     #       final ContextConfig config = ContextConfig.create()
     #                                                 .setUnits(units)
     #                                                 .setAttributes(mapOf(
@@ -1457,8 +1217,8 @@ RSpec.describe Context do
     #     verify(event_handler, times(1)).publish(context, expectedNext)
   end
 
-  xit "publishDoesNotCallevent_handlerWhenFailed" do
-    #       context = create_context(data_futureFailed)
+  it "publishDoesNotCallevent_handlerWhenFailed" do
+    #       context = create_context(data_future_failed)
     #       expect(context.ready?).to be_truthy
     #       assertTrue(context.failed?
     #
@@ -1474,7 +1234,7 @@ RSpec.describe Context do
     #       verify(event_handler, times(0)).publish(any(), any())
   end
 
-  xit "publishExceptionally" do
+  it "publishExceptionally" do
     #       context = create_ready_context
     #       expect(context.ready?).to be_truthy
     #       expect(context.failed?).to be_falsey
@@ -1492,7 +1252,7 @@ RSpec.describe Context do
     #       verify(event_handler, times(1)).publish(any(), any())
   end
 
-  xit "closeAsync" do
+  it "closeAsync" do
     #       context = create_ready_context
     #       expect(context.ready?).to be_truthy
     #
@@ -1505,20 +1265,18 @@ RSpec.describe Context do
     #       final CompletableFuture<Void> closingFutureNext = context.close_async
     #       assertSame(closingFuture, closingFutureNext)
     #
-    #       expect(context.closing?).to be_truthy
     #       expect(context.closed?).to be_falsey
     #
     #       publish_future.complete(nil)
     #
     #       closingFuture.join()
     #
-    #       expect(context.closing?).to be_falsey
     #       expect(context.closed?).to be_truthy
     #
     #       verify(event_handler, times(1)).publish(any(), any())
   end
 
-  xit "close" do
+  it "close" do
     #       context = create_ready_context
     #       expect(context.ready?).to be_truthy
     #
@@ -1527,7 +1285,6 @@ RSpec.describe Context do
     #       final CompletableFuture<Void> publish_future = new CompletableFuture<>()
     #       when(event_handler.publish(any(), any())).thenReturn(publish_future)
     #
-    #       expect(context.closing?).to be_falsey
     #       expect(context.closed?).to be_falsey
     #
     #       final Thread publisher = new Thread(() -> publish_future.complete(nil))
@@ -1536,7 +1293,6 @@ RSpec.describe Context do
     #       context.close()
     #       publisher.join()
     #
-    #       expect(context.closing?).to be_falsey
     #       expect(context.closed?).to be_truthy
     #
     #       verify(event_handler, times(1)).publish(any(), any())
@@ -1544,7 +1300,7 @@ RSpec.describe Context do
     #       context.close()
   end
 
-  xit " closeCallsEventLogger" do
+  it " closeCallsEventLogger" do
     #       context = create_ready_context
     #
     #       Mockito.clearInvocations(eventLogger)
@@ -1555,7 +1311,7 @@ RSpec.describe Context do
     #       verify(eventLogger, times(1)).handleEvent(context, ContextEventLogger.EventType.Close, nil)
   end
 
-  xit "closeCallsEventLoggerWithPendingEvents" do
+  it "closeCallsEventLoggerWithPendingEvents" do
     #       context = create_ready_context
     #
     #       context.track(" goal1 ", mapOf(" amount ", 125, " hours ", 245))
@@ -1586,7 +1342,7 @@ RSpec.describe Context do
     #     verify(eventLogger, times(1)).handleEvent(context, ContextEventLogger.EventType.Close, nil)
   end
 
-  xit " closeCallsEventLoggerOnError" do
+  it " closeCallsEventLoggerOnError" do
     #       context = create_ready_context
     #
     #       context.track("goal1", mapOf("amount", 125, "hours", 245))
@@ -1609,7 +1365,7 @@ RSpec.describe Context do
     #       verify(eventLogger, times(1)).handleEvent(context, ContextEventLogger.EventType.Error, failure)
   end
 
-  xit "closeExceptionally" do
+  it "closeExceptionally" do
     #       context = create_ready_context
     #       expect(context.ready?).to be_truthy
     #
@@ -1630,25 +1386,7 @@ RSpec.describe Context do
     #       verify(event_handler, times(1)).publish(any(), any())
   end
 
-  xit " closeStopsRefreshTimer " do
-    #       final ContextConfig config = ContextConfig.create()
-    #                                                 .setUnits(units)
-    #                                                 .setRefreshInterval(5_000)
-    #
-    #       final ScheduledFuture refreshTimer = mock(ScheduledFuture.class)
-    #       when(scheduler.scheduleWithFixedDelay(any(), eq(config.getRefreshInterval()),
-    #                                             eq(config.getRefreshInterval()), eq(TimeUnit.MILLISECONDS)))
-    #             .thenReturn(refreshTimer)
-    #
-    #       context = create_context(config, data_futureReady)
-    #       expect(context.ready?).to be_truthy
-    #
-    #       context.close()
-    #
-    #       verify(refreshTimer, times(1)).cancel(false)
-  end
-
-  xit " refresh " do
+  it " refresh " do
     #       context = create_ready_context
     #       expect(context.ready?).to be_truthy
     #
@@ -1663,7 +1401,7 @@ RSpec.describe Context do
     #       assertArrayEquals(experiments, context.getExperiments())
   end
 
-  xit " refreshCallsEventLogger " do
+  it " refreshCallsEventLogger " do
     #       context = create_ready_context
     #       Mockito.clearInvocations(eventLogger)
     #
@@ -1675,7 +1413,7 @@ RSpec.describe Context do
     #       verify(eventLogger, times(1)).handleEvent(context, ContextEventLogger.EventType.Refresh, refreshData)
   end
 
-  xit " refreshCallsEventLoggerOnError " do
+  it " refreshCallsEventLoggerOnError " do
     #       context = create_ready_context
     #       Mockito.clearInvocations(eventLogger)
     #
@@ -1689,7 +1427,7 @@ RSpec.describe Context do
     #       verify(eventLogger, times(1)).handleEvent(context, ContextEventLogger.EventType.Error, failure)
   end
 
-  xit " refreshExceptionally " do
+  it " refreshExceptionally " do
     #       context = create_ready_context
     #       expect(context.ready?).to be_truthy
     #       expect(context.failed?).to be_falsey
@@ -1707,26 +1445,7 @@ RSpec.describe Context do
     #       verify(dataProvider, times(1)).getContextData()
   end
 
-  xit " refreshAsync " do
-    #       context = create_ready_context
-    #       expect(context.ready?).to be_truthy
-    #
-    #       when(dataProvider.getContextData()).thenReturn(refreshdata_future)
-    #
-    #       final CompletableFuture<Void> refreshFuture = context.refreshAsync()
-    #       final CompletableFuture<Void> refreshFutureNext = context.refreshAsync()
-    #       assertSame(refreshFuture, refreshFutureNext)
-    #
-    #       refreshdata_future.complete(refreshData)
-    #       refreshFuture.join()
-    #
-    #       verify(dataProvider, times(1)).getContextData()
-    #
-    #       final String[] experiments = Arrays.stream(refreshData.experiments).map(x -> x.name).toArray(String[]::new)
-    #       assertArrayEquals(experiments, context.getExperiments())
-  end
-
-  xit " refreshKeepsAssignmentCacheWhenNotChanged " do
+  it " refreshKeepsAssignmentCacheWhenNotChanged " do
     #       context = create_ready_context
     #       expect(context.ready?).to be_truthy
     #
@@ -1750,7 +1469,7 @@ RSpec.describe Context do
     #       expect(refreshData.experiments.length + 1, context.pending_count)
   end
 
-  xit " refreshKeepsAssignmentCacheWhenNotChangedOnAudienceMismatch " do
+  it " refreshKeepsAssignmentCacheWhenNotChangedOnAudienceMismatch " do
     #       context = create_context(audience_strict_data_future_ready)
     #
     #       expect(0, context.treatment(" exp_test_ab "))
@@ -1770,7 +1489,7 @@ RSpec.describe Context do
     #       expect(1, context.pending_count) // no new exposure
   end
 
-  xit " refreshKeepsAssignmentCacheWhenNotChangedWithOverride " do
+  it " refreshKeepsAssignmentCacheWhenNotChangedWithOverride " do
     #       context = create_ready_context
     #
     #       context.set_override(" exp_test_ab ", 3))
@@ -1791,7 +1510,7 @@ RSpec.describe Context do
     #       expect(1, context.pending_count) // no new exposure
   end
 
-  xit " refreshClearAssignmentCacheForStoppedExperiment " do
+  it " refreshClearAssignmentCacheForStoppedExperiment " do
     #       context = create_ready_context
     #       expect(context.ready?).to be_truthy
     #
@@ -1819,7 +1538,7 @@ RSpec.describe Context do
     #       expect(3, context.pending_count) // stopped experiment triggered a new exposure
   end
 
-  xit " refreshClearAssignmentCacheForStartedExperiment " do
+  it " refreshClearAssignmentCacheForStartedExperiment " do
     #       context = create_ready_context
     #       expect(context.ready?).to be_truthy
     #
@@ -1844,7 +1563,7 @@ RSpec.describe Context do
     #       expect(3, context.pending_count) // stopped experiment triggered a new exposure
   end
 
-  xit " refreshClearAssignmentCacheForFullOnExperiment " do
+  it " refreshClearAssignmentCacheForFullOnExperiment " do
     #       context = create_ready_context
     #       expect(context.ready?).to be_truthy
     #
@@ -1875,7 +1594,7 @@ RSpec.describe Context do
     #       expect(3, context.pending_count) // full-on experiment triggered a new exposure
   end
 
-  xit " refreshClearAssignmentCacheForTrafficSplitChange " do
+  it " refreshClearAssignmentCacheForTrafficSplitChange " do
     #       context = create_ready_context
     #       expect(context.ready?).to be_truthy
     #
@@ -1903,7 +1622,7 @@ RSpec.describe Context do
     #     expect(3, context.pending_count) // newly eligible experiment triggered a new exposure
   end
 
-  xit " refreshClearAssignmentCacheForIterationChange " do
+  it " refreshClearAssignmentCacheForIterationChange " do
     #       context = create_ready_context
     #       expect(context.ready?).to be_truthy
     #
@@ -1936,7 +1655,7 @@ RSpec.describe Context do
     #       expect(3, context.pending_count) // full-on experiment triggered a new exposure
   end
 
-  xit " refreshClearAssignmentCacheForExperimentIdChange " do
+  it " refreshClearAssignmentCacheForExperimentIdChange " do
     #       context = create_ready_context
     #       expect(context.ready?).to be_truthy
     #
@@ -1967,30 +1686,5 @@ RSpec.describe Context do
     #       expect(0, context.treatment(" not_found "))
     #
     #       expect(3, context.pending_count) // full-on experiment triggered a new exposure
-  end
-
-  def create_context(config = nil, data_future)
-    if config.nil?
-      config = ContextConfig.create
-      config.set_units(units)
-    end
-
-    Context.create(clock, config, scheduler, data_future, data_provider,
-                   event_handler, event_logger, variable_parser, audience_matcher)
-  end
-
-  def create_ready_context
-    config = ContextConfig.create
-    config.set_units(units)
-
-    Context.create(clock, config, scheduler, data_future_ready, data_provider,
-                   event_handler, event_logger, variable_parser, audience_matcher)
-  end
-
-  def faraday_response(data)
-    env = Faraday::Env.from(status: 200, body: data,
-                            response_headers: { "Content-Type" => "application/json" })
-    response = Faraday::Response.new(env)
-    response.data_future = data_provider
   end
 end

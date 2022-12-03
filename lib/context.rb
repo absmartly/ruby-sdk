@@ -9,6 +9,8 @@ require_relative "json/publish_event"
 require_relative "json/goal_achievement"
 
 class Context
+  attr_reader :data, :pending_count
+
   def self.create(clock, config, scheduler, data_future, data_provider,
                   event_handler, event_logger, variable_parser, audience_matcher)
     Context.new(clock, config, scheduler, data_future, data_provider,
@@ -31,29 +33,25 @@ class Context
     @audience_matcher = audience_matcher
     @scheduler = scheduler
     @closed = false
-    @closing = false
 
     @units = {}
-    @assigners = {}
-    @hashed_units = {}
     @attributes = []
     @overrides = {}
     @cassignments = {}
+    @assigners = {}
+    @hashed_units = {}
     @pending_count = 0
     @exposures ||= []
 
     set_units(config.units) if config.units
     set_attributes(config.attributes) if config.attributes
     set_overrides(config.overrides) if config.overrides
-    set_attributes(config.custom_assignments) if config.custom_assignments
-
+    set_custom_assignments(config.custom_assignments) if config.custom_assignments
     if data_future.success?
       assign_data(data_future.data_future)
     else
-      @data_failed = data_future.exception
+      set_data_failed(data_future.exception)
     end
-
-    set_timeout if @pending_count > 0
   end
 
   def ready?
@@ -75,56 +73,72 @@ class Context
   end
 
   def set_override(experiment_name, variant)
-    @overrides[experiment_name] = variant
+    check_not_closed?
+
+    @overrides[experiment_name.to_s.to_sym] = variant
   end
 
   def set_overrides(overrides)
-    @overrides.merge!(overrides)
+    check_not_closed?
+
+    @overrides.merge!(overrides.transform_keys(&:to_sym))
   end
 
   def override(experiment_name)
-    @overrides[experiment_name]
+    check_not_closed?
+
+    @overrides[experiment_name.to_s.to_sym]
   end
 
   def set_custom_assignment(experiment_name, variant)
     check_not_closed?
 
-    @cassignments[experiment_name] = variant
+    @cassignments[experiment_name.to_s.to_sym] = variant
   end
 
   def set_custom_assignments(custom_assignments)
-    @cassignments.merge!(custom_assignments)
+    check_not_closed?
+
+    @cassignments.merge!(custom_assignments.transform_keys(&:to_sym))
   end
 
   def custom_assignment(experiment_name)
-    @cassignments[experiment_name]
+    check_not_closed?
+
+    @cassignments[experiment_name.to_s.to_sym]
   end
 
   def set_unit(unit_type, uid)
     check_not_closed?
 
-    previous = @units[unit_type]
-    if !previous.nil? && !previous == uid
-      raise ArgumentError.new("Unit '#{unit_type}' already set.")
+    previous = @units[unit_type.to_sym]
+    if !previous.nil? && previous != uid
+      raise IllegalStateException.new("Unit '#{unit_type}' already set.")
     end
 
     trimmed = uid.to_s.strip
     if trimmed.empty?
-      raise ArgumentError.new("Unit '#{unit_type}' UID must not be blank.")
+      raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
     end
 
     @units[unit_type] = trimmed
   end
 
   def set_units(units)
+    check_not_closed?
+
     units.each { |key, value| self.set_unit(key, value) }
   end
 
   def set_attribute(name, value)
+    check_not_closed?
+
     @attributes.push(Attribute.new(name, value, @clock.to_i))
   end
 
   def set_attributes(attributes)
+    check_not_closed?
+
     attributes.each { |key, value| self.set_attribute(key, value) }
   end
 
@@ -158,7 +172,6 @@ class Context
       @pending_count += 1
       @exposures.push(exposure)
     end
-    set_timeout
   end
 
   def peek_treatment(experiment_name)
@@ -170,12 +183,16 @@ class Context
   def variable_keys
     check_ready?(true)
 
-    @index_variables.map { |key, value| Hash[key, value.data.name] }
+    hsh = {}
+    @index_variables.each { |key, value| hsh[key] = value.data.name }
+    hsh
   end
 
   def variable_value(key, default_value)
+    check_ready?(true)
+
     assignment = variable_assignment(key)
-    unless assignment.nil? && assignment.variables.nil?
+    unless assignment.nil? || assignment.variables.nil?
       queue_exposure(assignment) unless assignment.exposed
       return assignment.variables[key] if assignment.variables.key?(key)
     end
@@ -187,9 +204,9 @@ class Context
     check_ready?(true)
 
     assignment = variable_assignment(key)
-    return assignment.variables.get(key) unless assignment.nil? &&
-      assignment.variables.nil? &&
-      assignment.variables.key?(key)
+    return assignment.variables[key.to_s.to_sym] if !assignment.nil? &&
+      !assignment.variables.nil? &&
+      assignment.variables.key?(key.to_s.to_sym)
 
     default_value
   end
@@ -204,49 +221,44 @@ class Context
 
     @pending_count += 1
     @achievements.push(achievement)
-
-    set_timeout
   end
 
-  def publish_async
+  def publish
     check_not_closed?
 
     flush
   end
 
-  def publish
-    publish_async
-  end
-
-  def refresh_async
-    @data_provider.context_data unless @failed
-  end
-
   def refresh
-    refresh_async
-  end
+    check_not_closed?
 
-  def close_async
-    unless @closed && @closing
-      @closing = true
-      clear_refresh_timer
-
-      if @pending_count > 0
-        flush
+    unless @failed
+      data_future = @data_provider.context_data
+      if data_future.success?
+        assign_data(data_future.data_future)
+      else
+        set_data_failed(data_future.exception)
       end
-      @closed = true
-      @closing = false
-      @closing_future = nil
     end
   end
 
   def close
-    close_async
+    unless @closed
+      if @pending_count > 0
+        flush
+      end
+      @closed = true
+    end
+  end
+
+  def data
+    check_ready?(true)
+
+    @data
   end
 
   private
     def flush
-      clear_timeout
       if !@failed
         if @pending_count > 0
           exposures = nil
@@ -288,8 +300,6 @@ class Context
     def check_not_closed?
       if @closed
         raise IllegalStateException.new("ABSmartly Context is closed")
-      elsif @closing
-        raise IllegalStateException.new("ABSmartly Context is closing")
       end
     end
 
@@ -310,12 +320,12 @@ class Context
     end
 
     def assignment(experiment_name)
-      assignment = @assignment_cache[experiment_name]
+      assignment = @assignment_cache[experiment_name.to_s]
 
       if !assignment.nil?
-        custom = @cassignments[experiment_name]
-        override = @overrides[experiment_name]
-        experiment = experiment(experiment_name)
+        custom = @cassignments.transform_keys(&:to_sym)[experiment_name.to_s.to_sym]
+        override = @overrides.transform_keys(&:to_sym)[experiment_name.to_s.to_sym]
+        experiment = experiment(experiment_name.to_s)
         if !override.nil?
           if assignment.overridden && assignment.variant == override
             return assignment
@@ -329,9 +339,9 @@ class Context
         end
       end
 
-      custom = @cassignments[experiment_name]
-      override = @overrides[experiment_name]
-      experiment = experiment(experiment_name)
+      custom = @cassignments.transform_keys(&:to_sym)[experiment_name.to_s.to_sym]
+      override = @overrides.transform_keys(&:to_sym)[experiment_name.to_s.to_sym]
+      experiment = experiment(experiment_name.to_s)
 
       assignment = Assignment.new
       assignment.name = experiment_name
@@ -354,10 +364,9 @@ class Context
               hash[attr.name] = attr.value
               hash
             end
-
             match = @audience_matcher.evaluate(experiment.data.audience, attrs)
-            if match.nil?
-              assignment.audience_mismatch = !match
+            if match.nil? || !match.result
+              assignment.audience_mismatch = true
             end
           end
 
@@ -403,7 +412,7 @@ class Context
         assignment.variables = experiment.variables[assignment.variant] || {}
       end
 
-      @assignment_cache[experiment_name] = assignment
+      @assignment_cache[experiment_name.to_s] = assignment
       assignment
     end
 
@@ -414,11 +423,11 @@ class Context
     end
 
     def experiment(experiment)
-      @index[experiment]
+      @index.transform_keys(&:to_sym)[experiment.to_s.to_sym]
     end
 
     def variable_experiment(key)
-      @index_variables[key]
+      @index_variables.transform_keys(&:to_sym)[key.to_s.to_sym]
     end
 
     def unit_hash(unit_type, unit_uid)
@@ -429,56 +438,33 @@ class Context
       @assigners[unit_type] ||= VariantAssigner.new(unit_hash)
     end
 
-    def set_timeout
-      if ready? && @timeout.nil?
-        flush
-      end
-    end
-
-    def clear_timeout
-      unless @timeout.nil?
-        @timeout = nil
-      end
-    end
-
-    def refresh_timer
-      if @refresh_interval > 0 && @refresh_timer.nil?
-        @refresh_timer = Time.now.to_i
-        refresh_async
-      end
-    end
-
-    def clear_refresh_timer
-      @refresh_timer = nil
-    end
-
     def assign_data(data)
       @data = data
       @index = {}
       @index_variables = {}
-      data.experiments.each do |experiment|
-        experiment_variables = ExperimentVariables.new
-        experiment_variables.data = experiment
-        experiment_variables.variables = experiment.variants.size
-        experiment.variants.each do |variant|
-          if !variant.config.nil? && !variant.config.empty?
-            variables = @variable_parser.parse(self, experiment.name, variant.name,
-                                               variant.config)
-            variables.keys.each { |key| @index_variables[key] = experiment_variables }
-
-            experiment_variables.variables.push(variables)
-          else
-            experiment_variables.variables = {}
+      if data && !data.experiments.nil? && !data.experiments.empty?
+        data.experiments.each do |experiment|
+          experiment_variables = ExperimentVariables.new
+          experiment_variables.data = experiment
+          experiment_variables.variables ||= []
+          experiment.variants.each do |variant|
+            if !variant.config.nil? && !variant.config.empty?
+              variables = @variable_parser.parse(self, experiment.name, variant.name,
+                                                 variant.config)
+              variables.keys.each { |key| @index_variables[key] = experiment_variables }
+              experiment_variables.variables.push(variables)
+            else
+              experiment_variables.variables.push({})
+            end
           end
+
+          @index[experiment.name] = experiment_variables
         end
-
-        @index[experiment.name] = experiment_variables
-
-        refresh_timer
       end
     end
 
     def set_data_failed(exception)
+      @data_failed = exception
       @index = {}
       @index_variables = {}
       @data = ContextData.new
@@ -496,7 +482,6 @@ class Context
                   :units,
                   :failed,
                   :data_lock,
-                  :data,
                   :index,
                   :index_variables,
                   :context_lock,
@@ -509,16 +494,11 @@ class Context
                   :attributes,
                   :overrides,
                   :cassignments,
-                  :pending_count,
-                  :closing,
                   :closed,
                   :refreshing,
                   :ready_future,
-                  :closing_future,
-                  :refresh_future,
-                  :timeout_lock,
-                  :timeout,
-                  :refresh_timer
+                  :refresh_future
+    attr_writer :data, :pending_count
 end
 
 class Assignment
@@ -542,4 +522,7 @@ end
 
 class ExperimentVariables
   attr_accessor :data, :variables
+end
+
+class IllegalStateException < StandardError
 end

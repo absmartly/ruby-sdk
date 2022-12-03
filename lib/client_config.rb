@@ -18,6 +18,13 @@ class ClientConfig
     client_config
   end
 
+  def initialize(endpoint: nil, environment: nil, application: nil, api_key: nil)
+    @endpoint = endpoint
+    @environment = environment
+    @application = application
+    @api_key = api_key
+  end
+
   def context_data_deserializer
     @deserializer
   end

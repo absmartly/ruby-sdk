@@ -24,8 +24,8 @@ class DefaultHttpClient < HttpClient
     end
   end
 
-  def context_data
-  end
+  # def context_data
+  # end
 
   def get(url, query, headers)
     @session.get(url, query, headers)

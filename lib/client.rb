@@ -54,7 +54,7 @@ class Client
     @promise = @http_client.get(@url, @query, @headers)
     unless @promise.success?
       @exception = Exception.new(@promise.body)
-      return @exception
+      return self
     end
 
     content = (@promise.body || {}).to_s

@@ -8,8 +8,14 @@ class ContextConfig
     ContextConfig.new
   end
 
+  def initialize
+    @units = {}
+    @attributes = {}
+    @overrides = {}
+    @custom_assignments = {}
+  end
+
   def set_unit(unit_type, uid)
-    @units ||= {}
     @units[unit_type.to_sym] = uid
     self
   end
@@ -22,12 +28,11 @@ class ContextConfig
     @units[unit_type.to_sym]
   end
 
-  def attributes=(attributes)
+  def set_attributes(attributes)
     @attributes ||= attributes.transform_keys(&:to_sym)
   end
 
   def set_attribute(name, value)
-    @attributes ||= {}
     @attributes[name.to_sym] = value
     self
   end
@@ -36,12 +41,11 @@ class ContextConfig
     @attributes[name.to_sym]
   end
 
-  def overrides=(overrides)
-    @overrides ||= overrides.transform_keys(&:to_sym)
+  def set_overrides(overrides)
+    @overrides.merge!(overrides.transform_keys(&:to_sym))
   end
 
   def set_override(experiment_name, variant)
-    @overrides ||= {}
     @overrides[experiment_name.to_sym] = variant
     self
   end
@@ -51,8 +55,12 @@ class ContextConfig
   end
 
   def set_custom_assignment(experiment_name, variant)
-    @custom_assignments ||= {}
     @custom_assignments[experiment_name.to_sym] = variant
+    self
+  end
+
+  def set_custom_assignments(customAssignments)
+    @custom_assignments.merge!(customAssignments.transform_keys(&:to_sym))
     self
   end
 
