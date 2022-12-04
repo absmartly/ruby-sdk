@@ -4,16 +4,20 @@ require_relative "context_event_serializer"
 
 class DefaultContextEventSerializer < ContextEventSerializer
   def serialize(event)
-    req = {
-      publishedAt: event.published_at,
-      units: event.units.map do |unit|
-        {
-          type: unit.type,
-          uid: unit.uid,
-        }
-      end,
-      hashed: event.hashed
-    }
+    units = event.units.nil? ? [] : event.units.map do |unit|
+      {
+        type: unit.type,
+        uid: unit.uid,
+      }
+    end
+    req = {}
+    unless units.empty?
+      req = {
+        publishedAt: event.published_at,
+        units: units,
+        hashed: event.hashed
+      }
+    end
 
     req[:goals] = event.goals.map do |x|
       {
@@ -46,6 +50,8 @@ class DefaultContextEventSerializer < ContextEventSerializer
         setAt: x.set_at,
       }
     end unless event.attributes.nil?
+
+    return nil if req.empty?
 
     req.to_json
   end

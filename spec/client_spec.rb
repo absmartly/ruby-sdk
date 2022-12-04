@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "byebug"
 require "client"
 require "client_config"
 require "json/context_data"
@@ -46,7 +47,7 @@ RSpec.describe Client do
     }.to raise_error(ArgumentError, "Missing Environment configuration")
   end
 
-  xit "create with defaults" do
+  it "create with defaults" do
     config = ClientConfig.create
     config.endpoint = "https://localhost/v1"
     config.api_key = "test-api-key"
@@ -76,16 +77,17 @@ RSpec.describe Client do
     }
 
     expected_headers = {
+      "Content-Type": "application/json",
       "X-API-Key": "test-api-key",
+      "X-Agent": "absmartly-ruby-sdk",
       "X-Application": "website",
-      "X-Environment": "dev",
       "X-Application-Version": "0",
-      "X-Agent": "absmartly-java-sdk"
+      "X-Environment": "dev",
     }
 
     allow(ser_ctor).to receive(:serialize).with(event).and_return(publish_bytes)
 
-    allow(http_client).to receive(:get).with("https://localhost/v1/context", expected_query, nil).and_return(byte_response(data_bytes))
+    allow(http_client).to receive(:get).with("https://localhost/v1/context", expected_query, expected_headers).and_return(byte_response(data_bytes))
     allow(http_client).to receive(:put).with("https://localhost/v1/context", nil, expected_headers, publish_bytes).and_return(byte_response(data_bytes))
     allow(http_client).to receive(:close)
 
@@ -97,7 +99,7 @@ RSpec.describe Client do
     expect {
       client.close
     }.not_to raise_error
-    expect(http_client).to have_received(:get).with("https://localhost/v1/context", expected_query, nil).once
+    expect(http_client).to have_received(:get).with("https://localhost/v1/context", expected_query, expected_headers).once
     expect(http_client).to have_received(:put).with("https://localhost/v1/context", nil, expected_headers, publish_bytes).once
     expect(http_client).to have_received(:close).once
 
@@ -108,7 +110,7 @@ RSpec.describe Client do
     expect(ser_ctor).to have_received(:serialize).with(event).once
   end
 
-  xit "context_data" do
+  it "context_data" do
     http_client = HttpClient.new
     deser = ContextDataDeserializer.new
     config = ClientConfig.create
@@ -125,19 +127,62 @@ RSpec.describe Client do
       "application": "website",
       "environment": "dev"
     }
+    expected_headers = {
+      "Content-Type": "application/json",
+      "X-API-Key": "test-api-key",
+      "X-Agent": "absmartly-ruby-sdk",
+      "X-Application": "website",
+      "X-Application-Version": "0",
+      "X-Environment": "dev",
+    }
 
-    allow(http_client).to receive(:get).with("https://localhost/v1/context", expected_query, nil).and_return(byte_response(data_bytes))
+    allow(http_client).to receive(:get).with("https://localhost/v1/context", expected_query, expected_headers).and_return(byte_response(data_bytes))
 
     expected = ContextData.new
     allow(deser).to receive(:deserialize).with(data_bytes, 0, data_bytes.size).and_return(expected)
 
-    data_future = client.context_data
-    actual = data_future
-
+    result = client.context_data
+    actual = result.data_future
     expect(actual).to eq(expected)
   end
 
-  xit "context data exceptionally HTTP" do
+  it "context data exceptionally HTTP" do
+    http_client = instance_double(HttpClient)
+    deser = instance_double(ContextDataDeserializer)
+    config = ClientConfig.create
+    config.endpoint = "https://localhost/v1"
+    config.api_key = "test-api-key"
+    config.application = "website"
+    config.environment = "dev"
+    config.context_data_deserializer = deser
+
+    client = Client.create(config, http_client)
+
+    expected_query = {
+      "application": "website",
+      "environment": "dev"
+    }
+    expected_headers = {
+      "Content-Type": "application/json",
+      "X-API-Key": "test-api-key",
+      "X-Agent": "absmartly-ruby-sdk",
+      "X-Application": "website",
+      "X-Application-Version": "0",
+      "X-Environment": "dev",
+    }
+
+    allow(deser).to receive(:deserialize).and_return({})
+    allow(http_client).to receive(:get).with("https://localhost/v1/context", expected_query, expected_headers)
+                                       .and_return(DefaultHttpClient.default_response(500, "Internal Server Error", nil, nil))
+
+    result = client.context_data
+    actual = result.exception
+    expect(actual.message).to eq("Internal Server Error")
+    expect(http_client).to have_received(:get).with("https://localhost/v1/context", expected_query, expected_headers).once
+    expect(deser).to have_received(:deserialize).exactly(0).time
+  end
+
+  it "context data exceptionally connection" do
     http_client = instance_double(HttpClient)
     deser = instance_double(ContextDataDeserializer)
     config = ClientConfig.create
@@ -154,46 +199,27 @@ RSpec.describe Client do
       "environment": "dev"
     }
 
-    allow(deser).to receive(:deserialize).and_return({})
-    allow(http_client).to receive(:get).with("https://localhost/v1/context", expected_query, nil)
-                                       .and_return(DefaultHttpClient.default_response(500, "Internal Server Error", nil, nil))
-
-    data_future = client.context_data
-    actual = data_future
-    expect(actual.message).to eq("Internal Server Error")
-    expect(http_client).to have_received(:get).with("https://localhost/v1/context", expected_query, nil).once
-    expect(deser).to have_received(:deserialize).exactly(0).time
-  end
-
-  xit "context data exceptionally connection" do
-    http_client = instance_double(HttpClient)
-    deser = instance_double(ContextDataDeserializer)
-    config = ClientConfig.create
-    config.endpoint = "https://localhost/v1"
-    config.api_key = "test-api-key"
-    config.application = "website"
-    config.environment = "dev"
-    config.context_data_deserializer = deser
-
-    client = Client.create(config, http_client)
-
-    expected_query = {
-      "application": "website",
-      "environment": "dev"
+    expected_headers = {
+      "Content-Type": "application/json",
+      "X-API-Key": "test-api-key",
+      "X-Agent": "absmartly-ruby-sdk",
+      "X-Application": "website",
+      "X-Application-Version": "0",
+      "X-Environment": "dev",
     }
 
     response_future = failed_response(content: "FAILED")
     allow(deser).to receive(:deserialize).and_return({})
-    allow(http_client).to receive(:get).with("https://localhost/v1/context", expected_query, nil)
+    allow(http_client).to receive(:get).with("https://localhost/v1/context", expected_query, expected_headers)
                                        .and_return(response_future)
-    data_future = client.context_data
-    actual = data_future
+    result = client.context_data
+    actual = result.exception
     expect(actual).to eq(Exception.new("FAILED"))
-    expect(http_client).to have_received(:get).with("https://localhost/v1/context", expected_query, nil).once
+    expect(http_client).to have_received(:get).with("https://localhost/v1/context", expected_query, expected_headers).once
     expect(deser).to have_received(:deserialize).exactly(0).time
   end
 
-  xit "publish" do
+  it "publish" do
     http_client = instance_double(HttpClient)
     ser = instance_double(ContextEventSerializer)
     config = ClientConfig.create
@@ -205,11 +231,12 @@ RSpec.describe Client do
 
     client = Client.create(config, http_client)
     expected_headers = {
+      "Content-Type": "application/json",
       "X-API-Key": "test-api-key",
       "X-Application": "website",
       "X-Environment": "dev",
       "X-Application-Version": "0",
-      "X-Agent": "absmartly-java-sdk"
+      "X-Agent": "absmartly-ruby-sdk"
     }
     bytes = "0"
     event = PublishEvent.new
@@ -223,7 +250,7 @@ RSpec.describe Client do
     expect(http_client).to have_received(:put).with("https://localhost/v1/context", nil, expected_headers, bytes).once
   end
 
-  xit "publish Exceptionally HTTP" do
+  it "publish Exceptionally HTTP" do
     http_client = instance_double(HttpClient)
     ser = instance_double(ContextEventSerializer)
     config = ClientConfig.create
@@ -235,11 +262,12 @@ RSpec.describe Client do
     client = Client.create(config, http_client)
 
     expected_headers = {
+      "Content-Type": "application/json",
       "X-API-Key": "test-api-key",
       "X-Application": "website",
       "X-Environment": "dev",
       "X-Application-Version": "0",
-      "X-Agent": "absmartly-java-sdk"
+      "X-Agent": "absmartly-ruby-sdk"
     }
     event = PublishEvent.new
     bytes = "0"
@@ -252,7 +280,7 @@ RSpec.describe Client do
     expect(http_client).to have_received(:put).with("https://localhost/v1/context", nil, expected_headers, bytes).once
   end
 
-  xit "publish Exceptionally Connection" do
+  it "publish Exceptionally Connection" do
     http_client = instance_double(HttpClient)
     ser = instance_double(ContextEventSerializer)
     config = ClientConfig.create
@@ -264,11 +292,12 @@ RSpec.describe Client do
     client = Client.create(config, http_client)
 
     expected_headers = {
+      "Content-Type": "application/json",
       "X-API-Key": "test-api-key",
       "X-Application": "website",
       "X-Environment": "dev",
       "X-Application-Version": "0",
-      "X-Agent": "absmartly-java-sdk"
+      "X-Agent": "absmartly-ruby-sdk"
     }
     event = PublishEvent.new
     bytes = "0"
