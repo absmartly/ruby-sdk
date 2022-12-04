@@ -109,6 +109,8 @@ RSpec.describe Context do
   let(:variable_parser) { DefaultVariableParser.new }
   let(:audience_matcher) { AudienceMatcher.new(DefaultAudienceDeserializer.new) }
   let(:scheduler) { instance_double(ScheduledExecutorService) }
+  let(:failure) { Exception.new("FAILED") }
+  let(:failure_future) { OpenStruct.new(exception: Exception.new("FAILED"), success?: false) }
 
   def http_client_mock
     http_client = instance_double(DefaultHttpClient)
@@ -128,13 +130,13 @@ RSpec.describe Context do
     client
   end
 
-  def create_context(data_future = nil, config: nil, evt_handler: nil)
+  def create_context(data_future = nil, config: nil, evt_handler: nil, dt_provider: nil)
     if config.nil?
       config = ContextConfig.create
       config.set_units(units)
     end
 
-    Context.create(clock, config, scheduler, data_future || data_future_ready, data_provider,
+    Context.create(clock, config, scheduler, data_future || data_future_ready, dt_provider || data_provider,
                    evt_handler || event_handler, event_logger, variable_parser, audience_matcher)
   end
 
@@ -199,29 +201,27 @@ RSpec.describe Context do
     expect(context.failed?).to be_truthy
   end
 
-  # it "calls event logger when ready" do
-  #   context = create_ready_context
-  #
-  #   data_future.complete(data)
-  #
-  #   # context.waitUntilReady()
-  #   expect(event_logger).to have_received(:handle_event).with(context, ContextEventLogger::EVENT_TYPE[:ready], data).once
-  # end
+  xit "calls event logger when ready" do
+    context = create_ready_context
 
-  # it "callsEventLoggerWithCompletedFuture" do
-  #   context = create_ready_context
-  #   expect(event_logger).to have_received(:handle_event).with(context, ContextEventLogger::EVENT_TYPE[:ready], data).once
-  # end
+    data_future.complete(data)
 
-  # it "callsEventLoggerWithException" do
-  #   context = create_context(data_future)
-  #
-  #   error = Exception.new("FAILED")
-  #   data_future.completeExceptionally(error)
-  #
-  #   # context.waitUntilReady()
-  #   expect(event_logger).to have_received(:handle_event).with(context, ContextEventLogger::EVENT_TYPE[:error], data).once
-  # end
+    expect(event_logger).to have_received(:handle_event).with(context, ContextEventLogger::EVENT_TYPE[:ready], data).once
+  end
+
+  xit "callsEventLoggerWithCompletedFuture" do
+    context = create_ready_context
+    expect(event_logger).to have_received(:handle_event).with(context, ContextEventLogger::EVENT_TYPE[:ready], data).once
+  end
+
+  xit "callsEventLoggerWithException" do
+    context = create_context(data_future)
+
+    error = Exception.new("FAILED")
+    data_future.completeExceptionally(error)
+
+    expect(event_logger).to have_received(:handle_event).with(context, ContextEventLogger::EVENT_TYPE[:error], data).once
+  end
 
   it "throwsWhenNotReady" do
     context = create_context(data_future)
@@ -925,7 +925,6 @@ RSpec.describe Context do
     expect(event_logger).to have_received(:handle_event).exactly(exposures.length).time
 
     # verify not called again with the same exposure
-    # Mockito.clearInvocations(eventLogger)
     context.treatment("exp_test_ab")
     context.treatment("not_found")
 
@@ -983,138 +982,37 @@ RSpec.describe Context do
   end
 
   xit "publishCallsEventLogger" do
-    #       context = create_ready_context
-    #
-    #       context.track("goal1", { amount: 125, hours: 245 })
-    #
-    #       Mockito.clearInvocations(eventLogger)
-    #
-    #       expected = PublishEvent.new
-    #       expected.hashed = true
-    #       expected.published_at = clock_in_millis
-    #       expected.units = publish_units
-    #
-    #       expected.goals = [
-    #         GoalAchievement.new("goal1", clock_in_millis,
-    #                             new TreeMap<>({ amount: 125, hours: 245 })),
-    #     }
-    #
-    #     when(event_handler.publish(context, expected)).thenReturn(CompletableFuture.completedFuture(nil))
-    #
-    #     context.publish
-    #
-    #     verify(eventLogger, times(1)).handleEvent(any(), any(), any())
-    #     verify(eventLogger, times(1)).handleEvent(context, ContextEventLogger.EventType.Publish, expected)
+    context = create_ready_context
+
+    context.track("goal1", { amount: 125, hours: 245 })
+
+    expected = PublishEvent.new
+    expected.hashed = true
+    expected.published_at = clock_in_millis
+    expected.units = publish_units
+
+    expected.goals = [
+      GoalAchievement.new("goal1", clock_in_millis,
+                          { amount: 125, hours: 245 }),
+    ]
+    allow(event_handler).to receive(:publish).and_return(failure_future)
+
+    context.publish
+
+    expect(event_logger).to have_received(:handle_event).once
   end
 
   xit "publishCallsEventLoggerOnError" do
-    #       context = create_ready_context
-    #
-    #       context.track("goal1", { amount: 125, hours: 245 })
-    #
-    #       Mockito.clearInvocations(eventLogger)
-    #
-    #       final Exception failure = new Exception("ERROR")
-    #       when(event_handler.publish(any(), any())).thenReturn(CompletableFuture.failedFuture(failure))
-    #
-    #       final CompletionException actual = assertThrows(CompletionException.class, context::publish)
-    #       assertSame(failure, actual.getCause())
-    #
-    #       verify(eventLogger, times(1)).handleEvent(any(), any(), any())
-    #       verify(eventLogger, times(1)).handleEvent(context, ContextEventLogger.EventType.Error, failure)
-  end
+    context = create_ready_context
 
-  xit "publishResetsInternalQueuesAndKeepsAttributesOverridesAndCustomAssignments" do
-    #       final ContextConfig config = ContextConfig.create()
-    #                                                 .setUnits(units)
-    #                                                 .set_attributes(mapOf(
-    #                                                                  "attr1", "value1",
-    #                                                                  "attr2", "value2"))
-    #                                                 .setCustomAssignment("exp_test_abc", 3)
-    #                                                 .set_override("not_found", 3))
-    #
-    #       context = create_context(config, data_futureReady)
-    #
-    #       expect(context.pending_count).to eq(0)
-    #
-    #       expect(context.treatment("exp_test_ab")).to eq(1)
-    #       expect(3, context.treatment("exp_test_abc"))
-    #       expect(3, context.treatment("not_found"))
-    #       context.track("goal1", { amount: 125, hours: 245 })
-    #
-    #       expect(context.pending_count).to eq(4)
-    #
-    #       expected = PublishEvent.new
-    #       expected.hashed = true
-    #       expected.published_at = clock_in_millis
-    #       expected.units = publish_units
-    #
-    #       expected.exposures = [
-    #         Exposure.new(1, "exp_test_ab", "session_id", 1, clock_in_millis, true, true, false, false, false, false),
-    #             Exposure.new(2, "exp_test_abc", "session_id", 3, clock_in_millis, true, true, false, false, true, false),
-    #         Exposure.new(0, "not_found", nil, 3, clock_in_millis, false, true, true, false, false, false),
-    #     }
-    #
-    #     expected.goals = [
-    #       GoalAchievement.new("goal1", clock_in_millis,
-    #                           new TreeMap<>({ amount: 125, hours: 245 })),
-    #     }
-    #
-    #     expected.set_attributes( Attribute[)
-    #       new Attribute("attr2", "value2", clock_in_millis),
-    #           new Attribute("attr1", "value1", clock_in_millis),
-    #     }
-    #
-    #     when(event_handler.publish(context, expected)).thenReturn(CompletableFuture.completedFuture(nil))
-    #
-    #     final CompletableFuture<Void> future = context.publishAsync()
-    #     expect(context.pending_count).to eq(0)
-    #     expect(3, context.custom_assignment("exp_test_abc"))
-    #     expect(3, context.override("not_found"))
-    #
-    #     future.join()
-    #     expect(context.pending_count).to eq(0)
-    #     expect(3, context.custom_assignment("exp_test_abc"))
-    #     expect(3, context.override("not_found"))
-    #
-    #     expect(event_handler).to have_received(:publish).once
-    #
-    #
-    #     Mockito.clearInvocations(event_handler)
-    #
-    #     // repeat
-    #     expect(context.treatment("exp_test_ab")).to eq(1)
-    #     expect(3, context.treatment("exp_test_abc"))
-    #     expect(3, context.treatment("not_found"))
-    #     context.track("goal1", { amount: 125, hours: 245 })
-    #
-    #     expect(context.pending_count).to eq(1)
-    #
-    #     final PublishEvent expectedNext = new PublishEvent()
-    #     expectedNext.hashed = true
-    #     expectedNext.published_at = clock_in_millis
-    #     expectedNext.units = publish_units
-    #
-    #     expectedNext.goals = [
-    #       GoalAchievement.new("goal1", clock_in_millis,
-    #                           new TreeMap<>({ amount: 125, hours: 245 })),
-    #     }
-    #
-    #     expectedNext.set_attributes( Attribute[)
-    #       new Attribute("attr2", "value2", clock_in_millis),
-    #           new Attribute("attr1", "value1", clock_in_millis),
-    #     }
-    #
-    #     when(event_handler.publish(context, expectedNext)).thenReturn(CompletableFuture.completedFuture(nil))
-    #
-    #     final CompletableFuture<Void> futureNext = context.publishAsync()
-    #     expect(context.pending_count).to eq(0)
-    #
-    #     futureNext.join()
-    #     expect(context.pending_count).to eq(0)
-    #
-    #     expect(event_handler).to have_received(:publish).once
-    #     verify(event_handler, times(1)).publish(context, expectedNext)
+    context.track("goal1", { amount: 125, hours: 245 })
+
+    allow(event_handler).to receive(:publish).and_return(failure_future)
+
+    actual = context.publish
+    expect(actual).to eq(failure)
+
+    expect(event_logger).to have_received(:handle_event).once
   end
 
   it "publish Does Not Call event handler When Failed" do
@@ -1142,8 +1040,6 @@ RSpec.describe Context do
 
     expect(context.pending_count).to eq(1)
 
-    failure = Exception.new("FAILED")
-    failure_future = OpenStruct.new(exception: Exception.new("FAILED"), success?: false)
     allow(ev).to receive(:publish).and_return(failure_future)
     actual = context.publish
 
@@ -1151,415 +1047,28 @@ RSpec.describe Context do
     expect(ev).to have_received(:publish).once
   end
 
-  xit "close" do
-    #       context = create_ready_context
-    #       expect(context.ready?).to be_truthy
-    #
-    #       context.track(" goal1 ", mapOf(" amount ", 125, " hours ", 245))
-    #
-    #       final CompletableFuture<Void> publish_future = new CompletableFuture<>()
-    #       when(event_handler.publish(any(), any())).thenReturn(publish_future)
-    #
-    #       expect(context.closed?).to be_falsey
-    #
-    #       final Thread publisher = new Thread(() -> publish_future.complete(nil))
-    #       publisher.start()
-    #
-    #       context.close
-    #       publisher.join()
-    #
-    #       expect(context.closed?).to be_truthy
-    #
-    #       expect(event_handler).to have_received(:publish).once
-    #
-    #       context.close
+  it "close" do
+    context = create_ready_context
+    expect(context.ready?).to be_truthy
+
+    context.track(" goal1 ", { amount: 125, hours: 245 })
+
+    expect(context.closed?).to be_falsey
+
+    context.close
+
+    expect(context.closed?).to be_truthy
+
+    expect(event_handler).to have_received(:publish).once
   end
 
-  xit " closeCallsEventLogger" do
-    #       context = create_ready_context
-    #
-    #       Mockito.clearInvocations(eventLogger)
-    #
-    #       context.close
-    #
-    #       verify(eventLogger, times(1)).handleEvent(any(), any(), any())
-    #       verify(eventLogger, times(1)).handleEvent(context, ContextEventLogger.EventType.Close, nil)
-  end
+  it " refresh " do
+    context = create_context(refresh_data_future_ready, dt_provider: refresh_data_provider)
+    expect(context.ready?).to be_truthy
 
-  xit "closeCallsEventLoggerWithPendingEvents" do
-    #       context = create_ready_context
-    #
-    #       context.track(" goal1 ", mapOf(" amount ", 125, " hours ", 245))
-    #
-    #       Mockito.clearInvocations(eventLogger)
-    #
-    #       expected = PublishEvent.new
-    #       expected.hashed = true
-    #       expected.published_at = clock_in_millis
-    #       expected.units = publish_units
-    #
-    #       expected.goals = [
-    #         GoalAchievement.new(" goal1 ", clock_in_millis,
-    #                             new TreeMap<>(mapOf(" amount ", 125, " hours ", 245))),
-    #     }
-    #
-    #     final CompletableFuture<Void> publish_future = new CompletableFuture<>()
-    #     when(event_handler.publish(any(), any())).thenReturn(publish_future)
-    #
-    #     final Thread publisher = new Thread(() -> publish_future.complete(nil))
-    #     publisher.start()
-    #
-    #     context.close
-    #     publisher.join()
-    #
-    #     verify(eventLogger, times(2)).handleEvent(any(), any(), any())
-    #     verify(eventLogger, times(1)).handleEvent(context, ContextEventLogger.EventType.Publish, expected)
-    #     verify(eventLogger, times(1)).handleEvent(context, ContextEventLogger.EventType.Close, nil)
-  end
+    context.refresh
 
-  xit " closeCallsEventLoggerOnError" do
-    #       context = create_ready_context
-    #
-    #       context.track("goal1", { amount: 125, hours: 245 })
-    #
-    #       Mockito.clearInvocations(eventLogger)
-    #
-    #       final CompletableFuture<Void> publish_future = new CompletableFuture<>()
-    #       when(event_handler.publish(any(), any())).thenReturn(publish_future)
-    #
-    #       final Exception failure = new Exception("FAILED")
-    #       final Thread publisher = new Thread(() -> publish_future.completeExceptionally(failure))
-    #       publisher.start()
-    #
-    #       final CompletionException actual = assertThrows(CompletionException.class, context::close)
-    #       assertSame(failure, actual.getCause())
-    #
-    #       publisher.join()
-    #
-    #       verify(eventLogger, times(1)).handleEvent(any(), any(), any())
-    #       verify(eventLogger, times(1)).handleEvent(context, ContextEventLogger.EventType.Error, failure)
-  end
-
-  xit "closeExceptionally" do
-    #       context = create_ready_context
-    #       expect(context.ready?).to be_truthy
-    #
-    #       context.track(" goal1 ", mapOf(" amount ", 125, " hours ", 245))
-    #
-    #       final CompletableFuture<Void> publish_future = new CompletableFuture<>()
-    #       when(event_handler.publish(any(), any())).thenReturn(publish_future)
-    #
-    #       final Exception failure = new Exception(" FAILED ")
-    #       final Thread publisher = new Thread(() -> publish_future.completeExceptionally(failure))
-    #       publisher.start()
-    #
-    #       final CompletionException actual = assertThrows(CompletionException.class, context::close)
-    #       assertSame(failure, actual.getCause())
-    #
-    #       publisher.join()
-    #
-    #       expect(event_handler).to have_received(:publish).once
-  end
-
-  xit " refresh " do
-    #       context = create_ready_context
-    #       expect(context.ready?).to be_truthy
-    #
-    #       when(dataProvider.getContextData()).thenReturn(refreshdata_future)
-    #       refreshdata_future.complete(refreshData)
-    #
-    #       context.refresh()
-    #
-    #       verify(dataProvider, times(1)).getContextData()
-    #
-    #       final String[] experiments = Arrays.stream(refreshData.experiments).map(x -> x.name).toArray(String[]::new)
-    #       assertArrayEquals(experiments, context.getExperiments())
-  end
-
-  xit " refreshCallsEventLogger " do
-    #       context = create_ready_context
-    #       Mockito.clearInvocations(eventLogger)
-    #
-    #       when(dataProvider.getContextData()).thenReturn(refreshdata_future)
-    #       refreshdata_future.complete(refreshData)
-    #
-    #       context.refresh()
-    #
-    #       verify(eventLogger, times(1)).handleEvent(context, ContextEventLogger.EventType.Refresh, refreshData)
-  end
-
-  xit " refreshCallsEventLoggerOnError " do
-    #       context = create_ready_context
-    #       Mockito.clearInvocations(eventLogger)
-    #
-    #       final Exception failure = new Exception(" ERROR ")
-    #       when(dataProvider.getContextData()).thenReturn(CompletableFuture.failedFuture(failure))
-    #       refreshdata_future.complete(refreshData)
-    #
-    #       final CompletionException actual = assertThrows(CompletionException.class, context::refresh)
-    #       assertSame(failure, actual.getCause())
-    #
-    #       verify(eventLogger, times(1)).handleEvent(context, ContextEventLogger.EventType.Error, failure)
-  end
-
-  xit " refreshExceptionally " do
-    #       context = create_ready_context
-    #       expect(context.ready?).to be_truthy
-    #       expect(context.failed?).to be_falsey
-    #
-    #       context.track(" goal1 ", mapOf(" amount ", 125, " hours ", 245))
-    #
-    #       expect(context.pending_count).to eq(1)
-    #
-    #       final Exception failure = new Exception(" FAILED ")
-    #       when(dataProvider.getContextData()).thenReturn(failedFuture(failure))
-    #
-    #       final CompletionException actual = assertThrows(CompletionException.class, context::refresh)
-    #       assertSame(failure, actual.getCause())
-    #
-    #       verify(dataProvider, times(1)).getContextData()
-  end
-
-  xit " refreshKeepsAssignmentCacheWhenNotChanged " do
-    #       context = create_ready_context
-    #       expect(context.ready?).to be_truthy
-    #
-    #       Arrays.stream(data.experiments).forEach(experiment -> context.treatment(experiment.name))
-    #       context.treatment(" not_found ")
-    #
-    #       expect(data.experiments.length + 1, context.pending_count)
-    #
-    #       when(dataProvider.getContextData()).thenReturn(refreshdata_future)
-    #
-    #       final CompletableFuture<Void> refreshFuture = context.refreshAsync()
-    #
-    #       verify(dataProvider, times(1)).getContextData()
-    #
-    #       refreshdata_future.complete(refreshData)
-    #       refreshFuture.join()
-    #
-    #       Arrays.stream(refreshData.experiments).forEach(experiment -> context.treatment(experiment.name))
-    #       context.treatment(" not_found ")
-    #
-    #       expect(refreshData.experiments.length + 1, context.pending_count)
-  end
-
-  xit " refreshKeepsAssignmentCacheWhenNotChangedOnAudienceMismatch " do
-    #       context = create_context(audience_strict_data_future_ready)
-    #
-    #       expect(0, context.treatment(" exp_test_ab "))
-    #
-    #       expect(context.pending_count).to eq(1)
-    #
-    #       when(dataProvider.getContextData()).thenReturn(audience_strict_data_future_ready)
-    #
-    #       final CompletableFuture<Void> refreshFuture = context.refreshAsync()
-    #
-    #       verify(dataProvider, times(1)).getContextData()
-    #
-    #       refreshFuture.join()
-    #
-    #       expect(0, context.treatment(" exp_test_ab "))
-    #
-    #       expect(context.pending_count).to eq(1) // no Exposure.new
-  end
-
-  xit " refreshKeepsAssignmentCacheWhenNotChangedWithOverride " do
-    #       context = create_ready_context
-    #
-    #       context.set_override(" exp_test_ab ", 3))
-    #       expect(3, context.treatment(" exp_test_ab "))
-    #
-    #       expect(context.pending_count).to eq(1)
-    #
-    #       when(dataProvider.getContextData()).thenReturn(data_futureReady)
-    #
-    #       final CompletableFuture<Void> refreshFuture = context.refreshAsync()
-    #
-    #       verify(dataProvider, times(1)).getContextData()
-    #
-    #       refreshFuture.join()
-    #
-    #       expect(3, context.treatment(" exp_test_ab "))
-    #
-    #       expect(context.pending_count).to eq(1) // no Exposure.new
-  end
-
-  xit " refreshClearAssignmentCacheForStoppedExperiment " do
-    #       context = create_ready_context
-    #       expect(context.ready?).to be_truthy
-    #
-    #       final String experiment_name = " exp_test_abc "
-    #       expect(expected_variants.get(experiment_name), context.treatment(experiment_name))
-    #       expect(0, context.treatment(" not_found "))
-    #
-    #       expect(context.pending_count).to eq(2)
-    #
-    #       when(dataProvider.getContextData()).thenReturn(refreshdata_future)
-    #
-    #       final CompletableFuture<Void> refreshFuture = context.refreshAsync()
-    #
-    #       verify(dataProvider, times(1)).getContextData()
-    #
-    #       refreshData.experiments = Arrays.stream(refreshData.experiments).filter(x -> !x.name.equals(experiment_name))
-    #       .toArray(Experiment[]::new)
-    #
-    #       refreshdata_future.complete(refreshData)
-    #       refreshFuture.join()
-    #
-    #       expect(0, context.treatment(experiment_name))
-    #       expect(0, context.treatment(" not_found "))
-    #
-    #       expect(3, context.pending_count) // stopped experiment triggered a Exposure.new
-  end
-
-  xit " refreshClearAssignmentCacheForStartedExperiment " do
-    #       context = create_ready_context
-    #       expect(context.ready?).to be_truthy
-    #
-    #       final String experiment_name = " exp_test_new "
-    #       expect(0, context.treatment(experiment_name))
-    #       expect(0, context.treatment(" not_found "))
-    #
-    #       expect(context.pending_count).to eq(2)
-    #
-    #       when(dataProvider.getContextData()).thenReturn(refreshdata_future)
-    #
-    #       final CompletableFuture<Void> refreshFuture = context.refreshAsync()
-    #
-    #       verify(dataProvider, times(1)).getContextData()
-    #
-    #       refreshdata_future.complete(refreshData)
-    #       refreshFuture.join()
-    #
-    #       expect(expected_variants.get(experiment_name), context.treatment(experiment_name))
-    #       expect(0, context.treatment(" not_found "))
-    #
-    #       expect(3, context.pending_count) // stopped experiment triggered a Exposure.new
-  end
-
-  xit " refreshClearAssignmentCacheForFullOnExperiment " do
-    #       context = create_ready_context
-    #       expect(context.ready?).to be_truthy
-    #
-    #       final String experiment_name = " exp_test_abc "
-    #       expect(expected_variants.get(experiment_name), context.treatment(experiment_name))
-    #       expect(0, context.treatment(" not_found "))
-    #
-    #       expect(context.pending_count).to eq(2)
-    #
-    #       when(dataProvider.getContextData()).thenReturn(refreshdata_future)
-    #
-    #       final CompletableFuture<Void> refreshFuture = context.refreshAsync()
-    #
-    #       verify(dataProvider, times(1)).getContextData()
-    #
-    #       Arrays.stream(refreshData.experiments).filter(x -> x.name.equals(experiment_name)).forEach(experiment -> {
-    #         expect(0, experiment.fullOnVariant)
-    #         experiment.fullOnVariant = 1
-    #         assertNotEquals(expected_variants.get(experiment.name), experiment.fullOnVariant)
-    #       })
-    #
-    #       refreshdata_future.complete(refreshData)
-    #       refreshFuture.join()
-    #
-    #       expect(1, context.treatment(experiment_name))
-    #       expect(0, context.treatment(" not_found "))
-    #
-    #       expect(3, context.pending_count) // full-on experiment triggered a Exposure.new
-  end
-
-  xit " refreshClearAssignmentCacheForTrafficSplitChange " do
-    #       context = create_ready_context
-    #       expect(context.ready?).to be_truthy
-    #
-    #       final String experiment_name = " exp_test_not_eligible "
-    #       expect(expected_variants.get(experiment_name), context.treatment(experiment_name))
-    #       expect(0, context.treatment(" not_found "))
-    #
-    #       expect(context.pending_count).to eq(2)
-    #
-    #       when(dataProvider.getContextData()).thenReturn(refreshdata_future)
-    #
-    #       final CompletableFuture<Void> refreshFuture = context.refreshAsync()
-    #
-    #       verify(dataProvider, times(1)).getContextData()
-    #
-    #       Arrays.stream(refreshData.experiments).filter(x -> x.name.equals(experiment_name))
-    #             .forEach(experiment -> experiment.trafficSplit = new double[]{0.0, 1.0})
-    #
-    #     refreshdata_future.complete(refreshData)
-    #     refreshFuture.join()
-    #
-    #     expect(2, context.treatment(experiment_name))
-    #     expect(0, context.treatment(" not_found "))
-    #
-    #     expect(3, context.pending_count) // newly eligible experiment triggered a Exposure.new
-  end
-
-  xit " refreshClearAssignmentCacheForIterationChange " do
-    #       context = create_ready_context
-    #       expect(context.ready?).to be_truthy
-    #
-    #       final String experiment_name = " exp_test_abc "
-    #       expect(expected_variants.get(experiment_name), context.treatment(experiment_name))
-    #       expect(0, context.treatment(" not_found "))
-    #
-    #       expect(context.pending_count).to eq(2)
-    #
-    #       when(dataProvider.getContextData()).thenReturn(refreshdata_future)
-    #
-    #       final CompletableFuture<Void> refreshFuture = context.refreshAsync()
-    #
-    #       verify(dataProvider, times(1)).getContextData()
-    #
-    #       Arrays.stream(refreshData.experiments).filter(x -> x.name.equals(experiment_name)).forEach(experiment -> {
-    #         experiment.iteration = 2
-    #         experiment.trafficSeedHi = 54870830
-    #         experiment.trafficSeedLo = 398724581
-    #         experiment.seedHi = 77498863
-    #         experiment.seedLo = 34737352
-    #       })
-    #
-    #       refreshdata_future.complete(refreshData)
-    #       refreshFuture.join()
-    #
-    #       expect(2, context.treatment(experiment_name))
-    #       expect(0, context.treatment(" not_found "))
-    #
-    #       expect(3, context.pending_count) // full-on experiment triggered a Exposure.new
-  end
-
-  xit " refreshClearAssignmentCacheForExperimentIdChange " do
-    #       context = create_ready_context
-    #       expect(context.ready?).to be_truthy
-    #
-    #       final String experiment_name = " exp_test_abc "
-    #       expect(expected_variants.get(experiment_name), context.treatment(experiment_name))
-    #       expect(0, context.treatment(" not_found "))
-    #
-    #       expect(context.pending_count).to eq(2)
-    #
-    #       when(dataProvider.getContextData()).thenReturn(refreshdata_future)
-    #
-    #       final CompletableFuture<Void> refreshFuture = context.refreshAsync()
-    #
-    #       verify(dataProvider, times(1)).getContextData()
-    #
-    #       Arrays.stream(refreshData.experiments).filter(x -> x.name.equals(experiment_name)).forEach(experiment -> {
-    #         experiment.id = 11
-    #         experiment.trafficSeedHi = 54870830
-    #         experiment.trafficSeedLo = 398724581
-    #         experiment.seedHi = 77498863
-    #         experiment.seedLo = 34737352
-    #       })
-    #
-    #       refreshdata_future.complete(refreshData)
-    #       refreshFuture.join()
-    #
-    #       expect(2, context.treatment(experiment_name))
-    #       expect(0, context.treatment(" not_found "))
-    #
-    #       expect(3, context.pending_count) // full-on experiment triggered a Exposure.new
+    experiments = refresh_data.experiments.map { |x| x.name }
+    expect(context.experiments).to eq(experiments)
   end
 end
