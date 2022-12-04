@@ -3,18 +3,19 @@
 # $:.push File.expand_path("../lib", __FILE__)
 require File.expand_path("lib/absmartly/version", __dir__)
 Gem::Specification.new do |spec|
-  spec.name = "absmartly"
+  spec.name = "absmartly-sdk"
   spec.version = Absmartly::VERSION
   spec.authors = ["absmartly"]
-  spec.email = ["hi@absmartly.ir"]
+  spec.email = ["sdks@absmartly.com"]
 
   spec.summary = "Absmartly gem"
   spec.description = "Absmartly gem"
-  spec.homepage = "https://github.com/absmartly/ruby-sdk"
-  spec.license = "MIT"
-  spec.required_ruby_version = ">= 2.6.0"
 
-  spec.metadata["allowed_push_host"] = "https://github.com/absmartly/ruby-sdk"
+  spec.homepage = "https://github.com/absmartly/ruby-sdk"
+
+  spec.license = "MIT"
+  spec.required_ruby_version = ">= 2.7.0"
+  spec.extra_rdoc_files = ['README']
 
   spec.metadata["homepage_uri"] = spec.homepage
   spec.metadata["source_code_uri"] = "https://github.com/absmartly/ruby-sdk"

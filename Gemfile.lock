@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    absmartly (0.1.0)
+    absmartly-sdk (0.1.2)
 
 GEM
   remote: https://rubygems.org/
@@ -78,7 +78,7 @@ PLATFORMS
   x86_64-darwin-20
 
 DEPENDENCIES
-  absmartly!
+  absmartly-sdk!
   arraybuffer
   byebug
   faraday
