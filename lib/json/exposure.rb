@@ -8,7 +8,7 @@ class Exposure
                  exposed_at = nil, assigned = nil, eligible = nil,
                  overridden = nil, full_on = nil, custom = nil,
                  audience_mismatch = nil)
-    @id = id
+    @id = id || 0
     @name = name
     @unit = unit
     @variant = variant

@@ -157,11 +157,11 @@ class Context
       assignment.exposed = true
 
       exposure = Exposure.new
-      exposure.id = assignment.id
+      exposure.id = assignment.id || 0
       exposure.name = assignment.name
       exposure.unit = assignment.unit_type
       exposure.variant = assignment.variant
-      exposure.exposed_at = @clock
+      exposure.exposed_at = @clock.to_i
       exposure.assigned = assignment.assigned
       exposure.eligible = assignment.eligible
       exposure.overridden = assignment.overridden
@@ -282,11 +282,11 @@ class Context
             event.hashed = true
             event.published_at = @clock.to_i
             event.units = @units.map do |key, value|
-              Unit.new(key, unit_hash(key, value))
+              Unit.new(key.to_s, unit_hash(key, value))
             end
-            event.attributes = @attributes.empty? ? nil : @attributes
             event.exposures = exposures
-            event.goals = achievements
+            event.attributes = @attributes unless @attributes.empty?
+            event.goals = achievements unless achievements.nil?
             return @event_handler.publish(self, event)
           end
         end
@@ -365,7 +365,7 @@ class Context
               hash
             end
             match = @audience_matcher.evaluate(experiment.data.audience, attrs)
-            if match.nil? || !match.result
+            if match && !match.result
               assignment.audience_mismatch = true
             end
           end
