@@ -61,13 +61,13 @@ RSpec.describe Context do
   }
   let(:publish_units) {
     [
-      Unit.new("user_id", "JfnnlDI7RTiF9RgfG2JNCw"),
       Unit.new("session_id", "pAE3a1i5Drs5mKRNq56adA"),
+      Unit.new("user_id", "JfnnlDI7RTiF9RgfG2JNCw"),
       Unit.new("email", "IuqYkNRfEx5yClel4j3NbA")
     ]
   }
   let(:clock) { Time.at(1620000000000 / 1000) }
-  let(:clock_in_millis) { 1620000000000 }
+  let(:clock_in_millis) { clock.to_i }
 
   let(:descr) { DefaultContextDataDeserializer.new }
   let(:json) { resource("context.json") }
@@ -619,6 +619,7 @@ RSpec.describe Context do
     context.publish
 
     expect(event_handler).to have_received(:publish).once
+    expect(event_handler).to have_received(:publish).with(context, expected).once
   end
 
   it "getVariableValueQueuesExposureWithAudienceMismatchTrueOnAudienceMismatch" do
@@ -646,6 +647,7 @@ RSpec.describe Context do
     context.publish
 
     expect(event_handler).to have_received(:publish).once
+    expect(event_handler).to have_received(:publish).with(context, expected).once
   end
 
   it "getVariableValueQueuesExposureWithAudienceMismatchFalseAndControlVariantOnAudienceMismatchInStrictMode" do
@@ -674,6 +676,7 @@ RSpec.describe Context do
     context.publish
 
     expect(event_handler).to have_received(:publish).once
+    expect(event_handler).to have_received(:publish).with(context, expected).once
   end
 
   xit "getVariableValueCallsEventLogger" do
@@ -736,7 +739,7 @@ RSpec.describe Context do
   end
 
   it "treatment" do
-    context = create_ready_context
+    context = create_ready_context(evt_handler: event_handler)
 
     data.experiments.each do |experiment|
       expect(context.treatment(experiment.name)).to eq(expected_variants[experiment.name.to_sym])
@@ -765,14 +768,13 @@ RSpec.describe Context do
     allow(event_handler).to receive(:publish).and_return(publish_future)
 
     context.publish
-
     expect(event_handler).to have_received(:publish).once
-
+    expect(event_handler).to have_received(:publish).with(context, expected).once
     context.close
   end
 
   it "treatmentReturnsOverrideVariant" do
-    context = create_ready_context
+    context = create_ready_context(evt_handler: event_handler)
 
     data.experiments.each do |experiment|
       context.set_override(experiment.name, 11 + expected_variants[experiment.name.to_s.to_sym])
@@ -805,6 +807,7 @@ RSpec.describe Context do
     context.publish
 
     expect(event_handler).to have_received(:publish).once
+    expect(event_handler).to have_received(:publish).with(context, expected).once
     context.close
   end
 
@@ -836,7 +839,7 @@ RSpec.describe Context do
   end
 
   it "treatmentQueuesExposureWithAudienceMismatchFalseOnAudienceMatch" do
-    context = create_context(audience_data_future_ready)
+    context = create_context(audience_data_future_ready, evt_handler: event_handler)
     context.set_attribute("age", 21)
 
     expect(context.treatment("exp_test_ab")).to eq(1)
@@ -859,6 +862,7 @@ RSpec.describe Context do
     context.publish
 
     expect(event_handler).to have_received(:publish).once
+    expect(event_handler).to have_received(:publish).with(context, expected).once
   end
 
   it "treatmentQueuesExposureWithAudienceMismatchTrueOnAudienceMismatch" do
@@ -885,6 +889,7 @@ RSpec.describe Context do
     context.publish
 
     expect(event_handler).to have_received(:publish).once
+    expect(event_handler).to have_received(:publish).with(context, expected).once
   end
 
   it "treatmentQueuesExposureWithAudienceMismatchTrueAndControlVariantOnAudienceMismatchInStrictMode" do
@@ -909,6 +914,7 @@ RSpec.describe Context do
 
     context.publish
     expect(event_handler).to have_received(:publish).once
+    expect(event_handler).to have_received(:publish).with(context, expected).once
   end
 
   xit "treatmentCallsEventLogger" do
@@ -959,6 +965,7 @@ RSpec.describe Context do
     context.publish
 
     expect(event_handler).to have_received(:publish).once
+    expect(event_handler).to have_received(:publish).with(context, expected).once
 
     context.close
   end
@@ -1000,6 +1007,7 @@ RSpec.describe Context do
     context.publish
 
     expect(event_logger).to have_received(:handle_event).once
+    expect(event_handler).to have_received(:publish).with(context, expected).once
   end
 
   xit "publishCallsEventLoggerOnError" do
