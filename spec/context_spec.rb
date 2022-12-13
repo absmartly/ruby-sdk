@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "byebug"
 require "context"
 require "context_config"
 require "default_context_data_deserializer"
