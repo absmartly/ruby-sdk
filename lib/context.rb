@@ -11,13 +11,13 @@ require_relative "json/goal_achievement"
 class Context
   attr_reader :data, :pending_count
 
-  def self.create(clock, config, scheduler, data_future, data_provider,
+  def self.create(clock, config, data_future, data_provider,
                   event_handler, event_logger, variable_parser, audience_matcher)
-    Context.new(clock, config, scheduler, data_future, data_provider,
+    Context.new(clock, config, data_future, data_provider,
                 event_handler, event_logger, variable_parser, audience_matcher)
   end
 
-  def initialize(clock, config, scheduler, data_future, data_provider,
+  def initialize(clock, config, data_future, data_provider,
                  event_handler, event_logger, variable_parser, audience_matcher)
     @index = []
     @achievements = []
@@ -31,7 +31,6 @@ class Context
     @data_provider = data_provider
     @variable_parser = variable_parser
     @audience_matcher = audience_matcher
-    @scheduler = scheduler
     @closed = false
 
     @units = {}
@@ -49,8 +48,10 @@ class Context
     set_custom_assignments(config.custom_assignments) if config.custom_assignments
     if data_future.success?
       assign_data(data_future.data_future)
+      log_event(ContextEventLogger::EVENT_TYPE::READY, data_future.data_future)
     else
       set_data_failed(data_future.exception)
+      log_error(data_future.exception)
     end
   end
 
@@ -171,6 +172,7 @@ class Context
 
       @pending_count += 1
       @exposures.push(exposure)
+      log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposure)
     end
   end
 
@@ -221,6 +223,7 @@ class Context
 
     @pending_count += 1
     @achievements.push(achievement)
+    log_event(ContextEventLogger::EVENT_TYPE::GOAL, achievement)
   end
 
   def publish
@@ -236,8 +239,10 @@ class Context
       data_future = @data_provider.context_data
       if data_future.success?
         assign_data(data_future.data_future)
+        log_event(ContextEventLogger::EVENT_TYPE::REFRESH, data_future.data_future)
       else
         set_data_failed(data_future.exception)
+        log_error(data_future.exception)
       end
     end
   end
@@ -248,6 +253,7 @@ class Context
         flush
       end
       @closed = true
+      log_event(ContextEventLogger::EVENT_TYPE::CLOSE, nil)
     end
   end
 
@@ -287,6 +293,7 @@ class Context
             event.exposures = exposures
             event.attributes = @attributes unless @attributes.empty?
             event.goals = achievements unless achievements.nil?
+            log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
             return @event_handler.publish(self, event)
           end
         end
@@ -294,6 +301,7 @@ class Context
         @exposures = []
         @achievements = []
         @pending_count = 0
+        return @data_failed
       end
     end
 
@@ -471,6 +479,18 @@ class Context
       @failed = true
     end
 
+    def log_event(event, data)
+      unless @event_logger.nil?
+        @event_logger.handle_event(event, data);
+      end
+    end
+
+    def log_error(error)
+      unless @event_logger.nil?
+        @event_logger.handle_event(ContextEventLogger::EVENT_TYPE::ERROR, error.message);
+      end
+    end
+
     attr_accessor :clock,
                   :publish_delay,
                   :event_handler,
@@ -478,7 +498,6 @@ class Context
                   :data_provider,
                   :variable_parser,
                   :audience_matcher,
-                  :scheduler,
                   :units,
                   :failed,
                   :data_lock,

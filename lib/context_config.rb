@@ -67,4 +67,14 @@ class ContextConfig
   def custom_assignment(experiment_name)
     @custom_assignments[experiment_name.to_sym]
   end
+
+
+  def set_event_logger(event_logger)
+    @event_logger = event_logger
+    self
+  end
+
+  def event_logger
+    @event_logger
+  end
 end

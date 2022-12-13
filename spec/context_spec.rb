@@ -105,12 +105,15 @@ RSpec.describe Context do
     allow(ev).to receive(:publish).and_return(publish_future)
     ev
   end
-  let(:event_logger) { instance_double(ContextEventLogger) }
+  let(:event_logger) do
+    event_logger = MockContextEventLoggerProxy.new
+    allow(event_logger).to receive(:handle_event).and_return(nil)
+    event_logger
+  end
   let(:variable_parser) { DefaultVariableParser.new }
   let(:audience_matcher) { AudienceMatcher.new(DefaultAudienceDeserializer.new) }
-  let(:scheduler) { instance_double(ScheduledExecutorService) }
   let(:failure) { Exception.new("FAILED") }
-  let(:failure_future) { OpenStruct.new(exception: Exception.new("FAILED"), success?: false) }
+  let(:failure_future) { OpenStruct.new(exception: failure, success?: false, data_future: nil) }
 
   def http_client_mock
     http_client = instance_double(DefaultHttpClient)
@@ -126,7 +129,7 @@ RSpec.describe Context do
 
   def failed_client_mock
     client = instance_double(Client)
-    allow(client).to receive(:context_data).and_return(OpenStruct.new(exception: Exception.new("Failed"), success?: false, data_future: nil))
+    allow(client).to receive(:context_data).and_return(failure_future)
     client
   end
 
@@ -136,7 +139,7 @@ RSpec.describe Context do
       config.set_units(units)
     end
 
-    Context.create(clock, config, scheduler, data_future || data_future_ready, dt_provider || data_provider,
+    Context.create(clock, config, data_future || data_future_ready, dt_provider || data_provider,
                    evt_handler || event_handler, event_logger, variable_parser, audience_matcher)
   end
 
@@ -144,7 +147,7 @@ RSpec.describe Context do
     config = ContextConfig.create
     config.set_units(units)
 
-    Context.create(clock, config, scheduler, data_future_ready, data_provider,
+    Context.create(clock, config, data_future_ready, data_provider,
                    evt_handler || event_handler, event_logger, variable_parser, audience_matcher)
   end
 
@@ -152,7 +155,7 @@ RSpec.describe Context do
     config = ContextConfig.create
     config.set_units(units)
 
-    Context.create(clock, config, scheduler, data_future_failed, failed_data_provider,
+    Context.create(clock, config, data_future_failed, failed_data_provider,
                    event_handler, event_logger, variable_parser, audience_matcher)
   end
 
@@ -201,26 +204,16 @@ RSpec.describe Context do
     expect(context.failed?).to be_truthy
   end
 
-  xit "calls event logger when ready" do
+  it "calls event logger when ready" do
     context = create_ready_context
 
-    data_future.complete(data)
-
-    expect(event_logger).to have_received(:handle_event).with(context, ContextEventLogger::EVENT_TYPE[:ready], data).once
+    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::READY, data).once
   end
 
-  xit "callsEventLoggerWithCompletedFuture" do
-    context = create_ready_context
-    expect(event_logger).to have_received(:handle_event).with(context, ContextEventLogger::EVENT_TYPE[:ready], data).once
-  end
+  it "callsEventLoggerWithException" do
+    context = create_context(data_future_failed)
 
-  xit "callsEventLoggerWithException" do
-    context = create_context(data_future)
-
-    error = Exception.new("FAILED")
-    data_future.completeExceptionally(error)
-
-    expect(event_logger).to have_received(:handle_event).with(context, ContextEventLogger::EVENT_TYPE[:error], data).once
+    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::ERROR, "FAILED").once
   end
 
   it "throwsWhenNotReady" do
@@ -679,9 +672,10 @@ RSpec.describe Context do
     expect(event_handler).to have_received(:publish).with(context, expected).once
   end
 
-  xit "getVariableValueCallsEventLogger" do
+  it "getVariableValueCallsEventLogger" do
     context = create_ready_context
 
+    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::READY, data).once
     context.variable_value("banner.border", nil)
     context.variable_value("banner.size", nil)
 
@@ -689,13 +683,13 @@ RSpec.describe Context do
       Exposure.new(1, "exp_test_ab", "session_id", 1, clock_in_millis, true, true, false, false, false, false),
     ]
 
-    expect(event_logger).to have_received(:handle_event).exactly(exposures.length).time
+    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposures.first).exactly(exposures.length).time
 
-    # verify not called again with the same exposure
+    event_logger.clear
     context.variable_value("banner.border", nil)
     context.variable_value("banner.size", nil)
 
-    expect(event_handler).to have_received(:handle_event).exactly(0).time
+    expect(event_logger.called).to eq(0)
   end
 
   it "getVariableKeys" do
@@ -917,8 +911,10 @@ RSpec.describe Context do
     expect(event_handler).to have_received(:publish).with(context, expected).once
   end
 
-  xit "treatmentCallsEventLogger" do
+  it "treatmentCallsEventLogger" do
+    event_logger.clear
     context = create_ready_context
+    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::READY, data).once
 
     context.treatment("exp_test_ab")
     context.treatment("not_found")
@@ -928,13 +924,14 @@ RSpec.describe Context do
       Exposure.new(0, "not_found", nil, 0, clock_in_millis, false, true, false, false, false, false),
     ]
 
-    expect(event_logger).to have_received(:handle_event).exactly(exposures.length).time
+    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposures[0]).once
+    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposures[1]).once
 
-    # verify not called again with the same exposure
+    event_logger.clear
     context.treatment("exp_test_ab")
     context.treatment("not_found")
 
-    expect(event_logger).to have_received(:handle_event).exactly(0).time
+    expect(event_logger.called).to eq(0)
   end
 
   it "track" do
@@ -988,8 +985,10 @@ RSpec.describe Context do
     expect(event_handler).to have_received(:publish).exactly(0).time
   end
 
-  xit "publishCallsEventLogger" do
+  it "publishCallsEventLogger" do
+    event_logger.clear
     context = create_ready_context
+    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::READY, data).once
 
     context.track("goal1", { amount: 125, hours: 245 })
 
@@ -1006,21 +1005,20 @@ RSpec.describe Context do
 
     context.publish
 
-    expect(event_logger).to have_received(:handle_event).once
+    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::PUBLISH, expected).once
     expect(event_handler).to have_received(:publish).with(context, expected).once
   end
 
-  xit "publishCallsEventLoggerOnError" do
-    context = create_ready_context
+  it "publishCallsEventLoggerOnError" do
+    context = create_context(data_future_failed)
 
     context.track("goal1", { amount: 125, hours: 245 })
 
     allow(event_handler).to receive(:publish).and_return(failure_future)
-
     actual = context.publish
     expect(actual).to eq(failure)
 
-    expect(event_logger).to have_received(:handle_event).once
+    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::ERROR, "FAILED").once
   end
 
   it "publish Does Not Call event handler When Failed" do
@@ -1078,5 +1076,25 @@ RSpec.describe Context do
 
     experiments = refresh_data.experiments.map { |x| x.name }
     expect(context.experiments).to eq(experiments)
+  end
+end
+
+
+
+class MockContextEventLoggerProxy < ContextEventLogger
+  attr_accessor :called, :events
+
+  def initialize
+    @called = 0
+    @events = []
+  end
+
+  def handle_event(event, data)
+    @called += 1
+    @events << {event: event, data: data}
+  end
+
+  def clear
+    initialize
   end
 end
