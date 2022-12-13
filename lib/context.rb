@@ -2,6 +2,7 @@
 
 require_relative "hashing"
 require_relative "variant_assigner"
+require_relative "context_event_logger"
 require_relative "json/unit"
 require_relative "json/attribute"
 require_relative "json/exposure"
