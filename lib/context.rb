@@ -294,14 +294,14 @@ class Context
             event.attributes = @attributes unless @attributes.empty?
             event.goals = achievements unless achievements.nil?
             log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
-            return @event_handler.publish(self, event)
+            @event_handler.publish(self, event)
           end
         end
       else
         @exposures = []
         @achievements = []
         @pending_count = 0
-        return @data_failed
+        @data_failed
       end
     end
 
@@ -481,13 +481,13 @@ class Context
 
     def log_event(event, data)
       unless @event_logger.nil?
-        @event_logger.handle_event(event, data);
+        @event_logger.handle_event(event, data)
       end
     end
 
     def log_error(error)
       unless @event_logger.nil?
-        @event_logger.handle_event(ContextEventLogger::EVENT_TYPE::ERROR, error.message);
+        @event_logger.handle_event(ContextEventLogger::EVENT_TYPE::ERROR, error.message)
       end
     end
 

@@ -74,7 +74,5 @@ class ContextConfig
     self
   end
 
-  def event_logger
-    @event_logger
-  end
+  attr_reader :event_logger
 end

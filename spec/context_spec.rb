@@ -205,13 +205,13 @@ RSpec.describe Context do
   end
 
   it "calls event logger when ready" do
-    context = create_ready_context
+    create_ready_context
 
     expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::READY, data).once
   end
 
   it "callsEventLoggerWithException" do
-    context = create_context(data_future_failed)
+    create_context(data_future_failed)
 
     expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::ERROR, "FAILED").once
   end
@@ -1091,7 +1091,7 @@ class MockContextEventLoggerProxy < ContextEventLogger
 
   def handle_event(event, data)
     @called += 1
-    @events << {event: event, data: data}
+    @events << { event: event, data: data }
   end
 
   def clear
