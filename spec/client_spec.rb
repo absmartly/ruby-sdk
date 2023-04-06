@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "byebug"
 require "client"
 require "client_config"
 require "json/context_data"

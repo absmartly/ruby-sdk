@@ -1,9 +1,17 @@
 # frozen_string_literal: true
 
 class ContextEventLogger
-  EVENT_TYPE = %w[error ready refresh publish exposure goal close]
-  # @interface method
-  def handle_event
-    raise NotImplementedError.new("You must implement handleEvent method.")
+  module EVENT_TYPE
+    ERROR = "error"
+    READY = "ready"
+    REFRESH = "refresh"
+    PUBLISH = "publish"
+    EXPOSURE = "exposure"
+    GOAL = "goal"
+    CLOSE = "close"
+  end
+
+  def handle_event(event, data)
+    raise NotImplementedError.new("You must implement handle_event method.")
   end
 end

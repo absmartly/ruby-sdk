@@ -58,7 +58,7 @@ class ABSmartly
 
   def create_context(config)
     validate_params(config)
-    Context.create(get_utc_format, config, @scheduler, @context_data_provider.context_data,
+    Context.create(get_utc_format, config, @context_data_provider.context_data,
                    @context_data_provider, @context_event_handler, @context_event_logger, @variable_parser,
                    AudienceMatcher.new(@audience_deserializer))
   end
