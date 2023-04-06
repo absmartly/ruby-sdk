@@ -15,7 +15,7 @@ Gem::Specification.new do |spec|
 
   spec.license = "MIT"
   spec.required_ruby_version = ">= 2.7.0"
-  spec.extra_rdoc_files = ["README"]
+  spec.extra_rdoc_files = ["README.md"]
 
   spec.metadata["homepage_uri"] = spec.homepage
   spec.metadata["source_code_uri"] = "https://github.com/absmartly/ruby-sdk"
