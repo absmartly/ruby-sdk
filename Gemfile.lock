@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    absmartly-sdk (0.1.5)
+    absmartly-sdk (1.0.5)
 
 GEM
   remote: https://rubygems.org/
