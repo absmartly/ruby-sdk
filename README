@@ -12,11 +12,11 @@ The A/B Smartly Ruby SDK is compatible with Ruby versions 2.7 and later.  For th
 
 Install the gem and add to the application's Gemfile by executing:
 
-    $ bundle add absmartly
+    $ bundle add absmartly-sdk
 
 If bundler is not being used to manage dependencies, install the gem by executing:
 
-    $ gem install absmartly
+    $ gem install absmartly-sdk
 
 ## Basic Usage
 
