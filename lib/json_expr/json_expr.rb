@@ -1,7 +1,22 @@
 # frozen_string_literal: true
 
 require_relative "./expr_evaluator"
-Dir["lib/json_expr/operators/*.rb"].each { |file| require "./#{file}" }
+require 'json_expr/operators/and_combinator'
+require 'json_expr/operators/binary_operator'
+require 'json_expr/operators/boolean_combinator'
+require 'json_expr/operators/equals_operator'
+require 'json_expr/operators/greater_than_operator'
+require 'json_expr/operators/greater_than_or_equal_operator'
+require 'json_expr/operators/in_operator'
+require 'json_expr/operators/less_than_operator'
+require 'json_expr/operators/less_than_or_equal_operator'
+require 'json_expr/operators/match_operator'
+require 'json_expr/operators/nil_operator'
+require 'json_expr/operators/not_operator'
+require 'json_expr/operators/or_combinator'
+require 'json_expr/operators/unary_operator'
+require 'json_expr/operators/value_operator'
+require 'json_expr/operators/var_operator'
 
 class JsonExpr
   attr_accessor :operators
