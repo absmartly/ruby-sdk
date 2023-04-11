@@ -22,8 +22,8 @@ class ExperimentVariant
 
   def to_s
     "ExperimentVariant{" +
-      "name='" + @name + "'" +
-      ", config='" + @config + "'" +
+      "name='#{@name}'" +
+      ", config='#{@config}'" +
       "}"
   end
 end

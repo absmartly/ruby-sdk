@@ -44,17 +44,17 @@ class Exposure
 
   def to_s
     "Exposure{" +
-      "id=" + @id +
-      "name='" + @name + "'" +
-      ", unit=" + @unit +
-      ", variant=" + @variant +
-      ", exposed_at=" + @exposed_at +
-      ", assigned=" + @assigned +
-      ", eligible=" + @eligible +
-      ", overridden=" + @overridden +
-      ", full_on=" + @full_on +
-      ", custom=" + @custom +
-      ", audience_mismatch=" + @audience_mismatch +
+      "id=#{@id}" +
+      "name='#{@name}'" +
+      ", unit=#{@unit}" +
+      ", variant=#{@variant}" +
+      ", exposed_at=#{@exposed_at}" +
+      ", assigned=#{@assigned}" +
+      ", eligible=#{@eligible}" +
+      ", overridden=#{@overridden}" +
+      ", full_on=#{@full_on}" +
+      ", custom=#{@custom}" +
+      ", audience_mismatch=#{@audience_mismatch}" +
       "}"
   end
 end

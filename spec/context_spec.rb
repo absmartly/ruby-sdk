@@ -12,6 +12,7 @@ require "context_event_logger"
 require "scheduled_executor_service"
 require "audience_matcher"
 require "json/unit"
+require "logger"
 
 RSpec.describe Context do
   let(:units) {
@@ -106,7 +107,7 @@ RSpec.describe Context do
   end
   let(:event_logger) do
     event_logger = MockContextEventLoggerProxy.new
-    allow(event_logger).to receive(:handle_event).and_return(nil)
+    allow(event_logger).to receive(:handle_event).and_call_original
     event_logger
   end
   let(:variable_parser) { DefaultVariableParser.new }
@@ -1081,16 +1082,20 @@ end
 
 
 class MockContextEventLoggerProxy < ContextEventLogger
-  attr_accessor :called, :events
+  attr_accessor :called, :events, :logger
 
   def initialize
     @called = 0
     @events = []
+    @logger = Logger.new(STDOUT)
   end
 
   def handle_event(event, data)
     @called += 1
     @events << { event: event, data: data }
+
+    @logger.debug "event: #{event}"
+    @logger.debug "data: #{data}"
   end
 
   def clear
