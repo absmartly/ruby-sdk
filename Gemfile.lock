@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    absmartly-sdk (1.0.6)
+    absmartly-sdk (1.0.7)
       arraybuffer (~> 0.0.6)
       faraday (~> 1.10.3)
       murmurhash3 (~> 0.1.7)
