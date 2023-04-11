@@ -31,12 +31,12 @@ class PublishEvent
 
   def to_s
     "PublishEvent{" +
-      "hashedUnits=" + @hashed +
-      ", units=" + @units.inspect +
-      ", publishedAt=" + @published_at +
-      ", exposures=" + @exposures.inspect +
-      ", goals=" + @goals.inspect +
-      ", attributes=" + @attributes.join +
+      "hashedUnits=#{@hashed}" +
+      ", units=#{@units.inspect}" +
+      ", publishedAt=#{@published_at}" +
+      ", exposures=#{@exposures.inspect}" +
+      ", goals=#{@goals.inspect}" +
+      ", attributes=#{@attributes!=nil ? @attributes.join : ""}" +
       "}"
   end
 end

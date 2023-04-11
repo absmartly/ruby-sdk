@@ -63,21 +63,21 @@ class Experiment
 
   def to_s
     "ContextExperiment{" +
-      "id=" + @id +
-      ", name='" + @name + "'" +
-      ", unitType='" + @unit_type + "'" +
-      ", iteration=" + @iteration +
-      ", seedHi=" + @seed_hi +
-      ", seedLo=" + @seed_lo +
-      ", split=" + @split.join +
-      ", trafficSeedHi=" + @traffic_seed_hi +
-      ", trafficSeedLo=" + @traffic_seed_lo +
-      ", trafficSplit=" + @traffic_split.join +
-      ", fullOnVariant=" + @full_on_variant +
-      ", applications=" + @applications.join +
-      ", variants=" + @variants.join +
-      ", audienceStrict=" + @audience_strict +
-      ", audience='" + @audience + "'" +
+      "id= #{@id}"+
+      ", name='#{@name}'" +
+      ", unitType='#{@unit_type}'" +
+      ", iteration=#{@iteration}" +
+      ", seedHi=#{@seed_hi}" +
+      ", seedLo=#{@seed_lo}" +
+      ", split=#{@split.join}" +
+      ", trafficSeedHi=#{@traffic_seed_hi}" +
+      ", trafficSeedLo=#{@traffic_seed_lo}" +
+      ", trafficSplit=#{@traffic_split.join}" +
+      ", fullOnVariant=#{@full_on_variant}" +
+      ", applications=#{@applications.join}" +
+      ", variants=#{@variants.join}" +
+      ", audienceStrict=#{@audience_strict}" +
+      ", audience='#{@audience}'" +
       "}"
   end
 end

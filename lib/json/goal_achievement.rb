@@ -24,9 +24,9 @@ class GoalAchievement
 
   def to_s
     "GoalAchievement{" +
-      "name='" + @name + "'" +
-      ", achieved_at='" + @achieved_at + "'" +
-      ", properties='" + @properties.inspect + "'" +
+      "name='#{@name}'" +
+      ", achieved_at='#{@achieved_at}'" +
+      ", properties='#{@properties.inspect}'" +
       "}"
   end
 end

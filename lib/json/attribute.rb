@@ -22,9 +22,9 @@ class Attribute
 
   def to_s
     "Attribute{" +
-      "name='" + @name + "'" +
-      ", value=" + @value +
-      ", setAt=" + @set_at +
+      "name='#{@name}'" +
+      ", value=#{@value}" +
+      ", setAt=#{@set_at}" +
       "}"
   end
 end
