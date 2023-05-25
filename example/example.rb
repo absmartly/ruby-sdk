@@ -12,7 +12,7 @@ end
 
 # define a new context request
 context_config = Absmartly.create_context_config
-#context_config.set_unit("session_id", "bf06d8cb5d8137290c4abb64155584fbdb64d8")
+context_config.set_unit("session_id", "bf06d8cb5d8137290c4abb64155584fbdb64d8")
 context_config.set_unit("user_id", "123456")
 
 ctx = Absmartly.create_context(context_config)
@@ -26,8 +26,8 @@ puts(treatment2) # 1
 treatment3 = ctx.treatment("test")
 puts(treatment3) # 1
 
-#ctx.set_unit("db_user_id", 1000013)
-#ctx.set_units(db_user_id2: 1000013, session_id2: 12311)
+ctx.set_unit("db_user_id", 1000013)
+ctx.set_units(db_user_id2: 1000013, session_id2: 12311)
 
 ctx.set_attribute("user_agent", "Chrome 2022")
 ctx.set_attributes(
