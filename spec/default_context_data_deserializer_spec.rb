@@ -32,6 +32,10 @@ RSpec.describe DefaultContextDataDeserializer do
       ExperimentVariant.new("A", nil),
       ExperimentVariant.new("B", "{\"banner.border\":1,\"banner.size\":\"large\"}")
     ]
+    experiment0.custom_field_values = [
+      CustomFieldValue.new("country", "US,PT,ES,DE,FR", "string"),
+      CustomFieldValue.new("overrides", "{\"123\":1,\"456\":0}", "json"),
+    ]
     experiment0.audience_strict = false
     experiment0.audience = nil
 
@@ -52,6 +56,10 @@ RSpec.describe DefaultContextDataDeserializer do
       ExperimentVariant.new("A", nil),
       ExperimentVariant.new("B", "{\"button.color\":\"blue\"}"),
       ExperimentVariant.new("C", "{\"button.color\":\"red\"}")
+    ]
+    experiment1.custom_field_values = [
+      CustomFieldValue.new("country", "US,PT,ES,DE,FR", "string"),
+      CustomFieldValue.new("languages", "en-US,en-GB,pt-PT,pt-BR,es-ES,es-MX", "string"),
     ]
     experiment1.audience_strict = false
     experiment1.audience = ""

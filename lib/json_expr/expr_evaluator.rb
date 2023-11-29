@@ -32,7 +32,7 @@ class ExprEvaluator < Evaluator
   def boolean_convert(x)
     if x.is_a?(TrueClass) || x.is_a?(FalseClass)
       return x
-    elsif x.is_a?(Numeric) || !(x =~ NUMERIC_REGEX).nil?
+    elsif x.is_a?(Numeric) || !(x.to_s =~ NUMERIC_REGEX).nil?
       return !x.to_f.zero?
     elsif x.is_a?(String)
       return x != "false" && x != "0" && x != ""
@@ -44,7 +44,7 @@ class ExprEvaluator < Evaluator
   def number_convert(x)
     return if x.nil? || x.to_s.empty?
 
-    if x.is_a?(Numeric) || !(x =~ NUMERIC_REGEX).nil?
+    if x.is_a?(Numeric) || !(x.to_s =~ NUMERIC_REGEX).nil?
       return x.to_f
     elsif x.is_a?(TrueClass) || x.is_a?(FalseClass)
       return x ? 1.0 : 0.0
@@ -57,7 +57,7 @@ class ExprEvaluator < Evaluator
       return x
     elsif x.is_a?(TrueClass) || x.is_a?(FalseClass)
       return x.to_s
-    elsif x.is_a?(Numeric) || !(x =~ NUMERIC_REGEX).nil?
+    elsif x.is_a?(Numeric) || !(x.to_s =~ NUMERIC_REGEX).nil?
       return x == x.to_i ? x.to_i.to_s : x.to_s
     end
     nil

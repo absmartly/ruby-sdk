@@ -33,7 +33,19 @@
 					"config":"{\"banner.border\":1,\"banner.size\":\"large\"}"
 				}
 			],
-			"audience": null
+			"audience": null,
+			"customFieldValues": [
+				{
+					"name": "country",
+					"value": "US,PT,ES,DE,FR",
+					"type": "string"
+				},
+				{
+					"name": "overrides",
+					"value": "{\"123\":1,\"456\":0}",
+					"type": "json"
+				}
+			]
 		},
 		{
 			"id":2,
@@ -73,7 +85,19 @@
 					"config":"{\"button.color\":\"red\"}"
 				}
 			],
-			"audience": ""
+			"audience": "",
+			"customFieldValues": [
+				{
+					"name": "country",
+					"value": "US,PT,ES,DE,FR",
+					"type": "string"
+				},
+				{
+					"name": "languages",
+					"value": "en-US,en-GB,pt-PT,pt-BR,es-ES,es-MX",
+					"type": "string"
+				}
+			]
 		},
 		{
 			"id":3,
@@ -113,7 +137,8 @@
 					"config":"{\"card.width\":\"75%\"}"
 				}
 			],
-			"audience": "{}"
+			"audience": "{}",
+			"customFieldValues": null
 		},
 		{
 			"id":4,
