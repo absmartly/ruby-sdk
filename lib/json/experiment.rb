@@ -3,11 +3,12 @@
 require_relative "../string"
 require_relative "experiment_application"
 require_relative "experiment_variant"
+require_relative "custom_field_value"
 
 class Experiment
   attr_accessor :id, :name, :unit_type, :iteration, :seed_hi, :seed_lo, :split,
                 :traffic_seed_hi, :traffic_seed_lo, :traffic_split, :full_on_variant,
-                :applications, :variants, :audience_strict, :audience
+                :applications, :variants, :audience_strict, :audience, :custom_field_values
 
   def initialize(args = {})
     args.each do |name, value|
@@ -15,6 +16,10 @@ class Experiment
         @applications = assign_to_klass(ExperimentApplication, value)
       elsif name == :variants
         @variants = assign_to_klass(ExperimentVariant, value)
+      elsif name == :customFieldValues
+        if value != nil
+          @custom_field_values = assign_to_klass(CustomFieldValue, value)
+        end
       else
         self.instance_variable_set("@#{name.to_s.underscore}", value)
       end
@@ -42,7 +47,7 @@ class Experiment
       @unit_type == that.unit_type && @split == that.split &&
       @traffic_split == that.traffic_split && @applications == that.applications &&
       @variants == that.variants && @audience_strict == that.audience_strict &&
-      @audience == that.audience
+      @audience == that.audience && @custom_field_values == that.custom_field_values
   end
 
   def hash_code
@@ -57,7 +62,8 @@ class Experiment
       traffic_seed_lo: @traffic_seed_lo,
       full_on_variant: @full_on_variant,
       audience_strict: @audience_strict,
-      audience: @audience
+      audience: @audience,
+      custom_field_values: @custom_field_values
     }
   end
 
@@ -78,6 +84,7 @@ class Experiment
       ", variants=#{@variants.join}" +
       ", audienceStrict=#{@audience_strict}" +
       ", audience='#{@audience}'" +
+      ", custom_field_values='#{@custom_field_values}'" +
       "}"
   end
 end

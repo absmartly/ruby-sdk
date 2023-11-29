@@ -698,6 +698,44 @@ RSpec.describe Context do
     expect(variable_experiments).to eq(context.variable_keys)
   end
 
+  it "getCustomFieldKeys" do
+    context = create_context(data_future_ready)
+
+    expect(["country", "languages", "overrides"]).to eq(context.custom_field_keys)
+  end
+
+  it "getCustomFieldValues" do
+    context = create_context(data_future_ready)
+
+    expect(context.custom_field_value("not_found", "not_found")).to be_nil
+    expect(context.custom_field_value("exp_test_ab", key: "not_found")).to be_nil
+    expect(context.custom_field_value("exp_test_ab", "country")).to eq("US,PT,ES,DE,FR")
+    expect(context.custom_field_type("exp_test_ab", "country")).to eq("string")
+
+    data = {"123":  1, "456": 0}
+    expect(context.custom_field_value("exp_test_ab", "overrides")).to eq(data)
+    expect(context.custom_field_type("exp_test_ab", "overrides")).to eq("json")
+
+    expect(context.custom_field_value("exp_test_ab", "languages")).to be_nil
+    expect(context.custom_field_type("exp_test_ab", "languages")).to be_nil
+
+    expect(context.custom_field_value("exp_test_abc", "overrides")).to be_nil
+    expect(context.custom_field_type("exp_test_abc", "overrides")).to be_nil
+
+    expect(context.custom_field_value("exp_test_abc", "languages")).to eq("en-US,en-GB,pt-PT,pt-BR,es-ES,es-MX")
+    expect(context.custom_field_type("exp_test_abc", "languages")).to eq("string")
+
+    expect(context.custom_field_value("exp_test_no_custom_fields", "country")).to be_nil
+    expect(context.custom_field_type("exp_test_no_custom_fields", "country")).to be_nil
+
+    expect(context.custom_field_type("exp_test_no_custom_fields", "overrides")).to be_nil
+    expect(context.custom_field_value("exp_test_no_custom_fields", "overrides")).to be_nil
+
+    expect(context.custom_field_type("exp_test_no_custom_fields", "languages")).to be_nil
+    expect(context.custom_field_value("exp_test_no_custom_fields", "languages")).to be_nil
+
+  end
+
   it "peek_treatmentReturnsOverrideVariant" do
     context = create_ready_context
 

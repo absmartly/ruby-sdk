@@ -21,6 +21,7 @@ class Context
   def initialize(clock, config, data_future, data_provider,
                  event_handler, event_logger, variable_parser, audience_matcher)
     @index = []
+    @context_custom_fields = {}
     @achievements = []
     @assignment_cache = {}
     @assignments = {}
@@ -201,6 +202,52 @@ class Context
     end
 
     default_value
+  end
+
+  def custom_field_keys
+    check_ready?(true)
+    keys = []
+
+    @data.experiments.each do |experiment|
+      custom_field_values = experiment.custom_field_values
+      if custom_field_values != nil
+        custom_field_values.each do |custom_field|
+          keys.append(custom_field.name)
+        end
+      end
+    end
+
+    return keys.sort.uniq
+  end
+
+  def custom_field_value(experimentName, key)
+    check_ready?(true)
+
+    experiment_custom_fields = @context_custom_fields[experimentName]
+
+    if experiment_custom_fields != nil
+      field = experiment_custom_fields[key]
+      if field != nil
+        return field.value
+      end
+    end
+
+    return nil
+  end
+
+  def custom_field_type(experimentName, key)
+    check_ready?(true)
+
+    experiment_custom_fields = @context_custom_fields[experimentName]
+
+    if experiment_custom_fields != nil
+      field = experiment_custom_fields[key]
+      if field != nil
+        return field.type
+      end
+    end
+
+    return nil
   end
 
   def peek_variable_value(key, default_value)
@@ -451,8 +498,11 @@ class Context
       @data = data
       @index = {}
       @index_variables = {}
+
       if data && !data.experiments.nil? && !data.experiments.empty?
         data.experiments.each do |experiment|
+          @experimentCustomFieldValues = {}
+
           experiment_variables = ExperimentVariables.new
           experiment_variables.data = experiment
           experiment_variables.variables ||= []
@@ -467,7 +517,36 @@ class Context
             end
           end
 
+          if !experiment.custom_field_values.nil?
+            experiment.custom_field_values.each do |custom_field_value|
+              value = ContextCustomFieldValues.new
+              value.type = custom_field_value.type
+
+              if !custom_field_value.value.nil?
+                custom_value = custom_field_value.value
+
+                if custom_field_value.type.start_with?("json")
+                  value.value = @variable_parser.parse(self, experiment.name, custom_field_value.name, custom_value)
+
+                elsif custom_field_value.type.start_with?("boolean")
+                  value.value = custom_value.to_bool
+
+                elsif custom_field_value.type.start_with?("number")
+                  value.value = custom_value.to_i
+
+                else
+                  value.value = custom_field_value.value
+                end
+
+                @experimentCustomFieldValues[custom_field_value.name] = value
+
+              end
+
+            end
+          end
+
           @index[experiment.name] = experiment_variables
+          @context_custom_fields[experiment.name] = @experimentCustomFieldValues
         end
       end
     end
@@ -542,6 +621,10 @@ end
 
 class ExperimentVariables
   attr_accessor :data, :variables
+end
+
+class ContextCustomFieldValues
+  attr_accessor :type, :value
 end
 
 class IllegalStateException < StandardError
