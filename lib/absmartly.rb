@@ -2,7 +2,6 @@
 
 require_relative "absmartly/version"
 require_relative "absmartly/variant_assigner"
-require_relative "absmartly/md5"
 require_relative "a_b_smartly"
 require_relative "a_b_smartly_config"
 require_relative "client"

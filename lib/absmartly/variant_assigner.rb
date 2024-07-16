@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "arraybuffer"
 require "murmurhash3"
 
 module Absmartly
