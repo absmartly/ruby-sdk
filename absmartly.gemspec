@@ -35,7 +35,6 @@ Gem::Specification.new do |spec|
   spec.add_dependency "faraday", "~> 2.0"
   spec.add_dependency "faraday-retry", "~> 2.0"
   spec.add_dependency "murmurhash3", "~> 0.1.7"
-  spec.add_dependency "arraybuffer", "~> 0.0.6"
 
   # For more information and examples about making a new gem, check out our
   # guide at: https://bundler.io/guides/creating_gem.html
