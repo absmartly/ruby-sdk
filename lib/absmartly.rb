@@ -32,6 +32,14 @@ module Absmartly
       sdk.create_context(context_config)
     end
 
+    def create_context_with(context_config, data)
+      sdk.create_context_with(context_config, data)
+    end
+
+    def context_data
+      sdk.context_data
+    end
+
     private
       def client_config
         @client_config = ClientConfig.create

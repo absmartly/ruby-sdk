@@ -64,7 +64,7 @@ class ABSmartly
   end
 
   def create_context_with(config, data)
-    Context.create(get_utc_format, config, scheduler, data,
+    Context.create(get_utc_format, config, data,
                    @context_data_provider, @context_event_handler, @context_event_logger, @variable_parser,
                    AudienceMatcher.new(@audience_deserializer))
   end
