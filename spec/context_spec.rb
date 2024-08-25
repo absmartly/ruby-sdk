@@ -712,7 +712,7 @@ RSpec.describe Context do
     expect(context.custom_field_value("exp_test_ab", "country")).to eq("US,PT,ES,DE,FR")
     expect(context.custom_field_type("exp_test_ab", "country")).to eq("string")
 
-    data = {"123":  1, "456": 0}
+    data = { "123":  1, "456": 0 }
     expect(context.custom_field_value("exp_test_ab", "overrides")).to eq(data)
     expect(context.custom_field_type("exp_test_ab", "overrides")).to eq("json")
 
@@ -733,7 +733,6 @@ RSpec.describe Context do
 
     expect(context.custom_field_type("exp_test_no_custom_fields", "languages")).to be_nil
     expect(context.custom_field_value("exp_test_no_custom_fields", "languages")).to be_nil
-
   end
 
   it "peek_treatmentReturnsOverrideVariant" do
@@ -1125,7 +1124,7 @@ class MockContextEventLoggerProxy < ContextEventLogger
   def initialize
     @called = 0
     @events = []
-    @logger = Logger.new(STDOUT)
+    @logger = Logger.new(IO::NULL)
   end
 
   def handle_event(event, data)

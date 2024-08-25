@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "faraday"
-require 'faraday/retry'
+require "faraday/retry"
 require "uri"
 require_relative "http_client"
 

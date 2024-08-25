@@ -68,11 +68,8 @@ class ContextConfig
     @custom_assignments[experiment_name.to_sym]
   end
 
-
   def set_event_logger(event_logger)
     @event_logger = event_logger
     self
   end
-
-  attr_reader :event_logger
 end
