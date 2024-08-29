@@ -2,7 +2,7 @@
 
 require_relative "context_event_handler"
 
-class DefaultContextEventHandler < ContextDataProvider
+class DefaultContextEventHandler < ContextEventHandler
   attr_accessor :client
 
   def initialize(client)
