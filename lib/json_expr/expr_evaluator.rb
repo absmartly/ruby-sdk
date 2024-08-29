@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "bigdecimal"
 require_relative "../string"
 require_relative "./evaluator"
 EMPTY_MAP = {}
