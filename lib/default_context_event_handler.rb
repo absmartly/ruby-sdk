@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "context_data_provider"
+require_relative "context_event_handler"
 
 class DefaultContextEventHandler < ContextDataProvider
   attr_accessor :client
