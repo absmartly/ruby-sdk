@@ -1,80 +1,49 @@
 # frozen_string_literal: true
 
+require "forwardable"
 require_relative "default_http_client"
 require_relative "default_http_client_config"
 require_relative "default_context_data_deserializer"
 require_relative "default_context_event_serializer"
 
 class Client
-  attr_accessor :url, :query, :headers, :http_client, :executor, :deserializer, :serializer
-  attr_reader :data_future, :promise, :exception
+  extend Forwardable
 
-  def self.create(config, http_client = nil)
-    Client.new(config, http_client || DefaultHttpClient.create(DefaultHttpClientConfig.create))
+  attr_accessor :http_client
+  attr_reader :config, :data_future, :promise, :exception
+
+  def_delegators :@config, :url, :query, :headers, :deserializer, :serializer
+  def_delegator :@http_client, :close
+  def_delegator :@promise, :success?
+
+  def self.create(config = nil, http_client = nil)
+    new(config, http_client)
   end
 
   def initialize(config = nil, http_client = nil)
-    endpoint = config.endpoint
-    raise ArgumentError.new("Missing Endpoint configuration") if endpoint.nil? || endpoint.empty?
+    @config = config || ClientConfig.new
+    @config.validate!
 
-    api_key = config.api_key
-    raise ArgumentError.new("Missing APIKey configuration") if api_key.nil? || api_key.empty?
-
-    application = config.application
-    raise ArgumentError.new("Missing Application configuration") if application.nil? || application.empty?
-
-    environment = config.environment
-    raise ArgumentError.new("Missing Environment configuration") if environment.nil? || environment.empty?
-
-    @url = "#{endpoint}/context"
-    @http_client = http_client
-    @deserializer = config.context_data_deserializer
-    @serializer = config.context_event_serializer
-    @executor = config.executor
-
-    @deserializer = DefaultContextDataDeserializer.new if @deserializer.nil?
-    @serializer = DefaultContextEventSerializer.new if @serializer.nil?
-
-    @headers = {
-      "Content-Type": "application/json",
-      "X-API-Key": api_key,
-      "X-Application": application,
-      "X-Environment": environment,
-      "X-Application-Version": "0",
-      "X-Agent": "absmartly-ruby-sdk"
-    }
-
-    @query = {
-      "application": application,
-      "environment": environment
-    }
+    @http_client = http_client || DefaultHttpClient.create(@config.http_client_config)
   end
 
   def context_data
-    @promise = @http_client.get(@url, @query, @headers)
+    @promise = http_client.get(config.url, config.query, config.headers)
     unless @promise.success?
       @exception = Exception.new(@promise.body)
       return self
     end
 
     content = (@promise.body || {}).to_s
-    @data_future = @deserializer.deserialize(content, 0, content.size)
+    @data_future = deserializer.deserialize(content, 0, content.size)
     self
   end
 
   def publish(event)
-    content = @serializer.serialize(event)
-    response = @http_client.put(@url, nil, @headers, content)
+    content = serializer.serialize(event)
+    response = http_client.put(config.url, nil, config.headers, content)
     return Exception.new(response.body) unless response.success?
 
     response
-  end
-
-  def close
-    @http_client.close
-  end
-
-  def success?
-    @promise.success?
   end
 end

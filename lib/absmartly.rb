@@ -8,16 +8,16 @@ require_relative "client_config"
 require_relative "context_config"
 
 module Absmartly
-  @@init_config = nil
-
   class Error < StandardError
   end
 
   class << self
-    attr_accessor :endpoint, :api_key, :application, :environment
+    MUTEX = Thread::Mutex.new
 
     def configure_client
-      yield self
+      yield sdk_config
+
+      sdk_config.validate!
     end
 
     def create
@@ -40,24 +40,15 @@ module Absmartly
       sdk.context_data
     end
 
-    private
-      def client_config
-        @client_config = ClientConfig.create
-        @client_config.endpoint = @endpoint
-        @client_config.api_key = @api_key
-        @client_config.application = @application
-        @client_config.environment = @environment
-        @client_config
-      end
+    private_constant :MUTEX
 
+    private
       def sdk_config
-        @sdk_config = ABSmartlyConfig.create
-        @sdk_config.client = Client.create(client_config)
-        @sdk_config
+        MUTEX.synchronize { @sdk_config ||= ABSmartlyConfig.create }
       end
 
       def sdk
-        @sdk ||= create
+        MUTEX.synchronize { @sdk ||= create }
       end
   end
 end

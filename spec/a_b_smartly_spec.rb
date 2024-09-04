@@ -17,6 +17,7 @@ RSpec.describe ABSmartly do
   it ".create" do
     config = ABSmartlyConfig.create
     config.client = client
+    config.context_event_logger = ContextEventLogger.new
     absmartly = described_class.create(config)
     expect(absmartly).not_to be_nil
   end
@@ -25,7 +26,7 @@ RSpec.describe ABSmartly do
     expect {
       config = ABSmartlyConfig.create
       ABSmartly.create(config)
-    }.to raise_error(ArgumentError, "Missing Client instance configuration")
+    }.to raise_error(ArgumentError, "event logger not configured")
   end
 
   it ".create_context" do

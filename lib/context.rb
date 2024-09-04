@@ -10,7 +10,7 @@ require_relative "json/publish_event"
 require_relative "json/goal_achievement"
 
 class Context
-  attr_reader :data, :pending_count
+  attr_reader :pending_count
 
   def self.create(clock, config, data_future, data_provider,
                   event_handler, event_logger, variable_parser, audience_matcher)
@@ -113,6 +113,10 @@ class Context
 
   def set_unit(unit_type, uid)
     check_not_closed?
+
+    unless uid.is_a?(String) || uid.is_a?(Numeric)
+      raise IllegalStateException.new("Unit '#{unit_type}' UID is of unsupported type '#{uid.class}'. UID must be one of ['string', 'number']")
+    end
 
     previous = @units[unit_type.to_sym]
     if !previous.nil? && previous != uid
@@ -541,7 +545,6 @@ class Context
                 @experimentCustomFieldValues[custom_field_value.name] = value
 
               end
-
             end
           end
 
