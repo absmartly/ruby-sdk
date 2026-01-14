@@ -8,8 +8,6 @@ require_relative "client_config"
 require_relative "context_config"
 
 module Absmartly
-  @@init_config = nil
-
   class Error < StandardError
   end
 
