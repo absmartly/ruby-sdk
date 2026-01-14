@@ -17,7 +17,7 @@ class ClientConfig
   def_delegators :@http_client_config, :connect_timeout, :connection_request_timeout, :retry_interval, :max_retries
 
   def self.create(endpoint: nil, environment: nil, application: nil, api_key: nil)
-    new(endpoint:, environment:, application:, api_key:)
+    new(endpoint: endpoint, environment: environment, application: application, api_key: api_key)
   end
 
   def self.create_from_properties(properties, prefix)
