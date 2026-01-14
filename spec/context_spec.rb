@@ -434,6 +434,30 @@ RSpec.describe Context do
     expect(context.override("exp_test_new_2")).to eq(5)
   end
 
+  it "set_attribute and set_attributes" do
+    context = create_ready_context
+
+    context.set_attribute("attr1", "value1")
+    context.set_attributes({ attr2: "value2", attr3: 15 })
+
+    attrs = context.instance_variable_get(:@attributes)
+    expect(attrs).to include(Attribute.new("attr1", "value1", clock_in_millis))
+    expect(attrs).to include(Attribute.new(:attr2, "value2", clock_in_millis))
+    expect(attrs).to include(Attribute.new(:attr3, 15, clock_in_millis))
+  end
+
+  it "set_attributes before ready" do
+    context = create_context(data_future)
+    expect(context.ready?).to be_falsey
+
+    context.set_attribute("attr1", "value1")
+    context.set_attributes({ attr2: "value2" })
+
+    attrs = context.instance_variable_get(:@attributes)
+    expect(attrs).to include(Attribute.new("attr1", "value1", clock_in_millis))
+    expect(attrs).to include(Attribute.new(:attr2, "value2", clock_in_millis))
+  end
+
   it "set custom assignment" do
     context = create_ready_context
     context.set_custom_assignment("exp_test", 2)

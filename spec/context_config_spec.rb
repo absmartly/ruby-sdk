@@ -22,10 +22,29 @@ RSpec.describe ContextConfig do
   it ".set_attributes" do
     attributes = { "user_agent": "Chrome", "age": 9 }
     config = described_class.create
-    config.attributes = attributes
+                            .set_attributes(attributes)
     expect(config.attribute("user_agent")).to eq("Chrome")
     expect(config.attribute("age")).to eq(9)
     expect(config.attributes).to eq(attributes)
+  end
+
+  it ".set_attributes merges with set_attribute" do
+    config = described_class.create
+                            .set_attribute("attr1", "value1")
+                            .set_attributes({ attr2: "value2", attr3: 15 })
+
+    expect(config.attribute("attr1")).to eq("value1")
+    expect(config.attribute("attr2")).to eq("value2")
+    expect(config.attribute("attr3")).to eq(15)
+  end
+
+  it ".set_attributes can be called multiple times" do
+    config = described_class.create
+                            .set_attributes({ attr1: "value1" })
+                            .set_attributes({ attr2: "value2" })
+
+    expect(config.attribute("attr1")).to eq("value1")
+    expect(config.attribute("attr2")).to eq("value2")
   end
 
   it ".set_override" do

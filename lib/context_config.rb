@@ -29,7 +29,8 @@ class ContextConfig
   end
 
   def set_attributes(attributes)
-    @attributes ||= attributes.transform_keys(&:to_sym)
+    @attributes.merge!(attributes.transform_keys(&:to_sym))
+    self
   end
 
   def set_attribute(name, value)
