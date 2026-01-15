@@ -14,16 +14,11 @@ class ABSmartly
                 :variable_parser, :scheduler, :context_event_logger,
                 :audience_deserializer, :client
 
-  def self.configure_client(&block)
-    @@init_http = block
-  end
-
   def self.create(config)
     ABSmartly.new(config)
   end
 
   def initialize(config)
-    @@init_http = nil
     @context_data_provider = config.context_data_provider
     @context_event_handler = config.context_event_handler
     @context_event_logger = config.context_event_logger
@@ -64,6 +59,7 @@ class ABSmartly
   end
 
   def create_context_with(config, data)
+    validate_params(config)
     Context.create(get_utc_format, config, data,
                    @context_data_provider, @context_event_handler, @context_event_logger, @variable_parser,
                    AudienceMatcher.new(@audience_deserializer))

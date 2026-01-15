@@ -18,10 +18,6 @@ class ABSmartlyConfig
     self
   end
 
-  def context_data_provide
-    @context_event_handler
-  end
-
   def variable_parser=(variable_parser)
     @variable_parser = variable_parser
     self

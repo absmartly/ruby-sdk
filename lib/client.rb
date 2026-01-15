@@ -13,7 +13,7 @@ class Client
     Client.new(config, http_client || DefaultHttpClient.create(DefaultHttpClientConfig.create))
   end
 
-  def initialize(config = nil, http_client = nil)
+  def initialize(config, http_client = nil)
     endpoint = config.endpoint
     raise ArgumentError.new("Missing Endpoint configuration") if endpoint.nil? || endpoint.empty?
 
@@ -75,6 +75,6 @@ class Client
   end
 
   def success?
-    @promise.success?
+    @promise&.success? || false
   end
 end
