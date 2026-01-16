@@ -48,7 +48,7 @@ end
 | connection_request_timeout     | `number`                             | &#10060;  |                 `3.0`                  | The request timeout in seconds.                                                                                               |
 | retry_interval     | `number`                             | &#10060;  |                   `0.5`                   | The initial retry interval in seconds (uses exponential backoff).                                                                                                                 |
 | max_retries     | `number`                             | &#10060;  |                 `5`                  | The maximum number of retries before giving up.                                                                                               |
-| eventLogger | `(context, eventName, data) => void` | &#10060;  | See "Using a Custom Event Logger" below | A callback function which runs after SDK events.                                                                                                                              |
+| event_logger | `(context, eventName, data) => void` | &#10060;  | See "Using a Custom Event Logger" below | A callback function which runs after SDK events.                                                                                                                              |
 
 ### Using a Custom Event Logger
 

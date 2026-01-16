@@ -168,6 +168,10 @@ RSpec.describe Absmartly do
     end
 
     after do
+      Absmartly.endpoint = nil
+      Absmartly.api_key = nil
+      Absmartly.application = nil
+      Absmartly.environment = nil
       Absmartly.event_logger = nil
     end
 
@@ -184,7 +188,7 @@ RSpec.describe Absmartly do
 
       it "receives READY event on context creation" do
         mock_logger.clear
-        context = create_ready_context
+        create_ready_context
         expect(mock_logger).to have_received(:handle_event)
           .with(ContextEventLogger::EVENT_TYPE::READY, data).once
       end
