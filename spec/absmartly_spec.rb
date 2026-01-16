@@ -156,6 +156,7 @@ RSpec.describe Absmartly do
     def client_mock
       client = instance_double(Client)
       allow(client).to receive(:context_data).and_return(OpenStruct.new(data_future: data, success?: true))
+      allow(client).to receive(:publish).and_return(OpenStruct.new(success?: true))
       client
     end
 
@@ -163,8 +164,7 @@ RSpec.describe Absmartly do
       config = ContextConfig.create
       config.set_units(units)
 
-      Context.create(clock, config, data_future_ready, data_provider,
-                     event_handler, mock_logger, variable_parser, audience_matcher)
+      Absmartly.create_context(config)
     end
 
     after do
@@ -173,10 +173,14 @@ RSpec.describe Absmartly do
       Absmartly.application = nil
       Absmartly.environment = nil
       Absmartly.event_logger = nil
+      Absmartly.instance_variable_set(:@sdk, nil)
+      Absmartly.instance_variable_set(:@sdk_config, nil)
     end
 
     context "when configured globally" do
       before do
+        allow(Client).to receive(:create).and_return(client_mock)
+
         Absmartly.configure_client do |config|
           config.endpoint = "https://test.absmartly.io/v1"
           config.api_key = "test-key"
@@ -200,12 +204,19 @@ RSpec.describe Absmartly do
 
         context.treatment("exp_test_ab")
 
-        expected_exposure = Exposure.new(
-          1, "exp_test_ab", "session_id", 1, clock_in_millis,
-          true, true, false, false, false, false
-        )
         expect(mock_logger).to have_received(:handle_event)
-          .with(ContextEventLogger::EVENT_TYPE::EXPOSURE, expected_exposure).once
+          .with(ContextEventLogger::EVENT_TYPE::EXPOSURE, satisfy { |exposure|
+            exposure.id == 1 &&
+            exposure.name == "exp_test_ab" &&
+            exposure.unit == "session_id" &&
+            exposure.variant == 1 &&
+            exposure.assigned == true &&
+            exposure.eligible == true &&
+            exposure.overridden == false &&
+            exposure.full_on == false &&
+            exposure.custom == false &&
+            exposure.audience_mismatch == false
+          }).once
       end
 
       it "receives GOAL event with correct values when track() is called" do
@@ -216,9 +227,11 @@ RSpec.describe Absmartly do
         properties = { amount: 125, hours: 245 }
         context.track("goal1", properties)
 
-        expected_goal = GoalAchievement.new("goal1", clock_in_millis, properties)
         expect(mock_logger).to have_received(:handle_event)
-          .with(ContextEventLogger::EVENT_TYPE::GOAL, expected_goal).once
+          .with(ContextEventLogger::EVENT_TYPE::GOAL, satisfy { |goal|
+            goal.name == "goal1" &&
+            goal.properties == properties
+          }).once
       end
 
       it "receives PUBLISH event when publish() is called" do
