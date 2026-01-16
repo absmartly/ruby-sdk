@@ -46,10 +46,10 @@ class ClientConfig
 
   def http_client_config
     http_config = DefaultHttpClientConfig.create
-    http_config.connect_timeout = @connect_timeout if @connect_timeout
-    http_config.connection_request_timeout = @connection_request_timeout if @connection_request_timeout
-    http_config.retry_interval = @retry_interval if @retry_interval
-    http_config.max_retries = @max_retries if @max_retries
+    http_config.connect_timeout = @connect_timeout unless @connect_timeout.nil?
+    http_config.connection_request_timeout = @connection_request_timeout unless @connection_request_timeout.nil?
+    http_config.retry_interval = @retry_interval unless @retry_interval.nil?
+    http_config.max_retries = @max_retries unless @max_retries.nil?
     http_config
   end
 end
