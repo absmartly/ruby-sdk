@@ -12,7 +12,8 @@ module Absmartly
   end
 
   class << self
-    attr_accessor :endpoint, :api_key, :application, :environment
+    attr_accessor :endpoint, :api_key, :application, :environment,
+                  :connect_timeout, :connection_request_timeout, :retry_interval, :max_retries
 
     def configure_client
       yield self
@@ -45,6 +46,10 @@ module Absmartly
         @client_config.api_key = @api_key
         @client_config.application = @application
         @client_config.environment = @environment
+        @client_config.connect_timeout = @connect_timeout
+        @client_config.connection_request_timeout = @connection_request_timeout
+        @client_config.retry_interval = @retry_interval
+        @client_config.max_retries = @max_retries
         @client_config
       end
 

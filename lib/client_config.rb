@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
+require_relative "default_http_client_config"
+
 class ClientConfig
   attr_accessor :endpoint, :api_key, :environment, :application, :deserializer,
-                :serializer, :executor
+                :serializer, :executor, :connect_timeout, :connection_request_timeout,
+                :retry_interval, :max_retries
 
   def self.create
     ClientConfig.new
@@ -39,5 +42,14 @@ class ClientConfig
 
   def context_event_serializer=(serializer)
     @serializer = serializer
+  end
+
+  def http_client_config
+    http_config = DefaultHttpClientConfig.create
+    http_config.connect_timeout = @connect_timeout if @connect_timeout
+    http_config.connection_request_timeout = @connection_request_timeout if @connection_request_timeout
+    http_config.retry_interval = @retry_interval if @retry_interval
+    http_config.max_retries = @max_retries if @max_retries
+    http_config
   end
 end
