@@ -54,10 +54,37 @@ end
 
 The A/B Smartly SDK can be instantiated with an event logger used for all
 contexts. In addition, an event logger can be specified when creating a
-particular context, in the `[CONTEXT_CONFIG_VARIABLE]`.
+particular context in the context config.
 
-```
-Custom Event Logger Code
+```ruby
+class MyEventLogger < ContextEventLogger
+  def handle_event(event, data)
+    case event
+    when EVENT_TYPE::EXPOSURE
+      puts "Exposure: #{data}"
+    when EVENT_TYPE::GOAL
+      puts "Goal: #{data}"
+    when EVENT_TYPE::ERROR
+      puts "Error: #{data}"
+    when EVENT_TYPE::PUBLISH
+      puts "Publish: #{data}"
+    when EVENT_TYPE::READY
+      puts "Ready: #{data}"
+    when EVENT_TYPE::REFRESH
+      puts "Refresh: #{data}"
+    when EVENT_TYPE::CLOSE
+      puts "Close"
+    end
+  end
+end
+
+Absmartly.configure_client do |config|
+  config.endpoint = "https://your-company.absmartly.io/v1"
+  config.api_key = "YOUR-API-KEY"
+  config.application = "website"
+  config.environment = "development"
+  config.event_logger = MyEventLogger.new
+end
 ```
 
 The data parameter depends on the type of event. Currently, the SDK logs the

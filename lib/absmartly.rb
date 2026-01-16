@@ -13,7 +13,8 @@ module Absmartly
 
   class << self
     attr_accessor :endpoint, :api_key, :application, :environment,
-                  :connect_timeout, :connection_request_timeout, :retry_interval, :max_retries
+                  :connect_timeout, :connection_request_timeout, :retry_interval, :max_retries,
+                  :event_logger
 
     def configure_client
       yield self
@@ -56,6 +57,7 @@ module Absmartly
       def sdk_config
         @sdk_config = ABSmartlyConfig.create
         @sdk_config.client = Client.create(client_config)
+        @sdk_config.context_event_logger = @event_logger
         @sdk_config
       end
 

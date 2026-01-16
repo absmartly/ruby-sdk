@@ -39,4 +39,40 @@ RSpec.describe Absmartly do
       expect(Absmartly.max_retries).to eq(3)
     end
   end
+
+  describe ".event_logger" do
+    after do
+      Absmartly.event_logger = nil
+    end
+
+    it "has event_logger accessor" do
+      expect(Absmartly).to respond_to(:event_logger)
+      expect(Absmartly).to respond_to(:event_logger=)
+    end
+
+    it "can be set via configure_client" do
+      logger = double("event_logger")
+
+      Absmartly.configure_client do |config|
+        config.event_logger = logger
+      end
+
+      expect(Absmartly.event_logger).to eq(logger)
+    end
+
+    it "flows through to ABSmartlyConfig.context_event_logger" do
+      logger = double("event_logger")
+
+      Absmartly.configure_client do |config|
+        config.endpoint = "https://test.absmartly.io/v1"
+        config.api_key = "test-api-key"
+        config.application = "test-app"
+        config.environment = "test"
+        config.event_logger = logger
+      end
+
+      sdk_config = Absmartly.send(:sdk_config)
+      expect(sdk_config.context_event_logger).to eq(logger)
+    end
+  end
 end
