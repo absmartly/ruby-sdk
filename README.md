@@ -29,6 +29,10 @@ Absmartly.configure_client do |config|
   config.api_key = "YOUR-API-KEY"
   config.application = "website"
   config.environment = "development"
+  config.connect_timeout = 3.0
+  config.connection_request_timeout = 3.0
+  config.retry_interval = 0.5
+  config.max_retries = 5
 end
 ```
 
@@ -37,11 +41,13 @@ end
 | Config      | Type                                 | Required? |                 Default                 | Description                                                                                                                                                                   |
 | :---------- | :----------------------------------- | :-------: | :-------------------------------------: | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | endpoint    | `string`                             |  &#9989;  |               `undefined`               | The URL to your API endpoint. Most commonly `"your-company.absmartly.io"`                                                                                                     |
-| apiKey      | `string`                             |  &#9989;  |               `undefined`               | Your API key which can be found on the Web Console.                                                                                                                           |
+| api_key      | `string`                             |  &#9989;  |               `undefined`               | Your API key which can be found on the Web Console.                                                                                                                           |
 | environment | `"production"` or `"development"`    |  &#9989;  |               `undefined`               | The environment of the platform where the SDK is installed. Environments are created on the Web Console and should match the available environments in your infrastructure.   |
 | application | `string`                             |  &#9989;  |               `undefined`               | The name of the application where the SDK is installed. Applications are created on the Web Console and should match the applications where your experiments will be running. |
-| retries     | `number`                             | &#10060;  |                   `5`                   | The number of retries before the SDK stops trying to connect.                                                                                                                 |
-| timeout     | `number`                             | &#10060;  |                 `3000`                  | An amount of time, in milliseconds, before the SDK will stop trying to connect.                                                                                               |
+| connect_timeout     | `number`                             | &#10060;  |                   `3.0`                   | The socket connection timeout in seconds.                                                                                                                 |
+| connection_request_timeout     | `number`                             | &#10060;  |                 `3.0`                  | The request timeout in seconds.                                                                                               |
+| retry_interval     | `number`                             | &#10060;  |                   `0.5`                   | The initial retry interval in seconds (uses exponential backoff).                                                                                                                 |
+| max_retries     | `number`                             | &#10060;  |                 `5`                  | The maximum number of retries before giving up.                                                                                               |
 | eventLogger | `(context, eventName, data) => void` | &#10060;  | See "Using a Custom Event Logger" below | A callback function which runs after SDK events.                                                                                                                              |
 
 ### Using a Custom Event Logger

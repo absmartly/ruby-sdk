@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require_relative "default_http_client"
-require_relative "default_http_client_config"
 require_relative "default_context_data_deserializer"
 require_relative "default_context_event_serializer"
 
@@ -10,7 +9,7 @@ class Client
   attr_reader :data_future, :promise, :exception
 
   def self.create(config, http_client = nil)
-    Client.new(config, http_client || DefaultHttpClient.create(DefaultHttpClientConfig.create))
+    Client.new(config, http_client || DefaultHttpClient.create(config.http_client_config))
   end
 
   def initialize(config, http_client = nil)
