@@ -43,6 +43,7 @@ class Context
     @hashed_units = {}
     @pending_count = 0
     @exposures ||= []
+    @attrs_seq = 0
 
     set_units(config.units) if config.units
     set_attributes(config.attributes) if config.attributes
@@ -137,6 +138,7 @@ class Context
     check_not_closed?
 
     @attributes.push(Attribute.new(name, value, @clock.to_i))
+    @attrs_seq += 1
   end
 
   def set_attributes(attributes)
@@ -375,6 +377,26 @@ class Context
         experiment.traffic_split == assignment.traffic_split
     end
 
+    def audience_matches(experiment, assignment)
+      if !experiment.audience.nil? && experiment.audience.size > 0
+        if @attrs_seq > (assignment.attrs_seq || 0)
+          attrs = @attributes.inject({}) do |hash, attr|
+            hash[attr.name] = attr.value
+            hash
+          end
+          match = @audience_matcher.evaluate(experiment.audience, attrs)
+          new_audience_mismatch = match && !match.result
+
+          if new_audience_mismatch != assignment.audience_mismatch
+            return false
+          end
+
+          assignment.attrs_seq = @attrs_seq
+        end
+      end
+      true
+    end
+
     def assignment(experiment_name)
       assignment = @assignment_cache[experiment_name.to_s]
 
@@ -391,7 +413,9 @@ class Context
             return assignment
           end
         elsif custom.nil? || custom == assignment.variant
-          return assignment if experiment_matches(experiment.data, assignment)
+          if experiment_matches(experiment.data, assignment) && audience_matches(experiment.data, assignment)
+            return assignment
+          end
         end
       end
 
@@ -461,10 +485,11 @@ class Context
           assignment.iteration = experiment.data.iteration
           assignment.traffic_split = experiment.data.traffic_split
           assignment.full_on_variant = experiment.data.full_on_variant
+          assignment.attrs_seq = @attrs_seq
         end
       end
 
-      if !experiment.nil? && assignment.variant < experiment.data.variants.length
+      if !experiment.nil? && assignment.variant >= 0 && assignment.variant < experiment.data.variants.length
         assignment.variables = experiment.variables[assignment.variant] || {}
       end
 
@@ -529,7 +554,7 @@ class Context
                   value.value = @variable_parser.parse(self, experiment.name, custom_field_value.name, custom_value)
 
                 elsif custom_field_value.type.start_with?("boolean")
-                  value.value = custom_value.to_bool
+                  value.value = custom_value == "true"
 
                 elsif custom_field_value.type.start_with?("number")
                   value.value = custom_value.to_i
@@ -603,7 +628,7 @@ end
 class Assignment
   attr_accessor :id, :iteration, :full_on_variant, :name, :unit_type,
                 :traffic_split, :variant, :assigned, :overridden, :eligible,
-                :full_on, :custom, :audience_mismatch, :variables, :exposed
+                :full_on, :custom, :audience_mismatch, :variables, :exposed, :attrs_seq
 
   def initialize
     @variant = 0
@@ -616,6 +641,7 @@ class Assignment
     @full_on = false
     @custom = false
     @audience_mismatch = false
+    @attrs_seq = 0
   end
 end
 
