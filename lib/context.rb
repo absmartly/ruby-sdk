@@ -186,6 +186,8 @@ class Context
     assignment(experiment_name).variant
   end
 
+  alias peek peek_treatment
+
   def variable_keys
     check_ready?(true)
 
