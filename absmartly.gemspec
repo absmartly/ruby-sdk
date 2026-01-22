@@ -36,6 +36,7 @@ Gem::Specification.new do |spec|
   # Faraday 2.7.x uses base64 but doesn't declare it as a dependency.
   spec.add_dependency "base64", "~> 0.2"
   spec.add_dependency "faraday", "~> 2.0"
+  spec.add_dependency "faraday-net_http_persistent", "~> 2.0"
   spec.add_dependency "faraday-retry", "~> 2.0"
   spec.add_dependency "murmurhash3", "~> 0.1.7"
 

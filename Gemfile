@@ -8,6 +8,7 @@ gemspec
 gem "rake", "~> 13.0"
 gem "murmurhash3"
 gem "faraday"
+gem "faraday-net_http_persistent"
 
 group :test do
   gem "rspec", "~> 3.5"
