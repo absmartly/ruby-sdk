@@ -1,5 +1,5 @@
 # frozen_string_literal: true
 
 module Absmartly
-  VERSION = "1.3.pre0"
+  VERSION = "1.3.0.pre.1"
 end
