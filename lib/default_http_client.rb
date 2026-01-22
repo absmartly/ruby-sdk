@@ -23,7 +23,9 @@ class DefaultHttpClient < HttpClient
                 backoff_factor: 2
       f.options.timeout = config.connect_timeout
       f.options.open_timeout = config.connection_request_timeout
-      f.adapter :net_http_persistent
+      f.adapter :net_http_persistent, pool_size: 20 do |http|
+        http.idle_timeout = 5
+      end
     end
   end
 
