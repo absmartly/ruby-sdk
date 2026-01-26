@@ -794,6 +794,38 @@ RSpec.describe Context do
     expect(context.peek_treatment("exp_test_ab")).to eq 0
   end
 
+  it "peek_treatmentReEvaluatesAudienceWhenAttributesChangeInStrictMode" do
+    context = create_context(audience_strict_data_future_ready)
+
+    expect(context.peek_treatment("exp_test_ab")).to eq 0
+
+    context.set_attribute("age", 25)
+
+    expect(context.peek_treatment("exp_test_ab")).to eq 1
+    expect(context.pending_count).to eq 0
+  end
+
+  it "peek_treatmentReEvaluatesAudienceWhenAttributesChangeInNonStrictMode" do
+    context = create_context(audience_data_future_ready)
+
+    expect(context.peek_treatment("exp_test_ab")).to eq 1
+
+    context.set_attribute("age", 25)
+
+    expect(context.peek_treatment("exp_test_ab")).to eq 1
+    expect(context.pending_count).to eq 0
+  end
+
+  it "peek_treatmentDoesNotReEvaluateAudienceWhenNoNewAttributesSet" do
+    context = create_context(audience_strict_data_future_ready)
+
+    context.set_attribute("age", 15)
+
+    expect(context.peek_treatment("exp_test_ab")).to eq 0
+    expect(context.peek_treatment("exp_test_ab")).to eq 0
+    expect(context.pending_count).to eq 0
+  end
+
   it "treatment" do
     context = create_ready_context(evt_handler: event_handler)
 
@@ -971,6 +1003,96 @@ RSpec.describe Context do
     context.publish
     expect(event_handler).to have_received(:publish).once
     expect(event_handler).to have_received(:publish).with(context, expected).once
+  end
+
+  it "treatmentReEvaluatesAudienceWhenAttributesChangeInStrictMode" do
+    context = create_context(audience_strict_data_future_ready)
+
+    expect(context.treatment("exp_test_ab")).to eq(0)
+    expect(context.pending_count).to eq(1)
+
+    context.set_attribute("age", 25)
+
+    expect(context.treatment("exp_test_ab")).to eq(1)
+    expect(context.pending_count).to eq(2)
+  end
+
+  it "treatmentReEvaluatesAudienceWhenAttributesChangeInNonStrictMode" do
+    context = create_context(audience_data_future_ready)
+
+    expect(context.treatment("exp_test_ab")).to eq(1)
+    expect(context.pending_count).to eq(1)
+
+    context.set_attribute("age", 25)
+
+    expect(context.treatment("exp_test_ab")).to eq(1)
+    expect(context.pending_count).to eq(2)
+  end
+
+  it "treatmentDoesNotReEvaluateAudienceWhenNoNewAttributesSet" do
+    context = create_context(audience_strict_data_future_ready)
+
+    context.set_attribute("age", 15)
+
+    expect(context.treatment("exp_test_ab")).to eq(0)
+    expect(context.pending_count).to eq(1)
+
+    expect(context.treatment("exp_test_ab")).to eq(0)
+    expect(context.pending_count).to eq(1)
+  end
+
+  it "treatmentDoesNotReEvaluateAudienceForExperimentsWithoutAudienceFilter" do
+    context = create_ready_context
+
+    expect(context.treatment("exp_test_abc")).to eq(2)
+    expect(context.pending_count).to eq(1)
+
+    context.set_attribute("age", 25)
+
+    expect(context.treatment("exp_test_abc")).to eq(2)
+    expect(context.pending_count).to eq(1)
+  end
+
+  it "treatmentReEvaluatesFromAudienceMismatchToMatchInStrictMode" do
+    context = create_context(audience_strict_data_future_ready, evt_handler: event_handler)
+
+    expect(context.treatment("exp_test_ab")).to eq(0)
+    expect(context.pending_count).to eq(1)
+
+    allow(event_handler).to receive(:publish).and_return(publish_future)
+    context.publish
+
+    expected = PublishEvent.new
+    expected.hashed = true
+    expected.published_at = clock_in_millis
+    expected.units = publish_units
+
+    expected.exposures = [
+      Exposure.new(1, "exp_test_ab", "session_id", 0, clock_in_millis, false, true, false, false, false, true)
+    ]
+
+    expect(event_handler).to have_received(:publish).with(context, expected).once
+
+    context.set_attribute("age", 30)
+
+    expect(context.treatment("exp_test_ab")).to eq(1)
+    expect(context.pending_count).to eq(1)
+
+    context.publish
+
+    expected2 = PublishEvent.new
+    expected2.hashed = true
+    expected2.published_at = clock_in_millis
+    expected2.units = publish_units
+    expected2.attributes = [
+      Attribute.new("age", 30, clock_in_millis)
+    ]
+
+    expected2.exposures = [
+      Exposure.new(1, "exp_test_ab", "session_id", 1, clock_in_millis, true, true, false, false, false, false)
+    ]
+
+    expect(event_handler).to have_received(:publish).with(context, expected2).once
   end
 
   it "treatmentCallsEventLogger" do
