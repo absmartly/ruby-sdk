@@ -74,5 +74,44 @@ RSpec.describe InOperator do
         expect(evaluator).to have_received(:compare).with(haystack, 2).once
       end
     end
+
+    it "test object contains key" do
+      haystackab = { "a" => 1, "b" => 2 }
+      haystackbc = { "b" => 2, "c" => 3, "0" => 100 }
+
+      expect(operator.evaluate(evaluator, [haystackab, "c"])).to be_falsey
+      expect(evaluator).to have_received(:evaluate).twice
+      expect(evaluator).to have_received(:evaluate).with(haystackab).once
+      expect(evaluator).to have_received(:evaluate).with("c").once
+      expect(evaluator).to have_received(:string_convert).with("c").once
+
+      reset_evaluator
+      expect(operator.evaluate(evaluator, [haystackbc, "a"])).to be_falsey
+      expect(evaluator).to have_received(:evaluate).twice
+      expect(evaluator).to have_received(:evaluate).with(haystackbc).once
+      expect(evaluator).to have_received(:evaluate).with("a").once
+      expect(evaluator).to have_received(:string_convert).with("a").once
+
+      reset_evaluator
+      expect(operator.evaluate(evaluator, [haystackbc, "b"])).to be_truthy
+      expect(evaluator).to have_received(:evaluate).twice
+      expect(evaluator).to have_received(:evaluate).with(haystackbc).once
+      expect(evaluator).to have_received(:evaluate).with("b").once
+      expect(evaluator).to have_received(:string_convert).with("b").once
+
+      reset_evaluator
+      expect(operator.evaluate(evaluator, [haystackbc, "c"])).to be_truthy
+      expect(evaluator).to have_received(:evaluate).twice
+      expect(evaluator).to have_received(:evaluate).with(haystackbc).once
+      expect(evaluator).to have_received(:evaluate).with("c").once
+      expect(evaluator).to have_received(:string_convert).with("c").once
+
+      reset_evaluator
+      expect(operator.evaluate(evaluator, [haystackbc, 0])).to be_truthy
+      expect(evaluator).to have_received(:evaluate).twice
+      expect(evaluator).to have_received(:evaluate).with(haystackbc).once
+      expect(evaluator).to have_received(:evaluate).with(0).once
+      expect(evaluator).to have_received(:string_convert).with(0).once
+    end
   end
 end
