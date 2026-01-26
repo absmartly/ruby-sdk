@@ -3,7 +3,6 @@
 require "ostruct"
 require "absmartly"
 require "helpers"
-require "ostruct"
 
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure
