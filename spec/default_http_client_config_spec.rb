@@ -21,4 +21,18 @@ RSpec.describe DefaultHttpClientConfig do
     config.retry_interval = 123
     expect(config.retry_interval).to eq(123)
   end
+
+  it ".pool_size" do
+    config = described_class.new
+    expect(config.pool_size).to eq(20)
+    config.pool_size = 50
+    expect(config.pool_size).to eq(50)
+  end
+
+  it ".pool_idle_timeout" do
+    config = described_class.new
+    expect(config.pool_idle_timeout).to eq(5)
+    config.pool_idle_timeout = 10
+    expect(config.pool_idle_timeout).to eq(10)
+  end
 end
