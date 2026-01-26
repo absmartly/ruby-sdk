@@ -33,6 +33,8 @@ Absmartly.configure_client do |config|
   config.connection_request_timeout = 3.0
   config.retry_interval = 0.5
   config.max_retries = 5
+  config.pool_size = 20
+  config.pool_idle_timeout = 5
 end
 ```
 
@@ -48,6 +50,8 @@ end
 | connection_request_timeout     | `number`                             | &#10060;  |                 `3.0`                  | The request timeout in seconds.                                                                                               |
 | retry_interval     | `number`                             | &#10060;  |                   `0.5`                   | The initial retry interval in seconds (uses exponential backoff).                                                                                                                 |
 | max_retries     | `number`                             | &#10060;  |                 `5`                  | The maximum number of retries before giving up.                                                                                               |
+| pool_size     | `number`                             | &#10060;  |                 `20`                  | The number of connections in the HTTP connection pool.                                                                                               |
+| pool_idle_timeout     | `number`                             | &#10060;  |                 `5`                  | The time in seconds before idle connections are closed.                                                                                               |
 | event_logger | `ContextEventLogger` | &#10060;  | See "Using a Custom Event Logger" below | A `ContextEventLogger` instance implementing `handle_event(event, data)` to receive SDK events.                                                                                                                              |
 
 ### Using a Custom Event Logger
