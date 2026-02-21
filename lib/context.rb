@@ -225,33 +225,11 @@ class Context
   end
 
   def custom_field_value(experimentName, key)
-    check_ready?(true)
-
-    experiment_custom_fields = @context_custom_fields[experimentName]
-
-    if experiment_custom_fields != nil
-      field = experiment_custom_fields[key]
-      if field != nil
-        return field.value
-      end
-    end
-
-    return nil
+    custom_field(experimentName, key)&.value
   end
 
   def custom_field_type(experimentName, key)
-    check_ready?(true)
-
-    experiment_custom_fields = @context_custom_fields[experimentName]
-
-    if experiment_custom_fields != nil
-      field = experiment_custom_fields[key]
-      if field != nil
-        return field.type
-      end
-    end
-
-    return nil
+    custom_field(experimentName, key)&.type
   end
 
   def peek_variable_value(key, default_value)
@@ -281,7 +259,8 @@ class Context
   def publish
     check_not_closed?
 
-    flush
+    result = flush
+    result
   end
 
   def refresh
@@ -315,46 +294,55 @@ class Context
     @data
   end
 
+  def inspect
+    "#<Context ready=#{ready?} closed=#{closed?}>"
+  end
+
   private
     def flush
-      if !@failed
-        if @pending_count > 0
-          exposures = nil
-          achievements = nil
-          event_count = @pending_count
-
-          if event_count > 0
-            unless @exposures.empty?
-              exposures = @exposures
-              @exposures = []
-            end
-
-            unless @achievements.empty?
-              achievements = @achievements
-              @achievements = []
-            end
-
-            @pending_count = 0
-
-            event = PublishEvent.new
-            event.hashed = true
-            event.published_at = @clock.to_i
-            event.units = @units.map do |key, value|
-              Unit.new(key.to_s, unit_hash(key, value))
-            end
-            event.exposures = exposures
-            event.attributes = @attributes unless @attributes.empty?
-            event.goals = achievements unless achievements.nil?
-            log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
-            @event_handler.publish(self, event)
-          end
-        end
-      else
+      if @failed
         @exposures = []
         @achievements = []
         @pending_count = 0
-        @data_failed
+        return @data_failed
       end
+
+      if @pending_count > 0
+        exposures = @exposures.dup
+        achievements = @achievements.dup
+        event_count = @pending_count
+
+        if event_count > 0
+          event = PublishEvent.new
+          event.hashed = true
+          event.published_at = @clock.to_i
+          event.units = @units.map do |key, value|
+            Unit.new(key.to_s, unit_hash(key, value))
+          end
+          event.exposures = exposures unless exposures.empty?
+          event.attributes = @attributes unless @attributes.empty?
+          event.goals = achievements unless achievements.empty?
+          log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
+
+          response = @event_handler.publish(self, event)
+
+          if response.is_a?(Exception) || response.is_a?(StandardError)
+            warn("Publish failed: #{response.message}")
+            return response
+          elsif response.respond_to?(:exception) && response.exception
+            return response
+          elsif response.respond_to?(:success?) && !response.success?
+            warn("Publish failed: #{response.body}")
+            return response
+          else
+            @exposures = []
+            @achievements = []
+            @pending_count = 0
+            return response
+          end
+        end
+      end
+      nil
     end
 
     def check_not_closed?
@@ -369,6 +357,11 @@ class Context
       elsif expect_not_closed
         check_not_closed?
       end
+    end
+
+    def custom_field(experiment_name, key)
+      check_ready?(true)
+      @context_custom_fields.dig(experiment_name, key)
     end
 
     def experiment_matches(experiment, assignment)
@@ -401,10 +394,11 @@ class Context
 
     def assignment(experiment_name)
       assignment = @assignment_cache[experiment_name.to_s]
+      exp_key = experiment_name.to_s.to_sym
 
       if !assignment.nil?
-        custom = @cassignments.transform_keys(&:to_sym)[experiment_name.to_s.to_sym]
-        override = @overrides.transform_keys(&:to_sym)[experiment_name.to_s.to_sym]
+        custom = @cassignments[exp_key]
+        override = @overrides[exp_key]
         experiment = experiment(experiment_name.to_s)
         if !override.nil?
           if assignment.overridden && assignment.variant == override
@@ -421,8 +415,8 @@ class Context
         end
       end
 
-      custom = @cassignments.transform_keys(&:to_sym)[experiment_name.to_s.to_sym]
-      override = @overrides.transform_keys(&:to_sym)[experiment_name.to_s.to_sym]
+      custom = @cassignments[exp_key]
+      override = @overrides[exp_key]
       experiment = experiment(experiment_name.to_s)
 
       assignment = Assignment.new
@@ -455,7 +449,7 @@ class Context
           if experiment.data.audience_strict && assignment.audience_mismatch
             assignment.variant = 0
           elsif experiment.data.full_on_variant == 0
-            uid = @units.transform_keys(&:to_sym)[experiment.data.unit_type.to_sym]
+            uid = @units[experiment.data.unit_type.to_sym]
             unless uid.nil?
               assigner = VariantAssigner.new(uid)
               eligible = assigner.assign(experiment.data.traffic_split,

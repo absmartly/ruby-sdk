@@ -5,7 +5,7 @@ require_relative "default_context_data_deserializer"
 require_relative "default_context_event_serializer"
 
 class Client
-  attr_accessor :url, :query, :headers, :http_client, :executor, :deserializer, :serializer
+  attr_accessor :url, :query, :http_client, :executor, :deserializer, :serializer
   attr_reader :data_future, :promise, :exception
 
   def self.create(config, http_client = nil)
@@ -53,6 +53,7 @@ class Client
     @promise = @http_client.get(@url, @query, @headers)
     unless @promise.success?
       @exception = Exception.new(@promise.body)
+      warn("Failed to fetch context data: #{@promise.body}")
       return self
     end
 
@@ -64,7 +65,12 @@ class Client
   def publish(event)
     content = @serializer.serialize(event)
     response = @http_client.put(@url, nil, @headers, content)
-    return Exception.new(response.body) unless response.success?
+
+    unless response.success?
+      error = Exception.new(response.body)
+      warn("Publish failed: #{response.body}")
+      return error
+    end
 
     response
   end
@@ -76,4 +82,12 @@ class Client
   def success?
     @promise&.success? || false
   end
+
+  def inspect
+    "#<Client url=#{@url.inspect}>"
+  end
+
+  private
+
+  attr_reader :headers
 end

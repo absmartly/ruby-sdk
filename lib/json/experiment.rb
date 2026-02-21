@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "../string"
+require_relative "../type_utils"
 require_relative "experiment_application"
 require_relative "experiment_variant"
 require_relative "custom_field_value"
@@ -10,8 +10,23 @@ class Experiment
                 :traffic_seed_hi, :traffic_seed_lo, :traffic_split, :full_on_variant,
                 :applications, :variants, :audience_strict, :audience, :custom_field_values
 
+  ALLOWED_KEYS = %i[
+    id name unitType unit_type iteration seedHi seed_hi seedLo seed_lo split
+    trafficSeedHi traffic_seed_hi trafficSeedLo traffic_seed_lo trafficSplit traffic_split
+    fullOnVariant full_on_variant applications variants audienceStrict audience_strict
+    audience customFieldValues custom_field_values
+  ].freeze
+
   def initialize(args = {})
     args.each do |name, value|
+      key_sym = name.to_sym
+      key_str = TypeUtils.underscore(name.to_s)
+
+      unless ALLOWED_KEYS.include?(key_sym) || ALLOWED_KEYS.include?(key_str.to_sym)
+        warn("Ignoring unexpected experiment field: #{name}")
+        next
+      end
+
       if name == :applications
         @applications = assign_to_klass(ExperimentApplication, value)
       elsif name == :variants
@@ -21,7 +36,7 @@ class Experiment
           @custom_field_values = assign_to_klass(CustomFieldValue, value)
         end
       else
-        self.instance_variable_set("@#{name.to_s.underscore}", value)
+        self.instance_variable_set("@#{key_str}", value)
       end
     end
     @audience_strict ||= false
@@ -30,10 +45,11 @@ class Experiment
 
   def assign_to_klass(klass, arr)
     arr.map do |item|
+      next if item.nil?
       return item if item.is_a?(klass)
 
       klass.new(*item.values)
-    end
+    end.compact
   end
 
   def ==(o)
