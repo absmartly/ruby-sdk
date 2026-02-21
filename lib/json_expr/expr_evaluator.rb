@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "../string"
+require_relative "../type_utils"
 require_relative "./evaluator"
 EMPTY_MAP = {}
 EMPTY_LIST = []
@@ -94,10 +94,11 @@ class ExprEvaluator < Evaluator
 
     if lhs.is_a?(Numeric)
       rvalue = number_convert(rhs)
-      return lhs.to_f.to_s.casecmp(rvalue.to_s) unless rvalue.nil?
+      return nil if rvalue.nil?
+      return lhs.to_f <=> rvalue.to_f
     elsif lhs.is_a?(String)
       rvalue = string_convert(rhs)
-      return lhs.compare_to(rvalue) unless rvalue.nil?
+      return TypeUtils.compare_strings(lhs, rvalue) unless rvalue.nil?
     elsif lhs.is_a?(TrueClass) || lhs.is_a?(FalseClass)
       rvalue = boolean_convert(rhs)
       return lhs.to_s.casecmp(rvalue.to_s) unless rvalue.nil?
@@ -105,17 +106,5 @@ class ExprEvaluator < Evaluator
       return 0
     end
     nil
-  end
-end
-
-class Array
-  def self.wrap(object)
-    if object.nil?
-      []
-    elsif object.respond_to?(:to_ary)
-      object.to_ary || [object]
-    else
-      [object]
-    end
   end
 end

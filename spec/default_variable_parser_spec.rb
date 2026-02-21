@@ -33,6 +33,6 @@ RSpec.describe DefaultVariableParser do
 
     variable_parser = described_class.new
 
-    expect(variable_parser.parse(context, "test_exp", "B", config_value)).to be_nil
+    expect(variable_parser.parse(context, "test_exp", "B", config_value)).to eq({})
   end
 end

@@ -8,6 +8,6 @@ class ContextEventLoggerCallback < ContextEventLogger
   end
 
   def handle_event(event, data)
-    @callable.call(event, data) if @callable.present?
+    @callable.call(event, data) if @callable && !@callable.nil?
   end
 end

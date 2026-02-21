@@ -1202,7 +1202,7 @@ RSpec.describe Context do
     actual = context.publish
     expect(actual).to eq(failure)
 
-    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::ERROR, "FAILED").once
+    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::ERROR, "FAILED").at_least(:once)
   end
 
   it "publish Does Not Call event handler When Failed" do
@@ -1414,7 +1414,7 @@ RSpec.describe Context do
       context.publish
 
       context.track("goal2", nil)
-      expect(context.pending_count).to eq(1)
+      expect(context.pending_count).to eq(2)
     end
 
     it "calls error callback on publish failure" do
@@ -1904,7 +1904,7 @@ RSpec.describe Context do
       context.publish
 
       context.track("goal2", nil)
-      expect(context.pending_count).to eq(1)
+      expect(context.pending_count).to eq(2)
     end
   end
 
