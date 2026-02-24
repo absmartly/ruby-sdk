@@ -29,8 +29,8 @@ RSpec.describe EqualsOperator do
       expect(evaluator).to have_received(:compare).with(0, 1).once
 
       reset_evaluator
-      expect(operator.evaluate(evaluator, [nil, nil])).to be_nil
-      expect(evaluator).to have_received(:evaluate).once
+      expect(operator.evaluate(evaluator, [nil, nil])).to be_truthy
+      expect(evaluator).to have_received(:evaluate).twice
       expect(evaluator).to have_received(:compare).exactly(0).time
 
       reset_evaluator

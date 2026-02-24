@@ -5,7 +5,7 @@ require_relative "binary_operator"
 class InOperator
   include BinaryOperator
 
-  def binary(evaluator, haystack, needle)
+  def binary(evaluator, needle, haystack)
     if haystack.is_a? Array
       haystack.each do |item|
         return true if evaluator.compare(item, needle) == 0
