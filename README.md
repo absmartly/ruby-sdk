@@ -6,9 +6,7 @@ Ruby SDK for [ABsmartly](https://www.absmartly.com/) A/B testing platform.
 
 The ABsmartly Ruby SDK is compatible with Ruby versions 2.7 and later. For the best performance and code readability, Ruby 3 or later is recommended. This SDK is being constantly tested with the nightly builds of Ruby, to ensure it is compatible with the latest Ruby version.
 
-## Getting Started
-
-### Install the SDK
+## Installation
 
 Install the gem and add to the application's Gemfile by executing:
 
@@ -22,7 +20,13 @@ If bundler is not being used to manage dependencies, install the gem by executin
 $ gem install absmartly-sdk
 ```
 
-### Import and Initialize the SDK
+## Getting Started
+
+Please follow the [installation](#installation) instructions before trying the following code.
+
+### Initialization
+
+This example assumes an API Key, an Application, and an Environment have been created in the ABsmartly web console.
 
 #### Recommended: Named Parameters (Ruby Keyword Arguments)
 
@@ -39,7 +43,7 @@ sdk = ABSmartly.new(
 )
 ```
 
-With optional parameters for timeout and retries:
+#### With Optional Parameters
 
 ```ruby
 sdk = ABSmartly.new(
@@ -49,18 +53,6 @@ sdk = ABSmartly.new(
   environment: "development",
   timeout: 5000,      # Connection timeout in milliseconds (default: 3000)
   retries: 3          # Max retry attempts (default: 5)
-)
-```
-
-With a custom event logger:
-
-```ruby
-sdk = ABSmartly.new(
-  "https://your-company.absmartly.io/v1",
-  api_key: "YOUR-API-KEY",
-  application: "website",
-  environment: "development",
-  context_event_logger: CustomEventLogger.new
 )
 ```
 
@@ -112,70 +104,9 @@ sdk = ABSmartly.create(sdk_config)
 | environment                | `String`                          |  &#9989;  | `nil`   | The environment of the platform where the SDK is installed. Environments are created on the Web Console and should match the available environments in your infrastructure.   |
 | timeout                    | `Integer`                         |  &#10060; | `3000`  | The connection and request timeout in milliseconds. Converted to seconds internally.                                                                                          |
 | retries                    | `Integer`                         |  &#10060; | `5`     | The maximum number of retries before giving up.                                                                                                                               |
-| context_event_logger       | `ContextEventLogger`              |  &#10060; | `nil`   | A `ContextEventLogger` instance implementing `handle_event(event, data)` to receive SDK events. See "Using a Custom Event Logger" below.                                     |
+| context_event_logger       | `ContextEventLogger`              |  &#10060; | `nil`   | A `ContextEventLogger` instance implementing `handle_event(event, data)` to receive SDK events. See "Custom Event Logger" below.                                             |
 
-### Using a Custom Event Logger
-
-The ABsmartly SDK can be instantiated with an event logger used for all contexts. In addition, an event logger can be specified when creating a particular context in the context config.
-
-```ruby
-class CustomEventLogger < ContextEventLogger
-  def handle_event(event, data)
-    case event
-    when EVENT_TYPE::EXPOSURE
-      puts "Exposed to experiment: #{data[:name]}"
-    when EVENT_TYPE::GOAL
-      puts "Goal tracked: #{data[:name]}"
-    when EVENT_TYPE::ERROR
-      puts "Error: #{data}"
-    when EVENT_TYPE::PUBLISH
-      puts "Events published: #{data.length} events"
-    when EVENT_TYPE::READY
-      puts "Context ready with #{data[:experiments].length} experiments"
-    when EVENT_TYPE::REFRESH
-      puts "Context refreshed with #{data[:experiments].length} experiments"
-    when EVENT_TYPE::CLOSE
-      puts "Context closed"
-    end
-  end
-end
-
-sdk = ABSmartly.new(
-  "https://your-company.absmartly.io/v1",
-  api_key: "YOUR-API-KEY",
-  application: "website",
-  environment: "development",
-  context_event_logger: CustomEventLogger.new
-)
-```
-
-Or using the global configuration approach:
-
-```ruby
-Absmartly.configure_client do |config|
-  config.endpoint = "https://your-company.absmartly.io/v1"
-  config.api_key = "YOUR-API-KEY"
-  config.application = "website"
-  config.environment = "development"
-  config.event_logger = CustomEventLogger.new
-end
-```
-
-The data parameter depends on the type of event. Currently, the SDK logs the following events:
-
-**Event Types**
-
-| Event       | When                                                    | Data                                         |
-| ----------- | ------------------------------------------------------- | -------------------------------------------- |
-| `Error`     | `Context` receives an error                             | Error object thrown                          |
-| `Ready`     | `Context` turns ready                                   | ContextData used to initialize the context   |
-| `Refresh`   | `Context.refresh()` method succeeds                     | ContextData used to refresh the context      |
-| `Publish`   | `Context.publish()` method succeeds                     | PublishEvent sent to the collector           |
-| `Exposure`  | `Context.treatment()` method succeeds on first exposure | Exposure data enqueued for publishing        |
-| `Goal`      | `Context.track()` method succeeds                       | GoalAchievement enqueued for publishing      |
-| `Close`     | `Context.close()` method succeeds the first time        | `nil`                                        |
-
-## Create a New Context Request
+## Creating a New Context
 
 ### Basic Context Creation
 
@@ -191,7 +122,6 @@ context_config = ContextConfig.create
 context_config.set_unit('session_id', '5ebf06d8cb5d8137290c4abb64155584fbdb64d8')
 
 context = sdk.create_context(context_config)
-context.wait_until_ready
 ```
 
 Or using the global configuration approach:
@@ -208,15 +138,13 @@ context_config = Absmartly.create_context_config
 context_config.set_unit('session_id', '5ebf06d8cb5d8137290c4abb64155584fbdb64d8')
 
 context = Absmartly.create_context(context_config)
-context.wait_until_ready
 ```
 
-### With Prefetched Data
+### With Pre-fetched Data
 
 When doing full-stack experimentation with ABsmartly, we recommend creating a context only once on the server-side. Creating a context involves a round-trip to the ABsmartly event collector. We can avoid repeating the round-trip on the client-side by sending the server-side data embedded in the first document.
 
 ```ruby
-# Server-side
 sdk = ABSmartly.new(
   "https://your-company.absmartly.io/v1",
   api_key: "YOUR-API-KEY",
@@ -228,16 +156,11 @@ context_config = ContextConfig.create
 context_config.set_unit('session_id', '5ebf06d8cb5d8137290c4abb64155584fbdb64d8')
 
 server_context = sdk.create_context(context_config)
-server_context.wait_until_ready
 
-# Pass server_context.data to client-side
-
-# Client-side - reuse the data
 client_context_config = ContextConfig.create
 client_context_config.set_unit('session_id', '5ebf06d8cb5d8137290c4abb64155584fbdb64d8')
 
 client_context = sdk.create_context_with(client_context_config, server_context.data)
-# No need to wait - context is ready immediately
 ```
 
 ### Refreshing the Context with Fresh Experiment Data
@@ -369,7 +292,7 @@ context.track('payment', {
 })
 ```
 
-### Publish
+### Publishing Pending Data
 
 Sometimes it is necessary to ensure all events have been published to the ABsmartly collector, before proceeding. You can explicitly call the `publish` method.
 
@@ -377,13 +300,74 @@ Sometimes it is necessary to ensure all events have been published to the ABsmar
 context.publish
 ```
 
-### Finalize
+### Finalizing
 
 The `close` method will ensure all events have been published to the ABsmartly collector, like `publish`, and will also "seal" the context, throwing an error if any method that could generate an event is called.
 
 ```ruby
 context.close
 ```
+
+### Custom Event Logger
+
+The ABsmartly SDK can be instantiated with an event logger used for all contexts. In addition, an event logger can be specified when creating a particular context in the context config.
+
+```ruby
+class CustomEventLogger < ContextEventLogger
+  def handle_event(event, data)
+    case event
+    when EVENT_TYPE::EXPOSURE
+      puts "Exposed to experiment: #{data[:name]}"
+    when EVENT_TYPE::GOAL
+      puts "Goal tracked: #{data[:name]}"
+    when EVENT_TYPE::ERROR
+      puts "Error: #{data}"
+    when EVENT_TYPE::PUBLISH
+      puts "Events published: #{data.length} events"
+    when EVENT_TYPE::READY
+      puts "Context ready with #{data[:experiments].length} experiments"
+    when EVENT_TYPE::REFRESH
+      puts "Context refreshed with #{data[:experiments].length} experiments"
+    when EVENT_TYPE::CLOSE
+      puts "Context closed"
+    end
+  end
+end
+
+sdk = ABSmartly.new(
+  "https://your-company.absmartly.io/v1",
+  api_key: "YOUR-API-KEY",
+  application: "website",
+  environment: "development",
+  context_event_logger: CustomEventLogger.new
+)
+```
+
+Or using the global configuration approach:
+
+```ruby
+Absmartly.configure_client do |config|
+  config.endpoint = "https://your-company.absmartly.io/v1"
+  config.api_key = "YOUR-API-KEY"
+  config.application = "website"
+  config.environment = "development"
+  config.event_logger = CustomEventLogger.new
+end
+```
+
+The data parameter depends on the type of event. Currently, the SDK logs the following events:
+
+**Event Types**
+
+| Event       | When                                                    | Data                                         |
+| ----------- | ------------------------------------------------------- | -------------------------------------------- |
+| `Error`     | `Context` receives an error                             | Error object thrown                          |
+| `Ready`     | `Context` turns ready                                   | ContextData used to initialize the context   |
+| `Refresh`   | `Context.refresh()` method succeeds                     | ContextData used to refresh the context      |
+| `Publish`   | `Context.publish()` method succeeds                     | PublishEvent sent to the collector           |
+| `Exposure`  | `Context.treatment()` method succeeds on first exposure | Exposure data enqueued for publishing        |
+| `Goal`      | `Context.track()` method succeeds                       | GoalAchievement enqueued for publishing      |
+| `Close`     | `Context.close()` method succeeds the first time        | `nil`                                        |
 
 ## Platform-Specific Examples
 
@@ -413,7 +397,6 @@ class ApplicationController < ActionController::Base
     context_config.set_unit('user_id', current_user&.id&.to_s) if current_user
 
     @absmartly_context = Absmartly.create_context(context_config)
-    @absmartly_context.wait_until_ready
   rescue => e
     Rails.logger.error "ABsmartly context creation failed: #{e.message}"
     @absmartly_context = nil
@@ -444,7 +427,6 @@ end
 require 'sinatra'
 require 'absmartly'
 
-# Initialize SDK once at app startup
 configure do
   Absmartly.configure_client do |config|
     config.endpoint = ENV['ABSMARTLY_ENDPOINT']
@@ -454,7 +436,6 @@ configure do
   end
 end
 
-# Middleware to create context for each request
 use Rack::Session::Cookie, secret: ENV['SESSION_SECRET']
 
 before do
@@ -462,7 +443,6 @@ before do
   context_config.set_unit('session_id', session[:session_id] ||= SecureRandom.uuid)
 
   @absmartly_context = Absmartly.create_context(context_config)
-  @absmartly_context.wait_until_ready
 end
 
 after do
@@ -505,7 +485,6 @@ class ABsmartlyMiddleware
     context_config.set_unit('session_id', request.session['session_id'])
 
     context = Absmartly.create_context(context_config)
-    context.wait_until_ready
 
     env['absmartly.context'] = context
 
@@ -519,53 +498,6 @@ end
 
 use ABsmartlyMiddleware
 run MyApp
-```
-
-## Advanced Request Configuration
-
-### Request Timeout Override
-
-Ruby HTTP clients support per-request timeouts:
-
-```ruby
-require 'absmartly'
-require 'timeout'
-
-context_config = Absmartly.create_context_config
-context_config.set_unit('session_id', 'abc123')
-
-ctx = Absmartly.create_context(context_config)
-
-begin
-  Timeout.timeout(1.5) do
-    ctx.wait_until_ready
-  end
-rescue Timeout::Error
-  puts "Context creation timed out"
-end
-```
-
-### Request Cancellation with Thread
-
-```ruby
-require 'absmartly'
-
-context_config = Absmartly.create_context_config
-context_config.set_unit('session_id', 'abc123')
-
-ctx = Absmartly.create_context(context_config)
-
-# Create thread for context initialization
-thread = Thread.new do
-  ctx.wait_until_ready
-end
-
-# Cancel after 1.5 seconds if not ready
-sleep 1.5
-if thread.alive?
-  thread.kill
-  puts "Context creation cancelled"
-end
 ```
 
 ## About A/B Smartly
@@ -587,11 +519,3 @@ A/B Smartly's real-time analytics helps engineering and product teams ensure tha
 - [.NET SDK](https://www.github.com/absmartly/dotnet-sdk)
 - [Dart SDK](https://www.github.com/absmartly/dart-sdk)
 - [Flutter SDK](https://www.github.com/absmartly/flutter-sdk)
-
-## Documentation
-
-- [Full Documentation](https://docs.absmartly.com/)
-
-## License
-
-MIT License - see LICENSE for details.
