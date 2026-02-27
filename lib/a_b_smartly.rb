@@ -118,6 +118,19 @@ class ABSmartly
                    AudienceMatcher.new(@audience_deserializer))
   end
 
+  def create_context_async(config)
+    validate_params(config)
+    context = Context.create_async(get_utc_format, config, @context_data_provider,
+                                   @context_event_handler, @context_event_logger, @variable_parser,
+                                   AudienceMatcher.new(@audience_deserializer))
+    data_provider = @context_data_provider
+    Thread.new do
+      data_future = data_provider.context_data
+      context.set_data(data_future)
+    end
+    context
+  end
+
   def create_context_with(config, data)
     validate_params(config)
     Context.create(get_utc_format, config, data,

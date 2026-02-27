@@ -18,37 +18,19 @@ class Context
                 event_handler, event_logger, variable_parser, audience_matcher)
   end
 
+  def self.create_async(clock, config, data_provider,
+                        event_handler, event_logger, variable_parser, audience_matcher)
+    context = Context.allocate
+    context.send(:initialize_async, clock, config, data_provider,
+                 event_handler, event_logger, variable_parser, audience_matcher)
+    context
+  end
+
   def initialize(clock, config, data_future, data_provider,
                  event_handler, event_logger, variable_parser, audience_matcher)
-    @index = []
-    @context_custom_fields = {}
-    @achievements = []
-    @assignment_cache = {}
-    @assignments = {}
-    @clock = clock.is_a?(String) ? Time.iso8601(clock) : clock
-    @publish_delay = config.publish_delay
-    @refresh_interval = config.refresh_interval
-    @event_handler = event_handler
-    @event_logger = !config.event_logger.nil? ? config.event_logger : event_logger
-    @data_provider = data_provider
-    @variable_parser = variable_parser
-    @audience_matcher = audience_matcher
-    @closed = false
+    init_common(clock, config, data_provider, event_handler, event_logger,
+                variable_parser, audience_matcher)
 
-    @units = {}
-    @attributes = []
-    @overrides = {}
-    @cassignments = {}
-    @assigners = {}
-    @hashed_units = {}
-    @pending_count = 0
-    @exposures ||= []
-    @attrs_seq = 0
-
-    set_units(config.units) if config.units
-    set_attributes(config.attributes) if config.attributes
-    set_overrides(config.overrides) if config.overrides
-    set_custom_assignments(config.custom_assignments) if config.custom_assignments
     if data_future.success?
       assign_data(data_future.data_future)
       log_event(ContextEventLogger::EVENT_TYPE::READY, data_future.data_future)
@@ -56,6 +38,37 @@ class Context
       set_data_failed(data_future.exception)
       log_error(data_future.exception)
     end
+  end
+
+  def set_data(data_future)
+    @ready_mutex.synchronize do
+      if data_future.success?
+        assign_data(data_future.data_future)
+        log_event(ContextEventLogger::EVENT_TYPE::READY, data_future.data_future)
+      else
+        set_data_failed(data_future.exception)
+        log_error(data_future.exception)
+      end
+      @ready_condvar.broadcast
+    end
+  end
+
+  def wait_until_ready(timeout = nil)
+    @ready_mutex.synchronize do
+      unless ready? || failed?
+        if timeout
+          deadline = Time.now + timeout
+          until ready? || failed?
+            remaining = deadline - Time.now
+            break if remaining <= 0
+            @ready_condvar.wait(@ready_mutex, remaining)
+          end
+        else
+          @ready_condvar.wait(@ready_mutex) until ready? || failed?
+        end
+      end
+    end
+    self
   end
 
   def ready?
@@ -590,6 +603,47 @@ class Context
       unless @event_logger.nil?
         @event_logger.handle_event(ContextEventLogger::EVENT_TYPE::ERROR, error.message)
       end
+    end
+
+    def init_common(clock, config, data_provider, event_handler, event_logger,
+                    variable_parser, audience_matcher)
+      @index = []
+      @context_custom_fields = {}
+      @achievements = []
+      @assignment_cache = {}
+      @assignments = {}
+      @clock = clock.is_a?(String) ? Time.iso8601(clock) : clock
+      @publish_delay = config.publish_delay
+      @refresh_interval = config.refresh_interval
+      @event_handler = event_handler
+      @event_logger = !config.event_logger.nil? ? config.event_logger : event_logger
+      @data_provider = data_provider
+      @variable_parser = variable_parser
+      @audience_matcher = audience_matcher
+      @closed = false
+
+      @units = {}
+      @attributes = []
+      @overrides = {}
+      @cassignments = {}
+      @assigners = {}
+      @hashed_units = {}
+      @pending_count = 0
+      @exposures ||= []
+      @attrs_seq = 0
+      @ready_mutex = Mutex.new
+      @ready_condvar = ConditionVariable.new
+
+      set_units(config.units) if config.units
+      set_attributes(config.attributes) if config.attributes
+      set_overrides(config.overrides) if config.overrides
+      set_custom_assignments(config.custom_assignments) if config.custom_assignments
+    end
+
+    def initialize_async(clock, config, data_provider, event_handler, event_logger,
+                         variable_parser, audience_matcher)
+      init_common(clock, config, data_provider, event_handler, event_logger,
+                  variable_parser, audience_matcher)
     end
 
     attr_accessor :clock,

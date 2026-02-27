@@ -140,6 +140,41 @@ context_config.set_unit('session_id', '5ebf06d8cb5d8137290c4abb64155584fbdb64d8'
 context = Absmartly.create_context(context_config)
 ```
 
+### Async Context Creation
+
+When you want to avoid blocking the current thread while fetching experiment data, use `create_context_async`. It returns a `Context` immediately and fetches data in a background thread.
+
+```ruby
+sdk = ABSmartly.new(
+  "https://your-company.absmartly.io/v1",
+  api_key: "YOUR-API-KEY",
+  application: "website",
+  environment: "development"
+)
+
+context_config = ContextConfig.create
+context_config.set_unit('session_id', '5ebf06d8cb5d8137290c4abb64155584fbdb64d8')
+
+context = sdk.create_context_async(context_config)
+
+# Do other work while data is being fetched...
+
+# Block until the context is ready (or use a timeout)
+context.wait_until_ready
+# context.wait_until_ready(5) # with a 5-second timeout
+
+if context.ready?
+  treatment = context.treatment('exp_test_experiment')
+end
+```
+
+Or using the global configuration approach:
+
+```ruby
+context = Absmartly.create_context_async(context_config)
+context.wait_until_ready
+```
+
 ### With Pre-fetched Data
 
 When doing full-stack experimentation with ABsmartly, we recommend creating a context only once on the server-side. Creating a context involves a round-trip to the ABsmartly event collector. We can avoid repeating the round-trip on the client-side by sending the server-side data embedded in the first document.
