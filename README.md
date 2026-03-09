@@ -71,9 +71,9 @@ Absmartly.configure_client do |config|
 end
 ```
 
-#### Advanced: Full Configuration with Builder Pattern
+#### Alternative: Full Configuration
 
-For advanced use cases where you need custom providers, serializers, or other low-level configurations:
+For use cases where you need custom providers, serializers, or other low-level configurations:
 
 ```ruby
 require 'absmartly'
