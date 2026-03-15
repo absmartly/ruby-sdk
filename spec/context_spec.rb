@@ -272,14 +272,6 @@ RSpec.describe Context do
     }.to raise_error(IllegalStateException, closed_message)
 
     expect {
-      context.set_override("exp_test_ab", 2)
-    }.to raise_error(IllegalStateException, closed_message)
-
-    expect {
-      context.set_overrides("exp_test_ab": 2)
-    }.to raise_error(IllegalStateException, closed_message)
-
-    expect {
       context.set_unit("test", "test")
     }.to raise_error(IllegalStateException, closed_message)
 

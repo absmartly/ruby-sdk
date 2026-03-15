@@ -90,14 +90,10 @@ class Context
   end
 
   def set_override(experiment_name, variant)
-    check_not_closed?
-
     @overrides[experiment_name.to_s.to_sym] = variant
   end
 
   def set_overrides(overrides)
-    check_not_closed?
-
     @overrides.merge!(overrides.transform_keys(&:to_sym))
   end
 
