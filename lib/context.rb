@@ -120,7 +120,10 @@ class Context
   end
 
   def experiments
-    check_ready?(true)
+    unless ready? && !@closed
+      log_error(IllegalStateException.new(ready? ? "ABsmartly Context is finalized." : "ABsmartly Context is not yet ready."))
+      return []
+    end
 
     @data.experiments.map(&:name)
   end
@@ -193,7 +196,11 @@ class Context
   end
 
   def treatment(experiment_name)
-    check_ready?(true)
+    unless ready? && !@closed
+      log_error(IllegalStateException.new(ready? ? "ABsmartly Context is finalized." : "ABsmartly Context is not yet ready."))
+      return 0
+    end
+
     assignment = assignment(experiment_name)
     unless assignment.exposed
       queue_exposure(assignment)
@@ -226,7 +233,10 @@ class Context
   end
 
   def peek_treatment(experiment_name)
-    check_ready?(true)
+    unless ready? && !@closed
+      log_error(IllegalStateException.new(ready? ? "ABsmartly Context is finalized." : "ABsmartly Context is not yet ready."))
+      return 0
+    end
 
     assignment(experiment_name).variant
   end
@@ -234,7 +244,10 @@ class Context
   alias peek peek_treatment
 
   def variable_keys
-    check_ready?(true)
+    unless ready? && !@closed
+      log_error(IllegalStateException.new(ready? ? "ABsmartly Context is finalized." : "ABsmartly Context is not yet ready."))
+      return {}
+    end
 
     hsh = {}
     @index_variables.each do |key, values|
@@ -244,7 +257,10 @@ class Context
   end
 
   def variable_value(key, default_value)
-    check_ready?(true)
+    unless ready? && !@closed
+      log_error(IllegalStateException.new(ready? ? "ABsmartly Context is finalized." : "ABsmartly Context is not yet ready."))
+      return default_value
+    end
 
     assignment = variable_assignment(key)
     unless assignment.nil? || assignment.variables.nil?
@@ -256,7 +272,11 @@ class Context
   end
 
   def custom_field_keys
-    check_ready?(true)
+    unless ready? && !@closed
+      log_error(IllegalStateException.new(ready? ? "ABsmartly Context is finalized." : "ABsmartly Context is not yet ready."))
+      return []
+    end
+
     keys = []
 
     @data.experiments.each do |experiment|
@@ -284,7 +304,10 @@ class Context
   end
 
   def peek_variable_value(key, default_value)
-    check_ready?(true)
+    unless ready? && !@closed
+      log_error(IllegalStateException.new(ready? ? "ABsmartly Context is finalized." : "ABsmartly Context is not yet ready."))
+      return default_value
+    end
 
     assignment = variable_assignment(key)
     return assignment.variables[key.to_s.to_sym] if !assignment.nil? &&
@@ -417,7 +440,10 @@ class Context
     end
 
     def custom_field(experiment_name, key)
-      check_ready?(true)
+      unless ready? && !@closed
+        log_error(IllegalStateException.new(ready? ? "ABsmartly Context is finalized." : "ABsmartly Context is not yet ready."))
+        return nil
+      end
       @context_custom_fields.dig(experiment_name, key)
     end
 

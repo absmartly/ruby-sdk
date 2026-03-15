@@ -222,32 +222,16 @@ RSpec.describe Context do
     expect(context.failed?).to be_falsey
 
     not_ready_message = "ABsmartly Context is not yet ready."
-    expect {
-      context.peek_treatment("exp_test_ab")
-    }.to raise_error(IllegalStateException, not_ready_message)
 
-    expect {
-      context.treatment("exp_test_ab")
-    }.to raise_error(IllegalStateException, not_ready_message)
+    expect(context.peek_treatment("exp_test_ab")).to eq(0)
+    expect(context.treatment("exp_test_ab")).to eq(0)
+    expect(context.experiments).to eq([])
+    expect(context.variable_value("banner.border", 17)).to eq(17)
+    expect(context.peek_variable_value("banner.border", 17)).to eq(17)
+    expect(context.variable_keys).to eq({})
 
     expect {
       context.data
-    }.to raise_error(IllegalStateException, not_ready_message)
-
-    expect {
-      context.experiments
-    }.to raise_error(IllegalStateException, not_ready_message)
-
-    expect {
-      context.variable_value("banner.border", 17)
-    }.to raise_error(IllegalStateException, not_ready_message)
-
-    expect {
-      context.peek_variable_value("banner.border", 17)
-    }.to raise_error(IllegalStateException, not_ready_message)
-
-    expect {
-      context.variable_keys
     }.to raise_error(IllegalStateException, not_ready_message)
   end
 
@@ -284,14 +268,6 @@ RSpec.describe Context do
     }.to raise_error(IllegalStateException, closed_message)
 
     expect {
-      context.peek_treatment("exp_test_ab")
-    }.to raise_error(IllegalStateException, closed_message)
-
-    expect {
-      context.treatment("exp_test_ab")
-    }.to raise_error(IllegalStateException, closed_message)
-
-    expect {
       context.track("goal1", nil)
     }.to raise_error(IllegalStateException, closed_message)
 
@@ -303,21 +279,12 @@ RSpec.describe Context do
       context.data
     }.to raise_error(IllegalStateException, closed_message)
 
-    expect {
-      context.experiments
-    }.to raise_error(IllegalStateException, closed_message)
-
-    expect {
-      context.variable_value("banner.border", 17)
-    }.to raise_error(IllegalStateException, closed_message)
-
-    expect {
-      context.peek_variable_value("banner.border", 17)
-    }.to raise_error(IllegalStateException, closed_message)
-
-    expect {
-      context.variable_keys
-    }.to raise_error(IllegalStateException, closed_message)
+    expect(context.peek_treatment("exp_test_ab")).to eq(0)
+    expect(context.treatment("exp_test_ab")).to eq(0)
+    expect(context.experiments).to eq([])
+    expect(context.variable_value("banner.border", 17)).to eq(17)
+    expect(context.peek_variable_value("banner.border", 17)).to eq(17)
+    expect(context.variable_keys).to eq({})
   end
 
   it "experiments" do
@@ -1929,7 +1896,7 @@ RSpec.describe Context do
       context = create_ready_context
       context.close
 
-      expect { context.treatment("exp_test_ab") }.to raise_error(IllegalStateException)
+      expect(context.treatment("exp_test_ab")).to eq(0)
       expect { context.track("goal1", nil) }.to raise_error(IllegalStateException)
       expect { context.publish }.to raise_error(IllegalStateException)
     end
@@ -2167,6 +2134,94 @@ RSpec.describe Context do
       context.close
       expect(context.finalizing?).to be_falsey
       expect(context.closed?).to be_truthy
+    end
+  end
+
+  describe "read methods return safe defaults when not ready" do
+    it "returns 0 for treatment when not ready" do
+      context = create_context(data_future)
+      expect(context.ready?).to be_falsey
+      expect(context.treatment("exp_test_ab")).to eq(0)
+    end
+
+    it "returns 0 for peek_treatment when not ready" do
+      context = create_context(data_future)
+      expect(context.ready?).to be_falsey
+      expect(context.peek_treatment("exp_test_ab")).to eq(0)
+    end
+
+    it "returns default_value for variable_value when not ready" do
+      context = create_context(data_future)
+      expect(context.ready?).to be_falsey
+      expect(context.variable_value("banner.border", 17)).to eq(17)
+    end
+
+    it "returns default_value for peek_variable_value when not ready" do
+      context = create_context(data_future)
+      expect(context.ready?).to be_falsey
+      expect(context.peek_variable_value("banner.border", 17)).to eq(17)
+    end
+
+    it "returns empty array for experiments when not ready" do
+      context = create_context(data_future)
+      expect(context.ready?).to be_falsey
+      expect(context.experiments).to eq([])
+    end
+
+    it "returns empty hash for variable_keys when not ready" do
+      context = create_context(data_future)
+      expect(context.ready?).to be_falsey
+      expect(context.variable_keys).to eq({})
+    end
+
+    it "returns empty array for custom_field_keys when not ready" do
+      context = create_context(data_future)
+      expect(context.ready?).to be_falsey
+      expect(context.custom_field_keys).to eq([])
+    end
+  end
+
+  describe "read methods return safe defaults when closed" do
+    it "returns 0 for treatment when closed" do
+      context = create_ready_context
+      context.close
+      expect(context.treatment("exp_test_ab")).to eq(0)
+    end
+
+    it "returns 0 for peek_treatment when closed" do
+      context = create_ready_context
+      context.close
+      expect(context.peek_treatment("exp_test_ab")).to eq(0)
+    end
+
+    it "returns default_value for variable_value when closed" do
+      context = create_ready_context
+      context.close
+      expect(context.variable_value("banner.border", 17)).to eq(17)
+    end
+
+    it "returns default_value for peek_variable_value when closed" do
+      context = create_ready_context
+      context.close
+      expect(context.peek_variable_value("banner.border", 17)).to eq(17)
+    end
+
+    it "returns empty array for experiments when closed" do
+      context = create_ready_context
+      context.close
+      expect(context.experiments).to eq([])
+    end
+
+    it "returns empty hash for variable_keys when closed" do
+      context = create_ready_context
+      context.close
+      expect(context.variable_keys).to eq({})
+    end
+
+    it "returns empty array for custom_field_keys when closed" do
+      context = create_ready_context
+      context.close
+      expect(context.custom_field_keys).to eq([])
     end
   end
 end
