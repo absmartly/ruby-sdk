@@ -2088,6 +2088,87 @@ RSpec.describe Context do
       expect(context.custom_field_type("exp_test_ab", "overrides")).to eq("json")
     end
   end
+
+  describe "get_unit" do
+    it "returns the uid for a given unit type" do
+      context = create_ready_context
+      expect(context.get_unit(:session_id)).to eq("e791e240fcd3df7d238cfc285f475e8152fcc0ec")
+      expect(context.get_unit(:user_id)).to eq("123456789")
+      expect(context.get_unit(:email)).to eq("bleh@absmartly.com")
+    end
+
+    it "returns nil for unknown unit type" do
+      context = create_ready_context
+      expect(context.get_unit(:nonexistent)).to be_nil
+    end
+  end
+
+  describe "get_units" do
+    it "returns a copy of all units" do
+      context = create_ready_context
+      result = context.get_units()
+      expect(result[:session_id]).to eq("e791e240fcd3df7d238cfc285f475e8152fcc0ec")
+      expect(result[:user_id]).to eq("123456789")
+      expect(result[:email]).to eq("bleh@absmartly.com")
+    end
+  end
+
+  describe "get_attribute" do
+    it "returns the last set value for a given attribute name" do
+      context = create_ready_context
+      context.set_attribute("country", "US")
+      context.set_attribute("language", "en")
+      context.set_attribute("country", "DE")
+
+      expect(context.get_attribute("country")).to eq("DE")
+      expect(context.get_attribute("language")).to eq("en")
+    end
+
+    it "returns nil for unknown attribute" do
+      context = create_ready_context
+      expect(context.get_attribute("nonexistent")).to be_nil
+    end
+  end
+
+  describe "get_attributes" do
+    it "returns a hash of all attributes with last value for each key" do
+      context = create_ready_context
+      context.set_attribute("country", "US")
+      context.set_attribute("language", "en")
+      context.set_attribute("country", "DE")
+
+      result = context.get_attributes()
+      expect(result["country"]).to eq("DE")
+      expect(result["language"]).to eq("en")
+    end
+  end
+
+  describe "ready_error" do
+    it "returns nil when context is ready without error" do
+      context = create_ready_context
+      expect(context.ready_error).to be_nil
+    end
+
+    it "returns the exception when context failed" do
+      context = create_failed_context
+      expect(context.ready_error).not_to be_nil
+      expect(context.ready_error.message).to eq("FAILED")
+    end
+  end
+
+  describe "finalizing?" do
+    it "returns false when context is not closing" do
+      context = create_ready_context
+      expect(context.finalizing?).to be_falsey
+    end
+
+    it "returns false when context is fully closed" do
+      context = create_ready_context
+      context.close
+      expect(context.finalizing?).to be_falsey
+      expect(context.closed?).to be_truthy
+    end
+  end
 end
 
 

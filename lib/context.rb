@@ -83,6 +83,38 @@ class Context
     @closed
   end
 
+  def finalizing?
+    !@closed && @closing
+  end
+
+  def ready_error
+    @ready_error
+  end
+
+  def get_unit(unit_type)
+    @units[unit_type.to_sym]
+  end
+
+  def get_units
+    @units.dup
+  end
+
+  def get_attribute(name)
+    result = nil
+    @attributes.each do |attr|
+      result = attr.value if attr.name == name
+    end
+    result
+  end
+
+  def get_attributes
+    result = {}
+    @attributes.each do |attr|
+      result[attr.name] = attr.value
+    end
+    result
+  end
+
   def experiments
     check_ready?(true)
 
@@ -291,9 +323,11 @@ class Context
 
   def close
     unless @closed
+      @closing = true
       if @pending_count > 0
         flush
       end
+      @closing = false
       @closed = true
       log_event(ContextEventLogger::EVENT_TYPE::CLOSE, nil)
     end
@@ -589,6 +623,7 @@ class Context
 
     def set_data_failed(exception)
       @data_failed = exception
+      @ready_error = exception
       @index = {}
       @index_variables = {}
       @data = ContextData.new
@@ -623,6 +658,8 @@ class Context
       @variable_parser = variable_parser
       @audience_matcher = audience_matcher
       @closed = false
+      @closing = false
+      @ready_error = nil
 
       @units = {}
       @attributes = []
