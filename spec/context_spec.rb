@@ -50,13 +50,13 @@ RSpec.describe Context do
   }
   let(:variable_experiments) {
     {
-      "banner.border": "exp_test_ab",
-      "banner.size": "exp_test_ab",
-      "button.color": "exp_test_abc",
-      "card.width": "exp_test_not_eligible",
-      "submit.color": "exp_test_fullon",
-      "submit.shape": "exp_test_fullon",
-      "show-modal": "exp_test_new"
+      "banner.border": ["exp_test_ab"],
+      "banner.size": ["exp_test_ab"],
+      "button.color": ["exp_test_abc"],
+      "card.width": ["exp_test_not_eligible"],
+      "submit.color": ["exp_test_fullon"],
+      "submit.shape": ["exp_test_fullon"],
+      "show-modal": ["exp_test_new"]
     }
   }
   let(:publish_units) {
@@ -559,8 +559,9 @@ RSpec.describe Context do
 
     experiments = data.experiments.map(&:name)
 
-    variable_experiments.each do |variable, experiment_name|
+    variable_experiments.each do |variable, experiment_names|
       actual = context.peek_variable_value(variable, 17)
+      experiment_name = experiment_names.first
       eligible = experiment_name != "exp_test_not_eligible"
 
       if eligible && experiments.include?(experiment_name)
@@ -590,8 +591,9 @@ RSpec.describe Context do
 
     experiments = data.experiments.map(&:name)
 
-    variable_experiments.each do |variable, experiment_name|
+    variable_experiments.each do |variable, experiment_names|
       actual = context.variable_value(variable, 17)
+      experiment_name = experiment_names.first
       eligible = experiment_name != "exp_test_not_eligible"
 
       if eligible && experiments.include?(experiment_name)

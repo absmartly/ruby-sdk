@@ -344,4 +344,61 @@ RSpec.describe "Fix Plan Validations" do
       expect { context.set_overrides("exp_test_ab": 2) }.not_to raise_error
     end
   end
+
+  describe "Fix 1.1: variableKeys returns array of experiment names" do
+    it "maps each variable key to an array of experiment names" do
+      context = create_ready_context
+      keys = context.variable_keys
+      keys.each do |_key, names|
+        expect(names).to be_a(Array)
+        expect(names).not_to be_empty
+      end
+    end
+
+    it "includes both experiment names when two experiments share a variable key" do
+      descr = DefaultContextDataDeserializer.new
+
+      exp_a_variant_b = { "name" => "B", "config" => '{"shared.key":"from_exp_a"}' }
+      exp_b_variant_b = { "name" => "B", "config" => '{"shared.key":"from_exp_b"}' }
+
+      exp_a = {
+        "id" => 1, "name" => "exp_a", "unitType" => "session_id",
+        "iteration" => 1, "seedHi" => 0, "seedLo" => 0,
+        "split" => [0.5, 0.5], "trafficSeedHi" => 0, "trafficSeedLo" => 0,
+        "trafficSplit" => [0.0, 1.0], "fullOnVariant" => 0,
+        "variants" => [{ "name" => "A", "config" => nil }, exp_a_variant_b],
+        "audienceStrict" => false, "audience" => ""
+      }
+      exp_b = {
+        "id" => 2, "name" => "exp_b", "unitType" => "session_id",
+        "iteration" => 1, "seedHi" => 0, "seedLo" => 0,
+        "split" => [0.5, 0.5], "trafficSeedHi" => 0, "trafficSeedLo" => 0,
+        "trafficSplit" => [0.0, 1.0], "fullOnVariant" => 0,
+        "variants" => [{ "name" => "A", "config" => nil }, exp_b_variant_b],
+        "audienceStrict" => false, "audience" => ""
+      }
+
+      json = JSON.generate({ "experiments" => [exp_a, exp_b] })
+      shared_data = descr.deserialize(json, 0, json.length)
+
+      shared_client = instance_double(Client)
+      allow(shared_client).to receive(:context_data).and_return(
+        OpenStruct.new(data_future: shared_data, success?: true)
+      )
+      shared_provider = DefaultContextDataProvider.new(shared_client)
+      shared_future = shared_provider.context_data
+
+      config = ContextConfig.create
+      config.set_unit(:session_id, "test-unit")
+
+      context = Context.create(clock, config, shared_future, shared_provider,
+                               event_handler, nil, DefaultVariableParser.new,
+                               AudienceMatcher.new(DefaultAudienceDeserializer.new))
+
+      keys = context.variable_keys
+      expect(keys[:"shared.key"]).to be_a(Array)
+      expect(keys[:"shared.key"]).to include("exp_a")
+      expect(keys[:"shared.key"]).to include("exp_b")
+    end
+  end
 end

@@ -201,7 +201,9 @@ class Context
     check_ready?(true)
 
     hsh = {}
-    @index_variables.each { |key, value| hsh[key] = value.data.name }
+    @index_variables.each do |key, values|
+      hsh[key] = values.map { |v| v.data.name }
+    end
     hsh
   end
 
@@ -513,7 +515,8 @@ class Context
     end
 
     def variable_experiment(key)
-      @index_variables.transform_keys(&:to_sym)[key.to_s.to_sym]
+      experiments = @index_variables.transform_keys(&:to_sym)[key.to_s.to_sym]
+      experiments&.first
     end
 
     def unit_hash(unit_type, unit_uid)
@@ -540,7 +543,10 @@ class Context
             if !variant.config.nil? && !variant.config.empty?
               variables = @variable_parser.parse(self, experiment.name, variant.name,
                                                  variant.config)
-              variables.keys.each { |key| @index_variables[key] = experiment_variables }
+              variables.keys.each do |key|
+                @index_variables[key] ||= []
+                @index_variables[key] << experiment_variables unless @index_variables[key].include?(experiment_variables)
+              end
               experiment_variables.variables.push(variables)
             else
               experiment_variables.variables.push({})
