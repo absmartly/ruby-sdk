@@ -221,7 +221,7 @@ RSpec.describe Context do
     expect(context.ready?).to be_falsey
     expect(context.failed?).to be_falsey
 
-    not_ready_message = "ABSmartly Context is not yet ready"
+    not_ready_message = "ABsmartly Context is not yet ready."
     expect {
       context.peek_treatment("exp_test_ab")
     }.to raise_error(IllegalStateException, not_ready_message)
@@ -262,7 +262,7 @@ RSpec.describe Context do
 
     expect(context.closed?).to be_truthy
 
-    closed_message = "ABSmartly Context is closed"
+    closed_message = "ABsmartly Context is finalized."
     expect {
       context.set_attribute("attr1", "value1")
     }.to raise_error(IllegalStateException, closed_message)
@@ -342,7 +342,7 @@ RSpec.describe Context do
     expect {
       context.set_unit("session_id", "new_uid")
     }.to raise_error(IllegalStateException,
-                     "Unit 'session_id' already set.")
+                     "Unit 'session_id' UID already set.")
   end
 
   it "set override" do
@@ -1379,7 +1379,7 @@ RSpec.describe Context do
 
       expect {
         context.refresh
-      }.to raise_error(IllegalStateException, "ABSmartly Context is closed")
+      }.to raise_error(IllegalStateException, "ABsmartly Context is finalized.")
     end
   end
 

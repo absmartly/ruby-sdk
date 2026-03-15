@@ -138,7 +138,7 @@ RSpec.describe "create_context_async" do
       context = sdk.create_context_async(context_config)
 
       expect { context.treatment("exp_test_ab") }.to raise_error(
-        IllegalStateException, "ABSmartly Context is not yet ready"
+        IllegalStateException, "ABsmartly Context is not yet ready."
       )
     end
 

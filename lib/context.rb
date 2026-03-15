@@ -83,6 +83,10 @@ class Context
     @closed
   end
 
+  def finalized?
+    closed?
+  end
+
   def finalizing?
     !@closed && @closing
   end
@@ -158,7 +162,7 @@ class Context
 
     previous = @units[unit_type.to_sym]
     if !previous.nil? && previous != uid
-      raise IllegalStateException.new("Unit '#{unit_type}' already set.")
+      raise IllegalStateException.new("Unit '#{unit_type}' UID already set.")
     end
 
     trimmed = uid.to_s.strip
@@ -271,8 +275,12 @@ class Context
     custom_field(experimentName, key)&.value
   end
 
-  def custom_field_type(experimentName, key)
+  def custom_field_value_type(experimentName, key)
     custom_field(experimentName, key)&.type
+  end
+
+  def custom_field_type(experimentName, key)
+    custom_field_value_type(experimentName, key)
   end
 
   def peek_variable_value(key, default_value)
@@ -331,6 +339,10 @@ class Context
       @closed = true
       log_event(ContextEventLogger::EVENT_TYPE::CLOSE, nil)
     end
+  end
+
+  def finalize
+    close
   end
 
   def data
@@ -392,13 +404,13 @@ class Context
 
     def check_not_closed?
       if @closed
-        raise IllegalStateException.new("ABSmartly Context is closed")
+        raise IllegalStateException.new("ABsmartly Context is finalized.")
       end
     end
 
     def check_ready?(expect_not_closed)
       if !ready?
-        raise IllegalStateException.new("ABSmartly Context is not yet ready")
+        raise IllegalStateException.new("ABsmartly Context is not yet ready.")
       elsif expect_not_closed
         check_not_closed?
       end
