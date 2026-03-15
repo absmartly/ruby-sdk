@@ -329,6 +329,45 @@ RSpec.describe "Fix Plan Validations" do
     end
   end
 
+  describe "Fix 1.3: publish error handling preserves events on failure" do
+    it "preserves pending_count after publish failure" do
+      ev = instance_double(ContextEventHandler)
+      failure = Exception.new("FAILED")
+      failure_future = OpenStruct.new(exception: failure, success?: false, data_future: nil)
+      allow(ev).to receive(:publish).and_return(failure_future)
+
+      config = ContextConfig.create
+      config.set_units({ session_id: "e791e240fcd3df7d238cfc285f475e8152fcc0ec" })
+
+      context = Context.create(clock, config, data_future_ready, data_provider,
+                               ev, nil, DefaultVariableParser.new,
+                               AudienceMatcher.new(DefaultAudienceDeserializer.new))
+
+      context.track("goal1", nil)
+      expect(context.pending_count).to eq(1)
+
+      context.publish
+
+      expect(context.pending_count).to eq(1)
+    end
+
+    it "clears pending_count after successful publish" do
+      config = ContextConfig.create
+      config.set_units({ session_id: "e791e240fcd3df7d238cfc285f475e8152fcc0ec" })
+
+      context = Context.create(clock, config, data_future_ready, data_provider,
+                               event_handler, nil, DefaultVariableParser.new,
+                               AudienceMatcher.new(DefaultAudienceDeserializer.new))
+
+      context.track("goal1", nil)
+      expect(context.pending_count).to eq(1)
+
+      context.publish
+
+      expect(context.pending_count).to eq(0)
+    end
+  end
+
   describe "Fix 4.1: set_override works after context is closed" do
     it "allows set_override after close without raising" do
       context = create_ready_context
