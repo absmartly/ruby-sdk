@@ -87,7 +87,4 @@ class Client
     "#<Client url=#{@url.inspect}>"
   end
 
-  private
-
-  attr_reader :headers
 end

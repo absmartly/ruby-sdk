@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "time"
+require "ostruct"
 require_relative "context"
 require_relative "audience_matcher"
 require_relative "default_context_data_provider"
@@ -125,8 +126,12 @@ class ABSmartly
                                    AudienceMatcher.new(@audience_deserializer))
     data_provider = @context_data_provider
     Thread.new do
-      data_future = data_provider.context_data
-      context.set_data(data_future)
+      begin
+        data_future = data_provider.context_data
+        context.set_data(data_future)
+      rescue => e
+        context.set_data(OpenStruct.new(success?: false, exception: e))
+      end
     end
     context
   end

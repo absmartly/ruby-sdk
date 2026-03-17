@@ -36,7 +36,7 @@ class AudienceMatcher
     warn("Failed to parse audience JSON: #{e.message}")
     nil
   rescue StandardError => e
-    warn("Audience evaluation failed: #{e.class} - #{e.message}\n#{e.backtrace.first(5).join("\n")}")
+    warn("Audience evaluation failed: #{e.class} - #{e.message}")
     nil
   end
 end

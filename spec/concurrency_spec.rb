@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "ostruct"
 require "context"
 require "context_config"
 require "default_context_data_deserializer"
@@ -152,19 +153,15 @@ RSpec.describe "Concurrent Operations" do
 
       50.times { context.track("goal", nil) }
 
-      publish_count = Concurrent::AtomicFixnum.new(0) rescue 0
+      publish_results = []
       mutex = Mutex.new
       errors = []
 
       threads = 5.times.map do
         Thread.new do
           begin
-            context.publish
-            if defined?(Concurrent::AtomicFixnum)
-              publish_count.increment
-            else
-              mutex.synchronize { publish_count += 1 }
-            end
+            result = context.publish
+            mutex.synchronize { publish_results << result }
           rescue StandardError => e
             mutex.synchronize { errors << e }
           end
