@@ -204,25 +204,27 @@ class Context
   end
 
   def queue_exposure(assignment)
-    unless assignment.exposed
-      assignment.exposed = true
+    @queue_mutex.synchronize do
+      unless assignment.exposed
+        assignment.exposed = true
 
-      exposure = Exposure.new
-      exposure.id = assignment.id || 0
-      exposure.name = assignment.name
-      exposure.unit = assignment.unit_type
-      exposure.variant = assignment.variant
-      exposure.exposed_at = @clock.to_i
-      exposure.assigned = assignment.assigned
-      exposure.eligible = assignment.eligible
-      exposure.overridden = assignment.overridden
-      exposure.full_on = assignment.full_on
-      exposure.custom = assignment.custom
-      exposure.audience_mismatch = assignment.audience_mismatch
+        exposure = Exposure.new
+        exposure.id = assignment.id || 0
+        exposure.name = assignment.name
+        exposure.unit = assignment.unit_type
+        exposure.variant = assignment.variant
+        exposure.exposed_at = @clock.to_i
+        exposure.assigned = assignment.assigned
+        exposure.eligible = assignment.eligible
+        exposure.overridden = assignment.overridden
+        exposure.full_on = assignment.full_on
+        exposure.custom = assignment.custom
+        exposure.audience_mismatch = assignment.audience_mismatch
 
-      @pending_count += 1
-      @exposures.push(exposure)
-      log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposure)
+        @pending_count += 1
+        @exposures.push(exposure)
+        log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposure)
+      end
     end
   end
 
@@ -686,6 +688,7 @@ class Context
       @attrs_seq = 0
       @ready_mutex = Mutex.new
       @ready_condvar = ConditionVariable.new
+      @queue_mutex = Mutex.new
 
       set_units(config.units) if config.units
       set_attributes(config.attributes) if config.attributes
