@@ -120,10 +120,7 @@ class Context
   end
 
   def experiments
-    unless ready? && !@closed
-      log_error(IllegalStateException.new(ready? ? "ABsmartly Context is finalized." : "ABsmartly Context is not yet ready."))
-      return []
-    end
+    return [] unless ready? && !@closed
 
     @data.experiments.map(&:name)
   end
@@ -173,7 +170,7 @@ class Context
       raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
     end
 
-    @units[unit_type] = trimmed
+    @units[unit_type.to_sym] = trimmed
   end
 
   def set_units(units)
@@ -196,10 +193,7 @@ class Context
   end
 
   def treatment(experiment_name)
-    unless ready? && !@closed
-      log_error(IllegalStateException.new(ready? ? "ABsmartly Context is finalized." : "ABsmartly Context is not yet ready."))
-      return 0
-    end
+    return 0 unless ready? && !@closed
 
     assignment = assignment(experiment_name)
     unless assignment.exposed
@@ -233,10 +227,7 @@ class Context
   end
 
   def peek_treatment(experiment_name)
-    unless ready? && !@closed
-      log_error(IllegalStateException.new(ready? ? "ABsmartly Context is finalized." : "ABsmartly Context is not yet ready."))
-      return 0
-    end
+    return 0 unless ready? && !@closed
 
     assignment(experiment_name).variant
   end
@@ -244,10 +235,7 @@ class Context
   alias peek peek_treatment
 
   def variable_keys
-    unless ready? && !@closed
-      log_error(IllegalStateException.new(ready? ? "ABsmartly Context is finalized." : "ABsmartly Context is not yet ready."))
-      return {}
-    end
+    return {} unless ready? && !@closed
 
     hsh = {}
     @index_variables.each do |key, values|
@@ -257,10 +245,7 @@ class Context
   end
 
   def variable_value(key, default_value)
-    unless ready? && !@closed
-      log_error(IllegalStateException.new(ready? ? "ABsmartly Context is finalized." : "ABsmartly Context is not yet ready."))
-      return default_value
-    end
+    return default_value unless ready? && !@closed
 
     assignment = variable_assignment(key)
     unless assignment.nil? || assignment.variables.nil?
@@ -272,10 +257,7 @@ class Context
   end
 
   def custom_field_keys
-    unless ready? && !@closed
-      log_error(IllegalStateException.new(ready? ? "ABsmartly Context is finalized." : "ABsmartly Context is not yet ready."))
-      return []
-    end
+    return [] unless ready? && !@closed
 
     keys = []
 
@@ -304,10 +286,7 @@ class Context
   end
 
   def peek_variable_value(key, default_value)
-    unless ready? && !@closed
-      log_error(IllegalStateException.new(ready? ? "ABsmartly Context is finalized." : "ABsmartly Context is not yet ready."))
-      return default_value
-    end
+    return default_value unless ready? && !@closed
 
     assignment = variable_assignment(key)
     return assignment.variables[key.to_s.to_sym] if !assignment.nil? &&
@@ -440,10 +419,7 @@ class Context
     end
 
     def custom_field(experiment_name, key)
-      unless ready? && !@closed
-        log_error(IllegalStateException.new(ready? ? "ABsmartly Context is finalized." : "ABsmartly Context is not yet ready."))
-        return nil
-      end
+      return nil unless ready? && !@closed
       @context_custom_fields.dig(experiment_name, key)
     end
 
@@ -583,11 +559,11 @@ class Context
     end
 
     def experiment(experiment)
-      @index.transform_keys(&:to_sym)[experiment.to_s.to_sym]
+      @index[experiment.to_s.to_sym]
     end
 
     def variable_experiment(key)
-      experiments = @index_variables.transform_keys(&:to_sym)[key.to_s.to_sym]
+      experiments = @index_variables[key.to_s.to_sym]
       experiments&.first
     end
 
@@ -606,7 +582,7 @@ class Context
 
       if data && !data.experiments.nil? && !data.experiments.empty?
         data.experiments.each do |experiment|
-          @experimentCustomFieldValues = {}
+          @experiment_custom_field_values = {}
 
           experiment_variables = ExperimentVariables.new
           experiment_variables.data = experiment
@@ -646,15 +622,15 @@ class Context
                   value.value = custom_field_value.value
                 end
 
-                @experimentCustomFieldValues[custom_field_value.name] = value
+                @experiment_custom_field_values[custom_field_value.name] = value
 
               end
 
             end
           end
 
-          @index[experiment.name] = experiment_variables
-          @context_custom_fields[experiment.name] = @experimentCustomFieldValues
+          @index[experiment.name.to_sym] = experiment_variables
+          @context_custom_fields[experiment.name] = @experiment_custom_field_values
         end
       end
     end

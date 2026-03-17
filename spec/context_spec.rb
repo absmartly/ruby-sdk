@@ -1909,7 +1909,7 @@ RSpec.describe Context do
       context.set_unit("db_user_id", "new_uid")
 
       units_ivar = context.instance_variable_get(:@units)
-      expect(units_ivar["db_user_id"]).to eq("new_uid")
+      expect(units_ivar[:db_user_id]).to eq("new_uid")
     end
 
     it "should be callable before ready" do
