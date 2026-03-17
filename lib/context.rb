@@ -196,10 +196,7 @@ class Context
     return 0 unless ready? && !@closed
 
     assignment = assignment(experiment_name)
-    unless assignment.exposed
-      queue_exposure(assignment)
-    end
-
+    queue_exposure(assignment)
     assignment.variant
   end
 
@@ -251,7 +248,7 @@ class Context
 
     assignment = variable_assignment(key)
     unless assignment.nil? || assignment.variables.nil?
-      queue_exposure(assignment) unless assignment.exposed
+      queue_exposure(assignment)
       return assignment.variables[key.to_s.to_sym] if assignment.variables.key?(key.to_s.to_sym)
     end
 
