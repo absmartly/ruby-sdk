@@ -657,7 +657,7 @@ class Context
 
     def init_common(clock, config, data_provider, event_handler, event_logger,
                     variable_parser, audience_matcher)
-      @index = []
+      @index = {}
       @context_custom_fields = {}
       @achievements = []
       @assignment_cache = {}

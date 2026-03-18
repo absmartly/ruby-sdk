@@ -46,7 +46,7 @@ class Experiment
   def assign_to_klass(klass, arr)
     arr.map do |item|
       next if item.nil?
-      return item if item.is_a?(klass)
+      next item if item.is_a?(klass)
 
       klass.new(*item.values)
     end.compact

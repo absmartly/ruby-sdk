@@ -90,8 +90,8 @@ class ABSmartly
     timeout ||= 3000
     retries ||= 5
 
-    raise ArgumentError.new("timeout must be a positive number") if timeout.to_i <= 0
-    raise ArgumentError.new("retries must be a non-negative number") if retries.to_i < 0
+    raise ArgumentError.new("timeout must be a positive number") if Integer(timeout) <= 0
+    raise ArgumentError.new("retries must be a non-negative number") if Integer(retries) < 0
 
     client_config = ClientConfig.create
     client_config.endpoint = endpoint
