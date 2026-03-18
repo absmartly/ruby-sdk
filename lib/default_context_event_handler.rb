@@ -1,15 +1,11 @@
 # frozen_string_literal: true
 
-require_relative "context_event_handler"
+require_relative "default_context_publisher"
 
-class DefaultContextEventHandler < ContextEventHandler
-  attr_accessor :client
-
+# @deprecated Use DefaultContextPublisher instead.
+class DefaultContextEventHandler < DefaultContextPublisher
   def initialize(client)
-    @client = client
-  end
-
-  def publish(context, event)
-    @client.publish(event)
+    warn "[DEPRECATION] DefaultContextEventHandler is deprecated. Use DefaultContextPublisher instead."
+    super(client)
   end
 end

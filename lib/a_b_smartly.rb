@@ -5,6 +5,7 @@ require "ostruct"
 require_relative "context"
 require_relative "audience_matcher"
 require_relative "default_context_data_provider"
+require_relative "default_context_publisher"
 require_relative "default_context_event_handler"
 require_relative "default_variable_parser"
 require_relative "default_audience_deserializer"
@@ -64,7 +65,7 @@ class ABSmartly
       end
 
       if @context_event_handler.nil?
-        @context_event_handler = DefaultContextEventHandler.new(@client)
+        @context_event_handler = DefaultContextPublisher.new(@client)
       end
     end
 
@@ -103,7 +104,7 @@ class ABSmartly
 
     @client = Client.create(client_config)
     @context_data_provider = DefaultContextDataProvider.new(@client)
-    @context_event_handler = DefaultContextEventHandler.new(@client)
+    @context_event_handler = DefaultContextPublisher.new(@client)
     @context_event_logger = event_logger
     @variable_parser = DefaultVariableParser.new
     @audience_deserializer = DefaultAudienceDeserializer.new
