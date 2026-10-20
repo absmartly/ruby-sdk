@@ -45,15 +45,25 @@ class Context
   end
 
   def set_data(data_future)
+    ready_data = nil
+    failure = nil
     @ready_mutex.synchronize do
       if data_future.success?
         assign_data(data_future.data_future)
-        log_event(ContextEventLogger::EVENT_TYPE::READY, data_future.data_future)
+        ready_data = data_future.data_future
       else
         set_data_failed(data_future.exception)
-        log_error(data_future.exception)
+        failure = data_future.exception
       end
       @ready_condvar.broadcast
+    end
+
+    # User callbacks run outside the readiness lock so they may call
+    # wait_until_ready.
+    if failure.nil?
+      log_event(ContextEventLogger::EVENT_TYPE::READY, ready_data)
+    else
+      log_error(failure)
     end
   end
 
@@ -340,11 +350,20 @@ class Context
 
   def close
     unless @closed
+      # Called from a logger callback while a publish is in flight: defer so the
+      # events queued by the callback are still sent before finalizing.
+      if @publish_mutex.owned?
+        @close_pending = true
+        return
+      end
+
       @closing = true
       if @pending_count > 0
         flush
       end
       @closing = false
+      return if @closed
+
       @closed = true
       log_event(ContextEventLogger::EVENT_TYPE::CLOSE, nil)
     end
@@ -381,7 +400,7 @@ class Context
       # deadlock or re-send the in-flight snapshot; the outer call owns it.
       return nil if @publish_mutex.owned?
 
-      @publish_mutex.synchronize do
+      result = @publish_mutex.synchronize do
         exposures = achievements = nil
         event_count = 0
         @queue_mutex.synchronize do
@@ -390,7 +409,7 @@ class Context
           event_count = exposures.size + achievements.size
         end
 
-        return nil unless event_count > 0
+        next nil unless event_count > 0
 
         event = PublishEvent.new
         event.hashed = true
@@ -424,6 +443,12 @@ class Context
           response
         end
       end
+
+      if @close_pending
+        @close_pending = false
+        close unless @closed
+      end
+      result
     end
 
     def check_not_closed?
@@ -711,6 +736,7 @@ class Context
       @ready_condvar = ConditionVariable.new
       @queue_mutex = Mutex.new
       @publish_mutex = Mutex.new
+      @close_pending = false
 
       set_units(config.units) if config.units
       set_attributes(config.attributes) if config.attributes

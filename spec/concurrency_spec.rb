@@ -231,6 +231,53 @@ RSpec.describe "Concurrent Operations" do
       expect(event_handler).to have_received(:publish).once
     end
 
+    it "does not strand events when a PUBLISH callback queues an event and closes" do
+      sent = []
+      handler = instance_double(ContextEventHandler)
+      allow(handler).to receive(:publish) do |_ctx, event|
+        sent.concat((event.goals || []).map(&:name))
+        publish_future
+      end
+      logger = Class.new do
+        attr_accessor :context
+        def initialize; @done = false; end
+        def handle_event(event, _data)
+          return unless event == ContextEventLogger::EVENT_TYPE::PUBLISH && !@done
+          @done = true
+          context.track("late", nil)
+          context.close
+        end
+      end.new
+      config = ContextConfig.create
+      config.set_units(units)
+      context = Context.create(clock, config, data_future_ready, data_provider,
+                               handler, logger, variable_parser, audience_matcher)
+      logger.context = context
+      context.track("first", nil)
+
+      Timeout.timeout(5) { context.publish }
+
+      expect(sent).to contain_exactly("first", "late")
+      expect(context.closed?).to be(true)
+    end
+
+    it "allows a READY callback to call wait_until_ready" do
+      logger = Class.new do
+        attr_accessor :context
+        def handle_event(event, _data)
+          context.wait_until_ready(1) if event == ContextEventLogger::EVENT_TYPE::READY
+        end
+      end.new
+      config = ContextConfig.create
+      config.set_units(units)
+      context = Context.allocate
+      logger.context = context
+      context.send(:initialize_async, clock, config, data_provider, event_handler,
+                   logger, variable_parser, audience_matcher)
+
+      expect { Timeout.timeout(5) { context.set_data(data_future_ready) } }.not_to raise_error
+    end
+
     it "does not lose events during concurrent operations" do
       context = create_context
 
