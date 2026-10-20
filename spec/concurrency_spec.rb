@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "ostruct"
+require "timeout"
 require "context"
 require "context_config"
 require "default_context_data_deserializer"
@@ -210,6 +211,24 @@ RSpec.describe "Concurrent Operations" do
       logger.context = context
 
       expect { context.treatment("exp_test_ab") }.not_to raise_error
+    end
+
+    it "allows a PUBLISH callback to call publish without deadlocking" do
+      logger = Class.new do
+        attr_accessor :context
+        def handle_event(event, _data)
+          context.publish if event == ContextEventLogger::EVENT_TYPE::PUBLISH
+        end
+      end.new
+      config = ContextConfig.create
+      config.set_units(units)
+      context = Context.create(clock, config, data_future_ready, data_provider,
+                               event_handler, logger, variable_parser, audience_matcher)
+      logger.context = context
+      context.track("goal", nil)
+
+      expect { Timeout.timeout(5) { context.publish } }.not_to raise_error
+      expect(event_handler).to have_received(:publish).once
     end
 
     it "does not lose events during concurrent operations" do

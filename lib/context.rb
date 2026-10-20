@@ -14,7 +14,7 @@ class Context
   # readers see either the complete old or the complete new state.
   State = Struct.new(:data, :index, :index_variables, :custom_fields)
 
-  attr_reader :data, :pending_count
+  attr_reader :pending_count
 
   def self.create(clock, config, data_future, data_provider,
                   event_handler, event_logger, variable_parser, audience_matcher)
@@ -76,7 +76,7 @@ class Context
   end
 
   def ready?
-    !@data.nil?
+    !@state.data.nil?
   end
 
   def failed?
@@ -126,7 +126,7 @@ class Context
   def experiments
     return [] unless ready? && !@closed
 
-    @data.experiments.map(&:name)
+    @state.data.experiments.map(&:name)
   end
 
   def set_override(experiment_name, variant)
@@ -266,7 +266,7 @@ class Context
 
     keys = []
 
-    @data.experiments.each do |experiment|
+    @state.data.experiments.each do |experiment|
       custom_field_values = experiment.custom_field_values
       if custom_field_values != nil
         custom_field_values.each do |custom_field|
@@ -357,7 +357,7 @@ class Context
   def data
     check_ready?(true)
 
-    @data
+    @state.data
   end
 
   def inspect
@@ -377,6 +377,10 @@ class Context
 
       # Serialize publishes so a queued event is part of at most one in-flight
       # request; on failure the events stay queued for the next attempt.
+      # A logger callback that calls publish from inside a publish must not
+      # deadlock or re-send the in-flight snapshot; the outer call owns it.
+      return nil if @publish_mutex.owned?
+
       @publish_mutex.synchronize do
         exposures = achievements = nil
         event_count = 0
@@ -655,14 +659,12 @@ class Context
 
       # Publish the fully built snapshot; the maps are never mutated after this.
       @state = State.new(data, index, index_variables, custom_fields)
-      @data = data
     end
 
     def set_data_failed(exception)
       @data_failed = exception
       @ready_error = exception
-      @data = ContextData.new
-      @state = State.new(@data, {}, {}, {})
+      @state = State.new(ContextData.new, {}, {}, {})
       @failed = true
     end
 
