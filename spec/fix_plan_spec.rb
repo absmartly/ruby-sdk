@@ -153,10 +153,8 @@ RSpec.describe "Fix Plan Validations" do
     end
 
     it "does not use Timeout.timeout" do
-      expect(defined?(Timeout)).to be_nil.or(satisfy { |_|
-        source = File.read(File.join("lib", "json_expr", "operators", "match_operator.rb"))
-        !source.include?("Timeout.timeout")
-      })
+      source = File.read(File.join("lib", "json_expr", "operators", "match_operator.rb"))
+      expect(source).not_to include("Timeout.timeout")
     end
   end
 

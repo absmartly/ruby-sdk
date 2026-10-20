@@ -303,8 +303,10 @@ class Context
     achievement.name = goal_name
     achievement.properties = properties
 
-    @pending_count += 1
-    @achievements.push(achievement)
+    @queue_mutex.synchronize do
+      @pending_count += 1
+      @achievements.push(achievement)
+    end
     log_event(ContextEventLogger::EVENT_TYPE::GOAL, achievement)
   end
 
@@ -359,16 +361,23 @@ class Context
   private
     def flush
       if @failed
-        @exposures = []
-        @achievements = []
-        @pending_count = 0
+        @queue_mutex.synchronize do
+          @exposures = []
+          @achievements = []
+          @pending_count = 0
+        end
         return @data_failed
       end
 
-      if @pending_count > 0
+      exposures = achievements = nil
+      event_count = 0
+      @queue_mutex.synchronize do
         exposures = @exposures.dup
         achievements = @achievements.dup
-        event_count = @pending_count
+        event_count = exposures.size + achievements.size
+      end
+
+      if event_count > 0
 
         if event_count > 0
           event = PublishEvent.new
@@ -390,12 +399,16 @@ class Context
           elsif response.respond_to?(:exception) && response.exception
             return response
           elsif response.respond_to?(:success?) && !response.success?
-            warn("Publish failed: #{response.body}")
+            warn("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})")
             return response
           else
-            @exposures = []
-            @achievements = []
-            @pending_count = 0
+            # Remove only the events that were published; others may have been
+            # queued concurrently while the request was in flight.
+            @queue_mutex.synchronize do
+              @exposures.shift(exposures.size)
+              @achievements.shift(achievements.size)
+              @pending_count = [@pending_count - event_count, 0].max
+            end
             return response
           end
         end

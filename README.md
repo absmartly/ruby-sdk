@@ -11,13 +11,13 @@ The ABsmartly Ruby SDK is compatible with Ruby versions 2.7 and later. For the b
 Install the gem and add to the application's Gemfile by executing:
 
 ```bash
-$ bundle add absmartly-sdk
+bundle add absmartly-sdk
 ```
 
 If bundler is not being used to manage dependencies, install the gem by executing:
 
 ```bash
-$ gem install absmartly-sdk
+gem install absmartly-sdk
 ```
 
 ## Getting Started
@@ -352,17 +352,17 @@ class CustomEventLogger < ContextEventLogger
   def handle_event(event, data)
     case event
     when EVENT_TYPE::EXPOSURE
-      puts "Exposed to experiment: #{data[:name]}"
+      puts "Exposed to experiment: #{data.name}"
     when EVENT_TYPE::GOAL
-      puts "Goal tracked: #{data[:name]}"
+      puts "Goal tracked: #{data.name}"
     when EVENT_TYPE::ERROR
       puts "Error: #{data}"
     when EVENT_TYPE::PUBLISH
       puts "Events published: #{data.length} events"
     when EVENT_TYPE::READY
-      puts "Context ready with #{data[:experiments].length} experiments"
+      puts "Context ready with #{data.experiments.length} experiments"
     when EVENT_TYPE::REFRESH
-      puts "Context refreshed with #{data[:experiments].length} experiments"
+      puts "Context refreshed with #{data.experiments.length} experiments"
     when EVENT_TYPE::CLOSE
       puts "Context closed"
     end
@@ -523,11 +523,11 @@ class ABsmartlyMiddleware
 
     env['absmartly.context'] = context
 
-    status, headers, body = @app.call(env)
-
-    context.close
-
-    [status, headers, body]
+    begin
+      @app.call(env)
+    ensure
+      context.close
+    end
   end
 end
 
