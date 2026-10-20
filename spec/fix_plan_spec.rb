@@ -197,7 +197,7 @@ RSpec.describe "Fix Plan Validations" do
   describe "Fix #6: @index initialization as Hash" do
     it "initializes @index as a Hash" do
       context = create_ready_context
-      index = context.instance_variable_get(:@index)
+      index = context.instance_variable_get(:@state).index
       expect(index).to be_a(Hash)
     end
   end
@@ -272,14 +272,14 @@ RSpec.describe "Fix Plan Validations" do
     it "looks up experiments without transform_keys on every call" do
       context = create_ready_context
       source = File.read(File.join("lib", "context.rb"))
-      experiment_method = source[/def experiment\(experiment\).*?end/m]
+      experiment_method = source[/def experiment\(experiment.*?end/m]
       expect(experiment_method).not_to include("transform_keys")
     end
 
     it "looks up variable_experiment without transform_keys on every call" do
       context = create_ready_context
       source = File.read(File.join("lib", "context.rb"))
-      variable_method = source[/def variable_experiment\(key\).*?end/m]
+      variable_method = source[/def variable_experiment\(key.*?end/m]
       expect(variable_method).not_to include("transform_keys")
     end
   end

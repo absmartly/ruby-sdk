@@ -194,6 +194,24 @@ RSpec.describe "Concurrent Operations" do
       expect(sent.size).to eq(20)
     end
 
+    it "allows event logger callbacks to call track and publish" do
+      logger = Class.new do
+        attr_accessor :context
+        def handle_event(event, _data)
+          return unless event == ContextEventLogger::EVENT_TYPE::EXPOSURE
+          context.track("from_callback", nil)
+          context.publish
+        end
+      end.new
+      config = ContextConfig.create
+      config.set_units(units)
+      context = Context.create(clock, config, data_future_ready, data_provider,
+                               event_handler, logger, variable_parser, audience_matcher)
+      logger.context = context
+
+      expect { context.treatment("exp_test_ab") }.not_to raise_error
+    end
+
     it "does not lose events during concurrent operations" do
       context = create_context
 

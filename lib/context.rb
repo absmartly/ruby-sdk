@@ -10,6 +10,10 @@ require_relative "json/publish_event"
 require_relative "json/goal_achievement"
 
 class Context
+  # Immutable-by-convention snapshot swapped in with a single assignment so
+  # readers see either the complete old or the complete new state.
+  State = Struct.new(:data, :index, :index_variables, :custom_fields)
+
   attr_reader :data, :pending_count
 
   def self.create(clock, config, data_future, data_provider,
@@ -201,6 +205,7 @@ class Context
   end
 
   def queue_exposure(assignment)
+    exposure = nil
     @queue_mutex.synchronize do
       unless assignment.exposed
         assignment.exposed = true
@@ -220,9 +225,10 @@ class Context
 
         @pending_count += 1
         @exposures.push(exposure)
-        log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposure)
       end
     end
+    # User callbacks run outside the lock so they can call publish/track.
+    log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposure) unless exposure.nil?
   end
 
   def peek_treatment(experiment_name)
@@ -237,7 +243,7 @@ class Context
     return {} unless ready? && !@closed
 
     hsh = {}
-    @index_variables.each do |key, values|
+    @state.index_variables.each do |key, values|
       hsh[key] = values.map { |v| v.data.name }
     end
     hsh
@@ -432,7 +438,7 @@ class Context
 
     def custom_field(experiment_name, key)
       return nil unless ready? && !@closed
-      @context_custom_fields.dig(experiment_name, key)
+      @state.custom_fields.dig(experiment_name, key)
     end
 
     def experiment_matches(experiment, assignment)
@@ -463,14 +469,14 @@ class Context
       true
     end
 
-    def assignment(experiment_name)
+    def assignment(experiment_name, state = @state)
       assignment = @assignment_cache[experiment_name.to_s]
       exp_key = experiment_name.to_s.to_sym
 
       if !assignment.nil?
         custom = @cassignments[exp_key]
         override = @overrides[exp_key]
-        experiment = experiment(experiment_name.to_s)
+        experiment = experiment(experiment_name.to_s, state)
         if !override.nil?
           if assignment.overridden && assignment.variant == override
             return assignment
@@ -488,7 +494,7 @@ class Context
 
       custom = @cassignments[exp_key]
       override = @overrides[exp_key]
-      experiment = experiment(experiment_name.to_s)
+      experiment = experiment(experiment_name.to_s, state)
 
       assignment = Assignment.new
       assignment.name = experiment_name
@@ -565,17 +571,18 @@ class Context
     end
 
     def variable_assignment(key)
-      experiment = variable_experiment(key)
+      state = @state
+      experiment = variable_experiment(key, state)
 
-      assignment(experiment.data.name) unless experiment.nil?
+      assignment(experiment.data.name, state) unless experiment.nil?
     end
 
-    def experiment(experiment)
-      @index[experiment.to_s.to_sym]
+    def experiment(experiment, state = @state)
+      state.index[experiment.to_s.to_sym]
     end
 
-    def variable_experiment(key)
-      experiments = @index_variables[key.to_s.to_sym]
+    def variable_experiment(key, state = @state)
+      experiments = state.index_variables[key.to_s.to_sym]
       experiments&.first
     end
 
@@ -647,18 +654,15 @@ class Context
       end
 
       # Publish the fully built snapshot; the maps are never mutated after this.
-      @index = index
-      @index_variables = index_variables
-      @context_custom_fields = custom_fields
+      @state = State.new(data, index, index_variables, custom_fields)
       @data = data
     end
 
     def set_data_failed(exception)
       @data_failed = exception
       @ready_error = exception
-      @index = {}
-      @index_variables = {}
       @data = ContextData.new
+      @state = State.new(@data, {}, {}, {})
       @failed = true
     end
 
@@ -676,8 +680,7 @@ class Context
 
     def init_common(clock, config, data_provider, event_handler, event_logger,
                     variable_parser, audience_matcher)
-      @index = {}
-      @context_custom_fields = {}
+      @state = State.new(nil, {}, {}, {})
       @achievements = []
       @assignment_cache = {}
       @assignments = {}
