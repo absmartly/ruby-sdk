@@ -173,6 +173,27 @@ RSpec.describe "Concurrent Operations" do
       expect(errors).to be_empty
     end
 
+    it "includes each queued event in at most one publish" do
+      sent = []
+      sent_mutex = Mutex.new
+      handler = instance_double(ContextEventHandler)
+      allow(handler).to receive(:publish) do |_ctx, event|
+        sleep 0.02
+        sent_mutex.synchronize { sent.concat((event.goals || []).map(&:name)) }
+        publish_future
+      end
+      config = ContextConfig.create
+      config.set_units(units)
+      context = Context.create(clock, config, data_future_ready, data_provider,
+                               handler, event_logger, variable_parser, audience_matcher)
+
+      20.times { |i| context.track("goal_#{i}", nil) }
+      5.times.map { Thread.new { context.publish } }.each(&:join)
+
+      expect(sent.sort).to eq(sent.uniq.sort)
+      expect(sent.size).to eq(20)
+    end
+
     it "does not lose events during concurrent operations" do
       context = create_context
 

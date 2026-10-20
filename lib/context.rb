@@ -369,51 +369,51 @@ class Context
         return @data_failed
       end
 
-      exposures = achievements = nil
-      event_count = 0
-      @queue_mutex.synchronize do
-        exposures = @exposures.dup
-        achievements = @achievements.dup
-        event_count = exposures.size + achievements.size
-      end
+      # Serialize publishes so a queued event is part of at most one in-flight
+      # request; on failure the events stay queued for the next attempt.
+      @publish_mutex.synchronize do
+        exposures = achievements = nil
+        event_count = 0
+        @queue_mutex.synchronize do
+          exposures = @exposures.dup
+          achievements = @achievements.dup
+          event_count = exposures.size + achievements.size
+        end
 
-      if event_count > 0
+        return nil unless event_count > 0
 
-        if event_count > 0
-          event = PublishEvent.new
-          event.hashed = true
-          event.published_at = @clock.to_i
-          event.units = @units.map do |key, value|
-            Unit.new(key.to_s, unit_hash(key, value))
+        event = PublishEvent.new
+        event.hashed = true
+        event.published_at = @clock.to_i
+        event.units = @units.map do |key, value|
+          Unit.new(key.to_s, unit_hash(key, value))
+        end
+        event.exposures = exposures unless exposures.empty?
+        event.attributes = @attributes unless @attributes.empty?
+        event.goals = achievements unless achievements.empty?
+        log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
+
+        response = @event_handler.publish(self, event)
+
+        if response.is_a?(Exception) || response.is_a?(StandardError)
+          warn("Publish failed: #{response.message}")
+          response
+        elsif response.respond_to?(:exception) && response.exception
+          response
+        elsif response.respond_to?(:success?) && !response.success?
+          warn("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})")
+          response
+        else
+          # Remove only the events that were published; others may have been
+          # queued concurrently while the request was in flight.
+          @queue_mutex.synchronize do
+            @exposures.shift(exposures.size)
+            @achievements.shift(achievements.size)
+            @pending_count = [@pending_count - event_count, 0].max
           end
-          event.exposures = exposures unless exposures.empty?
-          event.attributes = @attributes unless @attributes.empty?
-          event.goals = achievements unless achievements.empty?
-          log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
-
-          response = @event_handler.publish(self, event)
-
-          if response.is_a?(Exception) || response.is_a?(StandardError)
-            warn("Publish failed: #{response.message}")
-            return response
-          elsif response.respond_to?(:exception) && response.exception
-            return response
-          elsif response.respond_to?(:success?) && !response.success?
-            warn("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})")
-            return response
-          else
-            # Remove only the events that were published; others may have been
-            # queued concurrently while the request was in flight.
-            @queue_mutex.synchronize do
-              @exposures.shift(exposures.size)
-              @achievements.shift(achievements.size)
-              @pending_count = [@pending_count - event_count, 0].max
-            end
-            return response
-          end
+          response
         end
       end
-      nil
     end
 
     def check_not_closed?
@@ -588,13 +588,13 @@ class Context
     end
 
     def assign_data(data)
-      @data = data
-      @index = {}
-      @index_variables = {}
+      index = {}
+      index_variables = {}
+      custom_fields = {}
 
       if data && !data.experiments.nil? && !data.experiments.empty?
         data.experiments.each do |experiment|
-          @experiment_custom_field_values = {}
+          experiment_custom_field_values = {}
 
           experiment_variables = ExperimentVariables.new
           experiment_variables.data = experiment
@@ -604,8 +604,8 @@ class Context
               variables = @variable_parser.parse(self, experiment.name, variant.name,
                                                  variant.config)
               variables.keys.each do |key|
-                @index_variables[key] ||= []
-                @index_variables[key] << experiment_variables unless @index_variables[key].include?(experiment_variables)
+                index_variables[key] ||= []
+                index_variables[key] << experiment_variables unless index_variables[key].include?(experiment_variables)
               end
               experiment_variables.variables.push(variables)
             else
@@ -634,17 +634,23 @@ class Context
                   value.value = custom_field_value.value
                 end
 
-                @experiment_custom_field_values[custom_field_value.name] = value
+                experiment_custom_field_values[custom_field_value.name] = value
 
               end
 
             end
           end
 
-          @index[experiment.name.to_sym] = experiment_variables
-          @context_custom_fields[experiment.name] = @experiment_custom_field_values
+          index[experiment.name.to_sym] = experiment_variables
+          custom_fields[experiment.name] = experiment_custom_field_values
         end
       end
+
+      # Publish the fully built snapshot; the maps are never mutated after this.
+      @index = index
+      @index_variables = index_variables
+      @context_custom_fields = custom_fields
+      @data = data
     end
 
     def set_data_failed(exception)
@@ -699,6 +705,7 @@ class Context
       @ready_mutex = Mutex.new
       @ready_condvar = ConditionVariable.new
       @queue_mutex = Mutex.new
+      @publish_mutex = Mutex.new
 
       set_units(config.units) if config.units
       set_attributes(config.attributes) if config.attributes

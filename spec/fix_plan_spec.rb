@@ -317,7 +317,7 @@ RSpec.describe "Fix Plan Validations" do
       context = create_ready_context
       source = File.read(File.join("lib", "context.rb"))
       expect(source).not_to include("@experimentCustomFieldValues")
-      expect(source).to include("@experiment_custom_field_values")
+      expect(source).to include("experiment_custom_field_values")
     end
   end
 
