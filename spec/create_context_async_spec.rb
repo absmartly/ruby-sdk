@@ -127,7 +127,7 @@ RSpec.describe "create_context_async" do
       expect(context.failed?).to be true
     end
 
-    it "returns 0 for treatment before ready" do
+    it "raises for treatment before ready" do
       config = ABSmartlyConfig.create
       config.client = slow_client_mock(delay: 5)
       sdk = ABSmartly.create(config)
@@ -137,7 +137,8 @@ RSpec.describe "create_context_async" do
 
       context = sdk.create_context_async(context_config)
 
-      expect(context.treatment("exp_test_ab")).to eq(0)
+      expect { context.treatment("exp_test_ab") }
+        .to raise_error(IllegalStateException, "ABsmartly Context is not yet ready.")
     end
 
     it "validates params just like create_context" do

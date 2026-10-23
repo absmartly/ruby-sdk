@@ -135,16 +135,9 @@ RSpec.describe "Fix Plan Validations" do
       expect(result).to be(false)
     end
 
-    it "returns nil for patterns exceeding MAX_PATTERN_LENGTH" do
-      long_pattern = "a" * 1001
-      result = operator.binary(evaluator, "test", long_pattern)
-      expect(result).to be_nil
-    end
-
-    it "returns nil for text exceeding MAX_TEXT_LENGTH" do
-      long_text = "a" * 10_001
-      result = operator.binary(evaluator, long_text, "a")
-      expect(result).to be_nil
+    it "has no length caps on pattern or text (matches the JavaScript SDK)" do
+      expect(operator.binary(evaluator, "test", "(?:t|x)" + ("e?" * 600) + "st")).to be(true)
+      expect(operator.binary(evaluator, ("b" * 10_001) + "a", "a$")).to be(true)
     end
 
     it "returns nil for invalid regex patterns" do

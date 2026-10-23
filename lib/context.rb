@@ -134,7 +134,7 @@ class Context
   end
 
   def experiments
-    return [] unless ready? && !@closed
+    check_ready?(false)
 
     @state.data.experiments.map(&:name)
   end
@@ -174,14 +174,14 @@ class Context
   def set_unit(unit_type, uid)
     check_not_closed?
 
-    previous = @units[unit_type.to_sym]
-    if !previous.nil? && previous != uid
-      raise IllegalStateException.new("Unit '#{unit_type}' UID already set.")
-    end
-
-    trimmed = uid.to_s.strip
+    trimmed = Hashing.to_utf8(uid).strip
     if trimmed.empty?
       raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
+    end
+
+    previous = @units[unit_type.to_sym]
+    if !previous.nil? && previous != trimmed
+      raise IllegalStateException.new("Unit '#{unit_type}' UID already set.")
     end
 
     @units[unit_type.to_sym] = trimmed
@@ -207,7 +207,7 @@ class Context
   end
 
   def treatment(experiment_name)
-    return 0 unless ready? && !@closed
+    check_ready?(true)
 
     assignment = assignment(experiment_name)
     queue_exposure(assignment)
@@ -217,6 +217,10 @@ class Context
   def queue_exposure(assignment)
     exposure = nil
     @queue_mutex.synchronize do
+      # Checked under the queue lock so an exposure cannot slip in after close
+      # sealed the queue and be stranded.
+      check_not_closed?
+
       unless assignment.exposed
         assignment.exposed = true
 
@@ -242,7 +246,7 @@ class Context
   end
 
   def peek_treatment(experiment_name)
-    return 0 unless ready? && !@closed
+    check_ready?(true)
 
     assignment(experiment_name).variant
   end
@@ -250,7 +254,7 @@ class Context
   alias peek peek_treatment
 
   def variable_keys
-    return {} unless ready? && !@closed
+    check_ready?(true)
 
     hsh = {}
     @state.index_variables.each do |key, values|
@@ -260,7 +264,7 @@ class Context
   end
 
   def variable_value(key, default_value)
-    return default_value unless ready? && !@closed
+    check_ready?(true)
 
     assignment = variable_assignment(key)
     unless assignment.nil? || assignment.variables.nil?
@@ -272,7 +276,7 @@ class Context
   end
 
   def custom_field_keys
-    return [] unless ready? && !@closed
+    check_ready?(true)
 
     keys = []
 
@@ -301,7 +305,7 @@ class Context
   end
 
   def peek_variable_value(key, default_value)
-    return default_value unless ready? && !@closed
+    check_ready?(true)
 
     assignment = variable_assignment(key)
     return assignment.variables[key.to_s.to_sym] if !assignment.nil? &&
@@ -320,6 +324,8 @@ class Context
     achievement.properties = properties
 
     @queue_mutex.synchronize do
+      check_not_closed?
+
       @pending_count += 1
       @achievements.push(achievement)
     end
@@ -327,45 +333,66 @@ class Context
   end
 
   def publish
-    check_not_closed?
+    check_ready?(true)
 
     result = flush
     result
   end
 
+  # A failed context is never recovered: refresh is a no-op. A failed fetch
+  # keeps the current data, logs the error and returns it.
   def refresh
-    check_not_closed?
+    check_ready?(true)
+    return nil if @failed
 
-    unless @failed
-      data_future = @data_provider.context_data
-      if data_future.success?
-        assign_data(data_future.data_future)
-        log_event(ContextEventLogger::EVENT_TYPE::REFRESH, data_future.data_future)
-      else
-        set_data_failed(data_future.exception)
-        log_error(data_future.exception)
-      end
+    data_future = @data_provider.context_data
+    if data_future.success?
+      assign_data(data_future.data_future)
+      log_event(ContextEventLogger::EVENT_TYPE::REFRESH, data_future.data_future)
+      nil
+    else
+      log_error(data_future.exception)
+      data_future.exception
     end
   end
 
+  # Publishes pending events, then seals the context. If the final publish
+  # fails the context stays open with the events queued, so close can be
+  # retried; the failure is returned (or raised, if the publisher raised).
   def close
-    unless @closed
-      # Called from a logger callback while a publish is in flight: defer so the
-      # events queued by the callback are still sent before finalizing.
-      if @publish_mutex.owned?
-        @close_pending = true
-        return
-      end
+    return nil if @closed
 
-      @closing = true
-      if @pending_count > 0
-        flush
+    # Called from a logger callback while a publish is in flight: defer so the
+    # events queued by the callback are still sent before finalizing.
+    if @publish_mutex.owned?
+      @close_pending = true
+      return nil
+    end
+
+    @closing = true
+    begin
+      loop do
+        result = flush
+        # A failed context discards its events; only a real publish failure
+        # keeps the context open.
+        return result if !@failed && publish_failed?(result)
+
+        sealed = @queue_mutex.synchronize do
+          next :done if @closed
+          # Events queued while the final publish was in flight go out too.
+          next :retry unless @exposures.empty? && @achievements.empty?
+
+          @closed = true
+          :sealed
+        end
+        return nil if sealed == :done
+        next if sealed == :retry
+
+        log_event(ContextEventLogger::EVENT_TYPE::FINALIZE, nil)
+        return nil
       end
+    ensure
       @closing = false
-      return if @closed
-
-      @closed = true
-      log_event(ContextEventLogger::EVENT_TYPE::CLOSE, nil)
     end
   end
 
@@ -424,7 +451,7 @@ class Context
 
         response = @event_handler.publish(self, event)
 
-        if response.is_a?(Exception) || response.is_a?(StandardError)
+        if response.is_a?(Exception)
           warn("Publish failed: #{response.message}")
           response
         elsif response.respond_to?(:exception) && response.exception
@@ -451,6 +478,12 @@ class Context
       result
     end
 
+    def publish_failed?(result)
+      result.is_a?(Exception) ||
+        (result.respond_to?(:exception) && result.exception) ||
+        (result.respond_to?(:success?) && !result.success?)
+    end
+
     def check_not_closed?
       if @closed
         raise IllegalStateException.new("ABsmartly Context is finalized.")
@@ -466,7 +499,7 @@ class Context
     end
 
     def custom_field(experiment_name, key)
-      return nil unless ready? && !@closed
+      check_ready?(true)
       @state.custom_fields.dig(experiment_name, key)
     end
 
@@ -486,7 +519,8 @@ class Context
             hash
           end
           match = @audience_matcher.evaluate(experiment.audience, attrs)
-          new_audience_mismatch = match && !match.result
+          # An indeterminate result (no filter, bad JSON) keeps the cached flag.
+          new_audience_mismatch = match.nil? ? assignment.audience_mismatch : !match.result
 
           if new_audience_mismatch != assignment.audience_mismatch
             return false
@@ -693,16 +727,21 @@ class Context
       @failed = true
     end
 
+    # A raising logger must not break the operation that is logging.
     def log_event(event, data)
       unless @event_logger.nil?
         @event_logger.handle_event(event, data)
       end
+    rescue StandardError => e
+      warn("Context event logger raised: #{e.class} - #{e.message}")
     end
 
     def log_error(error)
       unless @event_logger.nil?
         @event_logger.handle_event(ContextEventLogger::EVENT_TYPE::ERROR, error.message)
       end
+    rescue StandardError => e
+      warn("Context event logger raised: #{e.class} - #{e.message}")
     end
 
     def init_common(clock, config, data_provider, event_handler, event_logger,
@@ -721,6 +760,7 @@ class Context
       @audience_matcher = audience_matcher
       @closed = false
       @closing = false
+      @failed = false
       @ready_error = nil
 
       @units = {}

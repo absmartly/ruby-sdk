@@ -16,11 +16,15 @@ class DefaultHttpClient < HttpClient
   def initialize(config)
     @config = config
     @session = Faraday.new("") do |f|
+      # Like the JavaScript SDK, retry network failures and 5xx responses on
+      # both the context fetch (GET) and publish (PUT); 4xx is final.
       f.request :retry,
                 max: config.max_retries,
                 interval: config.retry_interval,
                 interval_randomness: 0.5,
-                backoff_factor: 2
+                backoff_factor: 2,
+                exceptions: Faraday::Retry::Middleware::DEFAULT_EXCEPTIONS + [Faraday::ConnectionFailed],
+                retry_statuses: (500..599).to_a
       f.options.timeout = config.connect_timeout
       f.options.open_timeout = config.connection_request_timeout
       f.adapter :net_http_persistent, pool_size: config.pool_size do |http|

@@ -50,7 +50,18 @@ class Client
   end
 
   def context_data
-    @promise = @http_client.get(@url, @query, @headers)
+    @exception = nil
+    @data_future = nil
+    begin
+      @promise = @http_client.get(@url, @query, @headers)
+    rescue StandardError => e
+      # A network failure fails the context instead of escaping create_context.
+      @promise = nil
+      @exception = e
+      warn("Failed to fetch context data: #{e.class} - #{e.message}")
+      return self
+    end
+
     unless @promise.success?
       @exception = Exception.new(@promise.body)
       warn("Failed to fetch context data (status=#{@promise.respond_to?(:status) ? @promise.status : 'unknown'})")

@@ -223,12 +223,16 @@ RSpec.describe Context do
 
     not_ready_message = "ABsmartly Context is not yet ready."
 
-    expect(context.peek_treatment("exp_test_ab")).to eq(0)
-    expect(context.treatment("exp_test_ab")).to eq(0)
-    expect(context.experiments).to eq([])
-    expect(context.variable_value("banner.border", 17)).to eq(17)
-    expect(context.peek_variable_value("banner.border", 17)).to eq(17)
-    expect(context.variable_keys).to eq({})
+    expect { context.peek_treatment("exp_test_ab") }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.treatment("exp_test_ab") }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.experiments }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.variable_value("banner.border", 17) }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.peek_variable_value("banner.border", 17) }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.variable_keys }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.custom_field_keys }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.custom_field_value("exp_test_ab", "country") }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.publish }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.refresh }.to raise_error(IllegalStateException, not_ready_message)
 
     expect {
       context.data
@@ -279,12 +283,15 @@ RSpec.describe Context do
       context.data
     }.to raise_error(IllegalStateException, closed_message)
 
-    expect(context.peek_treatment("exp_test_ab")).to eq(0)
-    expect(context.treatment("exp_test_ab")).to eq(0)
-    expect(context.experiments).to eq([])
-    expect(context.variable_value("banner.border", 17)).to eq(17)
-    expect(context.peek_variable_value("banner.border", 17)).to eq(17)
-    expect(context.variable_keys).to eq({})
+    expect { context.peek_treatment("exp_test_ab") }.to raise_error(IllegalStateException, closed_message)
+    expect { context.treatment("exp_test_ab") }.to raise_error(IllegalStateException, closed_message)
+    expect { context.variable_value("banner.border", 17) }.to raise_error(IllegalStateException, closed_message)
+    expect { context.peek_variable_value("banner.border", 17) }.to raise_error(IllegalStateException, closed_message)
+    expect { context.variable_keys }.to raise_error(IllegalStateException, closed_message)
+    expect { context.custom_field_keys }.to raise_error(IllegalStateException, closed_message)
+    expect { context.refresh }.to raise_error(IllegalStateException, closed_message)
+    # experiments only requires readiness, like the JavaScript SDK.
+    expect(context.experiments).to eq(data.experiments.map(&:name))
   end
 
   it "experiments" do
@@ -1290,9 +1297,11 @@ RSpec.describe Context do
 
       allow(data_provider).to receive(:context_data).and_return(failure_future)
 
-      context.refresh
+      expect(context.refresh).to eq(failure)
 
-      expect(context.failed?).to be_truthy
+      # A failed refresh keeps the current data; only the initial fetch fails a context.
+      expect(context.failed?).to be_falsey
+      expect(context.treatment("exp_test_ab")).to eq(expected_variants[:exp_test_ab])
       expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::ERROR, "FAILED")
     end
 
@@ -1307,7 +1316,7 @@ RSpec.describe Context do
       context.refresh
 
       expect(context.pending_count).to eq(2)
-      expect(context.failed?).to be_truthy
+      expect(context.failed?).to be_falsey
     end
 
     it "does not refresh when context already failed" do
@@ -1315,9 +1324,10 @@ RSpec.describe Context do
       expect(context.failed?).to be_truthy
 
       initial_data = context.data
-      context.refresh
+      expect(context.refresh).to be_nil
 
       expect(context.data).to eq(initial_data)
+      expect(context.failed?).to be_truthy
     end
 
     it "updates data on successful refresh" do
@@ -1896,7 +1906,7 @@ RSpec.describe Context do
       context = create_ready_context
       context.close
 
-      expect(context.treatment("exp_test_ab")).to eq(0)
+      expect { context.treatment("exp_test_ab") }.to raise_error(IllegalStateException)
       expect { context.track("goal1", nil) }.to raise_error(IllegalStateException)
       expect { context.publish }.to raise_error(IllegalStateException)
     end
@@ -2026,7 +2036,7 @@ RSpec.describe Context do
         ContextEventLogger::EVENT_TYPE::PUBLISH, instance_of(PublishEvent)
       ).once
       expect(event_logger).to have_received(:handle_event).with(
-        ContextEventLogger::EVENT_TYPE::CLOSE, nil
+        ContextEventLogger::EVENT_TYPE::FINALIZE, nil
       ).once
     end
 
@@ -2137,91 +2147,41 @@ RSpec.describe Context do
     end
   end
 
-  describe "read methods return safe defaults when not ready" do
-    it "returns 0 for treatment when not ready" do
+  describe "read methods raise when not ready" do
+    let(:not_ready_message) { "ABsmartly Context is not yet ready." }
+
+    it "raises for treatment, peek and variable reads" do
       context = create_context(data_future)
       expect(context.ready?).to be_falsey
-      expect(context.treatment("exp_test_ab")).to eq(0)
+      expect { context.treatment("exp_test_ab") }.to raise_error(IllegalStateException, not_ready_message)
+      expect { context.peek_treatment("exp_test_ab") }.to raise_error(IllegalStateException, not_ready_message)
+      expect { context.variable_value("banner.border", 17) }.to raise_error(IllegalStateException, not_ready_message)
+      expect { context.peek_variable_value("banner.border", 17) }.to raise_error(IllegalStateException, not_ready_message)
+      expect { context.experiments }.to raise_error(IllegalStateException, not_ready_message)
+      expect { context.variable_keys }.to raise_error(IllegalStateException, not_ready_message)
+      expect { context.custom_field_keys }.to raise_error(IllegalStateException, not_ready_message)
+      expect(context.pending_count).to eq(0)
     end
 
-    it "returns 0 for peek_treatment when not ready" do
+    it "still queues goals before ready" do
       context = create_context(data_future)
-      expect(context.ready?).to be_falsey
-      expect(context.peek_treatment("exp_test_ab")).to eq(0)
-    end
-
-    it "returns default_value for variable_value when not ready" do
-      context = create_context(data_future)
-      expect(context.ready?).to be_falsey
-      expect(context.variable_value("banner.border", 17)).to eq(17)
-    end
-
-    it "returns default_value for peek_variable_value when not ready" do
-      context = create_context(data_future)
-      expect(context.ready?).to be_falsey
-      expect(context.peek_variable_value("banner.border", 17)).to eq(17)
-    end
-
-    it "returns empty array for experiments when not ready" do
-      context = create_context(data_future)
-      expect(context.ready?).to be_falsey
-      expect(context.experiments).to eq([])
-    end
-
-    it "returns empty hash for variable_keys when not ready" do
-      context = create_context(data_future)
-      expect(context.ready?).to be_falsey
-      expect(context.variable_keys).to eq({})
-    end
-
-    it "returns empty array for custom_field_keys when not ready" do
-      context = create_context(data_future)
-      expect(context.ready?).to be_falsey
-      expect(context.custom_field_keys).to eq([])
+      context.track("goal1", nil)
+      expect(context.pending_count).to eq(1)
     end
   end
 
-  describe "read methods return safe defaults when closed" do
-    it "returns 0 for treatment when closed" do
+  describe "read methods raise when closed" do
+    it "raises for treatment, peek and variable reads" do
       context = create_ready_context
       context.close
-      expect(context.treatment("exp_test_ab")).to eq(0)
-    end
-
-    it "returns 0 for peek_treatment when closed" do
-      context = create_ready_context
-      context.close
-      expect(context.peek_treatment("exp_test_ab")).to eq(0)
-    end
-
-    it "returns default_value for variable_value when closed" do
-      context = create_ready_context
-      context.close
-      expect(context.variable_value("banner.border", 17)).to eq(17)
-    end
-
-    it "returns default_value for peek_variable_value when closed" do
-      context = create_ready_context
-      context.close
-      expect(context.peek_variable_value("banner.border", 17)).to eq(17)
-    end
-
-    it "returns empty array for experiments when closed" do
-      context = create_ready_context
-      context.close
-      expect(context.experiments).to eq([])
-    end
-
-    it "returns empty hash for variable_keys when closed" do
-      context = create_ready_context
-      context.close
-      expect(context.variable_keys).to eq({})
-    end
-
-    it "returns empty array for custom_field_keys when closed" do
-      context = create_ready_context
-      context.close
-      expect(context.custom_field_keys).to eq([])
+      closed_message = "ABsmartly Context is finalized."
+      expect { context.treatment("exp_test_ab") }.to raise_error(IllegalStateException, closed_message)
+      expect { context.peek_treatment("exp_test_ab") }.to raise_error(IllegalStateException, closed_message)
+      expect { context.variable_value("banner.border", 17) }.to raise_error(IllegalStateException, closed_message)
+      expect { context.peek_variable_value("banner.border", 17) }.to raise_error(IllegalStateException, closed_message)
+      expect { context.variable_keys }.to raise_error(IllegalStateException, closed_message)
+      expect { context.custom_field_keys }.to raise_error(IllegalStateException, closed_message)
+      expect { context.custom_field_value("exp_test_ab", "country") }.to raise_error(IllegalStateException, closed_message)
     end
   end
 end

@@ -168,6 +168,8 @@ if context.ready?
 end
 ```
 
+Read methods (`treatment`, `peek_treatment`, `variable_value`, `peek_variable_value`, `variable_keys`, `experiments`, `custom_field_keys`, `custom_field_value`) raise `IllegalStateException` ("ABsmartly Context is not yet ready.") until the context is ready, and ("ABsmartly Context is finalized.") after `close`. Check `ready?` first. A context whose data fetch failed is ready and failed: reads return control (0) and the caller's defaults.
+
 Or using the global configuration approach:
 
 ```ruby
@@ -339,6 +341,8 @@ context.publish
 
 The `close` method will ensure all events have been published to the ABsmartly collector, like `publish`, and will also "seal" the context, throwing an error if any method that could generate an event is called.
 
+If the final publish fails, `close` returns the failure, the context stays open and the events stay queued, so `close` can be called again to retry.
+
 ```ruby
 context.close
 ```
@@ -363,8 +367,8 @@ class CustomEventLogger < ContextEventLogger
       puts "Context ready with #{data.experiments.length} experiments"
     when EVENT_TYPE::REFRESH
       puts "Context refreshed with #{data.experiments.length} experiments"
-    when EVENT_TYPE::CLOSE
-      puts "Context closed"
+    when EVENT_TYPE::FINALIZE
+      puts "Context finalized"
     end
   end
 end
@@ -402,7 +406,7 @@ The data parameter depends on the type of event. Currently, the SDK logs the fol
 | `Publish`   | `Context.publish()` method succeeds                     | PublishEvent sent to the collector           |
 | `Exposure`  | `Context.treatment()` method succeeds on first exposure | Exposure data enqueued for publishing        |
 | `Goal`      | `Context.track()` method succeeds                       | GoalAchievement enqueued for publishing      |
-| `Close`     | `Context.close()` method succeeds the first time        | `nil`                                        |
+| `Finalize`  | `Context.close()` method succeeds the first time        | `nil`                                        |
 
 ## Platform-Specific Examples
 
