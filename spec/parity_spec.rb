@@ -193,12 +193,14 @@ RSpec.describe "JavaScript SDK parity" do
 
     it "keeps a cached assignment when a re-evaluated audience is indeterminate" do
       exp = data.experiments.find { |e| e.name == "exp_test_ab" }
-      exp.audience = '{"no_filter":true}'
+      exp.audience_strict = true
+      exp.audience = '{"filter":[{"value":false}]}'
       allow(handler).to receive(:publish).and_return(ok_future)
       context = make_context
-      first = context.treatment("exp_test_ab")
+      expect(context.treatment("exp_test_ab")).to eq(0)
+      exp.audience = '{"no_filter":true}'
       context.set_attribute("age", 25)
-      expect(context.treatment("exp_test_ab")).to eq(first)
+      expect(context.treatment("exp_test_ab")).to eq(0)
       expect(context.pending_count).to eq(1)
     end
 
