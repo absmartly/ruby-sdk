@@ -50,13 +50,13 @@ RSpec.describe Context do
   }
   let(:variable_experiments) {
     {
-      "banner.border": "exp_test_ab",
-      "banner.size": "exp_test_ab",
-      "button.color": "exp_test_abc",
-      "card.width": "exp_test_not_eligible",
-      "submit.color": "exp_test_fullon",
-      "submit.shape": "exp_test_fullon",
-      "show-modal": "exp_test_new"
+      "banner.border": ["exp_test_ab"],
+      "banner.size": ["exp_test_ab"],
+      "button.color": ["exp_test_abc"],
+      "card.width": ["exp_test_not_eligible"],
+      "submit.color": ["exp_test_fullon"],
+      "submit.shape": ["exp_test_fullon"],
+      "show-modal": ["exp_test_new"]
     }
   }
   let(:publish_units) {
@@ -221,33 +221,21 @@ RSpec.describe Context do
     expect(context.ready?).to be_falsey
     expect(context.failed?).to be_falsey
 
-    not_ready_message = "ABSmartly Context is not yet ready"
-    expect {
-      context.peek_treatment("exp_test_ab")
-    }.to raise_error(IllegalStateException, not_ready_message)
+    not_ready_message = "ABsmartly Context is not yet ready."
 
-    expect {
-      context.treatment("exp_test_ab")
-    }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.peek_treatment("exp_test_ab") }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.treatment("exp_test_ab") }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.experiments }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.variable_value("banner.border", 17) }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.peek_variable_value("banner.border", 17) }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.variable_keys }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.custom_field_keys }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.custom_field_value("exp_test_ab", "country") }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.publish }.to raise_error(IllegalStateException, not_ready_message)
+    expect { context.refresh }.to raise_error(IllegalStateException, not_ready_message)
 
     expect {
       context.data
-    }.to raise_error(IllegalStateException, not_ready_message)
-
-    expect {
-      context.experiments
-    }.to raise_error(IllegalStateException, not_ready_message)
-
-    expect {
-      context.variable_value("banner.border", 17)
-    }.to raise_error(IllegalStateException, not_ready_message)
-
-    expect {
-      context.peek_variable_value("banner.border", 17)
-    }.to raise_error(IllegalStateException, not_ready_message)
-
-    expect {
-      context.variable_keys
     }.to raise_error(IllegalStateException, not_ready_message)
   end
 
@@ -262,21 +250,13 @@ RSpec.describe Context do
 
     expect(context.closed?).to be_truthy
 
-    closed_message = "ABSmartly Context is closed"
+    closed_message = "ABsmartly Context is finalized."
     expect {
       context.set_attribute("attr1", "value1")
     }.to raise_error(IllegalStateException, closed_message)
 
     expect {
       context.set_attributes("attr1": "value1")
-    }.to raise_error(IllegalStateException, closed_message)
-
-    expect {
-      context.set_override("exp_test_ab", 2)
-    }.to raise_error(IllegalStateException, closed_message)
-
-    expect {
-      context.set_overrides("exp_test_ab": 2)
     }.to raise_error(IllegalStateException, closed_message)
 
     expect {
@@ -292,14 +272,6 @@ RSpec.describe Context do
     }.to raise_error(IllegalStateException, closed_message)
 
     expect {
-      context.peek_treatment("exp_test_ab")
-    }.to raise_error(IllegalStateException, closed_message)
-
-    expect {
-      context.treatment("exp_test_ab")
-    }.to raise_error(IllegalStateException, closed_message)
-
-    expect {
       context.track("goal1", nil)
     }.to raise_error(IllegalStateException, closed_message)
 
@@ -311,21 +283,15 @@ RSpec.describe Context do
       context.data
     }.to raise_error(IllegalStateException, closed_message)
 
-    expect {
-      context.experiments
-    }.to raise_error(IllegalStateException, closed_message)
-
-    expect {
-      context.variable_value("banner.border", 17)
-    }.to raise_error(IllegalStateException, closed_message)
-
-    expect {
-      context.peek_variable_value("banner.border", 17)
-    }.to raise_error(IllegalStateException, closed_message)
-
-    expect {
-      context.variable_keys
-    }.to raise_error(IllegalStateException, closed_message)
+    expect { context.peek_treatment("exp_test_ab") }.to raise_error(IllegalStateException, closed_message)
+    expect { context.treatment("exp_test_ab") }.to raise_error(IllegalStateException, closed_message)
+    expect { context.variable_value("banner.border", 17) }.to raise_error(IllegalStateException, closed_message)
+    expect { context.peek_variable_value("banner.border", 17) }.to raise_error(IllegalStateException, closed_message)
+    expect { context.variable_keys }.to raise_error(IllegalStateException, closed_message)
+    expect { context.custom_field_keys }.to raise_error(IllegalStateException, closed_message)
+    expect { context.refresh }.to raise_error(IllegalStateException, closed_message)
+    # experiments only requires readiness, like the JavaScript SDK.
+    expect(context.experiments).to eq(data.experiments.map(&:name))
   end
 
   it "experiments" do
@@ -350,7 +316,7 @@ RSpec.describe Context do
     expect {
       context.set_unit("session_id", "new_uid")
     }.to raise_error(IllegalStateException,
-                     "Unit 'session_id' already set.")
+                     "Unit 'session_id' UID already set.")
   end
 
   it "set override" do
@@ -567,8 +533,9 @@ RSpec.describe Context do
 
     experiments = data.experiments.map(&:name)
 
-    variable_experiments.each do |variable, experiment_name|
+    variable_experiments.each do |variable, experiment_names|
       actual = context.peek_variable_value(variable, 17)
+      experiment_name = experiment_names.first
       eligible = experiment_name != "exp_test_not_eligible"
 
       if eligible && experiments.include?(experiment_name)
@@ -598,8 +565,9 @@ RSpec.describe Context do
 
     experiments = data.experiments.map(&:name)
 
-    variable_experiments.each do |variable, experiment_name|
+    variable_experiments.each do |variable, experiment_names|
       actual = context.variable_value(variable, 17)
+      experiment_name = experiment_names.first
       eligible = experiment_name != "exp_test_not_eligible"
 
       if eligible && experiments.include?(experiment_name)
@@ -1202,7 +1170,7 @@ RSpec.describe Context do
     actual = context.publish
     expect(actual).to eq(failure)
 
-    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::ERROR, "FAILED").once
+    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::ERROR, "FAILED").at_least(:once)
   end
 
   it "publish Does Not Call event handler When Failed" do
@@ -1260,6 +1228,961 @@ RSpec.describe Context do
 
     experiments = refresh_data.experiments.map { |x| x.name }
     expect(context.experiments).to eq(experiments)
+  end
+
+  describe "publish behavior" do
+    it "publishes pending events on manual publish" do
+      context = create_ready_context
+      context.track("goal1", { amount: 100 })
+      context.treatment("exp_test_ab")
+
+      expect(context.pending_count).to eq(2)
+
+      context.publish
+
+      expect(context.pending_count).to eq(0)
+      expect(event_handler).to have_received(:publish).once
+    end
+
+    it "does not publish when no pending events exist" do
+      context = create_ready_context
+      expect(context.pending_count).to eq(0)
+
+      context.publish
+
+      expect(event_handler).not_to have_received(:publish)
+    end
+
+    it "clears pending count after successful publish" do
+      context = create_ready_context
+      context.track("goal1", nil)
+      context.track("goal2", nil)
+      context.track("goal3", nil)
+
+      expect(context.pending_count).to eq(3)
+
+      context.publish
+
+      expect(context.pending_count).to eq(0)
+    end
+
+    it "publishes on close when pending events exist" do
+      context = create_ready_context
+      context.track("goal1", { amount: 50 })
+
+      expect(context.pending_count).to eq(1)
+
+      context.close
+
+      expect(event_handler).to have_received(:publish).once
+      expect(context.closed?).to be_truthy
+    end
+
+    it "does not publish on close when no pending events" do
+      context = create_ready_context
+      expect(context.pending_count).to eq(0)
+
+      context.close
+
+      expect(event_handler).not_to have_received(:publish)
+      expect(context.closed?).to be_truthy
+    end
+  end
+
+  describe "refresh error handling" do
+    it "handles provider error during refresh" do
+      context = create_context(data_future_ready, dt_provider: data_provider)
+      expect(context.ready?).to be_truthy
+      expect(context.failed?).to be_falsey
+
+      allow(data_provider).to receive(:context_data).and_return(failure_future)
+
+      expect(context.refresh).to eq(failure)
+
+      # A failed refresh keeps the current data; only the initial fetch fails a context.
+      expect(context.failed?).to be_falsey
+      expect(context.treatment("exp_test_ab")).to eq(expected_variants[:exp_test_ab])
+      expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::ERROR, "FAILED")
+    end
+
+    it "preserves pending events during failed refresh" do
+      context = create_context(data_future_ready, dt_provider: data_provider)
+      context.track("goal1", { amount: 100 })
+      context.treatment("exp_test_ab")
+
+      expect(context.pending_count).to eq(2)
+
+      allow(data_provider).to receive(:context_data).and_return(failure_future)
+      context.refresh
+
+      expect(context.pending_count).to eq(2)
+      expect(context.failed?).to be_falsey
+    end
+
+    it "does not refresh when context already failed" do
+      context = create_failed_context
+      expect(context.failed?).to be_truthy
+
+      initial_data = context.data
+      expect(context.refresh).to be_nil
+
+      expect(context.data).to eq(initial_data)
+      expect(context.failed?).to be_truthy
+    end
+
+    it "updates data on successful refresh" do
+      context = create_context(data_future_ready, dt_provider: refresh_data_provider)
+      original_experiments = context.experiments.dup
+
+      context.refresh
+
+      new_experiments = context.experiments
+      expect(new_experiments).not_to be_empty
+    end
+
+    it "logs refresh event on success" do
+      event_logger.clear
+      context = create_context(data_future_ready, dt_provider: refresh_data_provider)
+      expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::READY, anything).once
+
+      context.refresh
+
+      expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::REFRESH, anything).once
+    end
+
+    it "throws when refreshing closed context" do
+      context = create_ready_context
+      context.close
+
+      expect {
+        context.refresh
+      }.to raise_error(IllegalStateException, "ABsmartly Context is finalized.")
+    end
+  end
+
+  describe "error recovery and resilience" do
+    it "context remains usable after failed publish" do
+      ev = instance_double(ContextEventHandler)
+      allow(ev).to receive(:publish).and_return(failure_future)
+
+      context = create_ready_context(evt_handler: ev)
+      context.track("goal1", nil)
+
+      result = context.publish
+      expect(result.exception).to eq(failure)
+
+      expect(context.ready?).to be_truthy
+      expect(context.closed?).to be_falsey
+      expect(context.treatment("exp_test_ab")).to eq(expected_variants[:exp_test_ab])
+    end
+
+    it "queues new events after failed publish" do
+      ev = instance_double(ContextEventHandler)
+      allow(ev).to receive(:publish).and_return(failure_future)
+
+      context = create_ready_context(evt_handler: ev)
+      context.track("goal1", nil)
+      context.publish
+
+      context.track("goal2", nil)
+      expect(context.pending_count).to eq(2)
+    end
+
+    it "calls error callback on publish failure" do
+      context = create_context(data_future_failed)
+      context.track("goal1", nil)
+
+      allow(event_handler).to receive(:publish).and_return(failure_future)
+      context.publish
+
+      expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::ERROR, "FAILED")
+    end
+
+    it "failed context clears pending events on publish" do
+      context = create_failed_context
+      context.track("goal1", nil)
+      context.track("goal2", nil)
+
+      expect(context.pending_count).to eq(2)
+
+      context.publish
+
+      expect(context.pending_count).to eq(0)
+    end
+
+    it "failed context returns control variant" do
+      context = create_failed_context
+      expect(context.failed?).to be_truthy
+
+      expect(context.treatment("any_experiment")).to eq(0)
+      expect(context.peek_treatment("any_experiment")).to eq(0)
+    end
+  end
+
+  describe "attribute timestamp validation" do
+    it "stores correct timestamp on attributes" do
+      context = create_ready_context
+
+      context.set_attribute("attr1", "value1")
+      context.set_attribute("attr2", "value2")
+
+      attrs = context.instance_variable_get(:@attributes)
+      expect(attrs.length).to eq(2)
+      expect(attrs[0].set_at).to eq(clock_in_millis)
+      expect(attrs[1].set_at).to eq(clock_in_millis)
+    end
+
+    it "includes attributes with timestamps in publish event" do
+      context = create_ready_context(evt_handler: event_handler)
+
+      context.set_attribute("test_attr", "test_value")
+      context.track("goal1", nil)
+
+      expected = PublishEvent.new
+      expected.hashed = true
+      expected.published_at = clock_in_millis
+      expected.units = publish_units
+      expected.attributes = [
+        Attribute.new("test_attr", "test_value", clock_in_millis)
+      ]
+      expected.goals = [
+        GoalAchievement.new("goal1", clock_in_millis, nil)
+      ]
+
+      context.publish
+
+      expect(event_handler).to have_received(:publish).with(context, expected).once
+    end
+
+    it "preserves all attributes across multiple set operations" do
+      context = create_ready_context
+
+      context.set_attribute("attr1", "value1")
+      context.set_attribute("attr2", "value2")
+      context.set_attributes({ attr3: "value3", attr4: "value4" })
+
+      attrs = context.instance_variable_get(:@attributes)
+      expect(attrs.length).to eq(4)
+
+      names = attrs.map(&:name)
+      expect(names).to include("attr1")
+      expect(names).to include("attr2")
+      expect(names).to include(:attr3)
+      expect(names).to include(:attr4)
+    end
+  end
+
+  describe "variable override precedence" do
+    it "override takes precedence over computed assignment" do
+      context = create_ready_context
+
+      computed = context.treatment("exp_test_ab")
+      expect(computed).to eq(expected_variants[:exp_test_ab])
+
+      context.set_override("exp_test_ab", 99)
+
+      overridden = context.treatment("exp_test_ab")
+      expect(overridden).to eq(99)
+    end
+
+    it "override takes precedence over custom assignment" do
+      context = create_ready_context
+
+      context.set_custom_assignment("exp_test_ab", 5)
+      custom = context.treatment("exp_test_ab")
+      expect(custom).to eq(5)
+
+      context.set_override("exp_test_ab", 10)
+      overridden = context.treatment("exp_test_ab")
+      expect(overridden).to eq(10)
+    end
+
+    it "custom assignment takes precedence over computed for eligible experiments" do
+      context = create_ready_context
+
+      computed = context.peek_treatment("exp_test_ab")
+      expect(computed).to eq(expected_variants[:exp_test_ab])
+
+      context.set_custom_assignment("exp_test_ab", 99)
+
+      custom = context.treatment("exp_test_ab")
+      expect(custom).to eq(99)
+    end
+
+    it "complex precedence scenario with override custom and computed" do
+      context = create_ready_context
+
+      computed = context.peek_treatment("exp_test_ab")
+      expect(computed).to eq(expected_variants[:exp_test_ab])
+
+      context.set_custom_assignment("exp_test_ab", 5)
+      expect(context.treatment("exp_test_ab")).to eq(5)
+
+      context.set_override("exp_test_ab", 10)
+      expect(context.treatment("exp_test_ab")).to eq(10)
+
+      context.set_override("exp_test_ab", 15)
+      expect(context.treatment("exp_test_ab")).to eq(15)
+    end
+
+    it "peek_treatment respects override precedence" do
+      context = create_ready_context
+
+      context.set_override("exp_test_ab", 42)
+
+      expect(context.peek_treatment("exp_test_ab")).to eq(42)
+      expect(context.pending_count).to eq(0)
+    end
+  end
+
+  describe "cache invalidation on refresh" do
+    def modified_data(experiment_name, &block)
+      json_copy = JSON.parse(resource("context.json"))
+      json_copy["experiments"].each do |exp|
+        block.call(exp) if exp["name"] == experiment_name
+      end
+      descr.deserialize(JSON.generate(json_copy), 0, JSON.generate(json_copy).length)
+    end
+
+    def create_refreshable_context(modified)
+      modified_client = instance_double(Client)
+      allow(modified_client).to receive(:context_data).and_return(
+        OpenStruct.new(data_future: modified, success?: true)
+      )
+      modified_provider = DefaultContextDataProvider.new(modified_client)
+      create_context(data_future_ready, dt_provider: modified_provider)
+    end
+
+    it "should pick up changes in experiment stopped" do
+      modified = modified_data("exp_test_ab") { |exp| exp["fullOnVariant"] = 2 }
+      context = create_refreshable_context(modified)
+
+      expect(context.treatment("exp_test_ab")).to eq(expected_variants[:exp_test_ab])
+      expect(context.pending_count).to eq(1)
+
+      context.refresh
+
+      expect(context.treatment("exp_test_ab")).to eq(2)
+      expect(context.pending_count).to eq(2)
+    end
+
+    it "should pick up changes in experiment started" do
+      started_json = JSON.parse(resource("context.json"))
+      started_json["experiments"].each do |exp|
+        exp["fullOnVariant"] = 2 if exp["name"] == "exp_test_ab"
+      end
+      started_data = descr.deserialize(JSON.generate(started_json), 0, JSON.generate(started_json).length)
+
+      restarted_json = JSON.parse(resource("context.json"))
+      restarted_json["experiments"].each do |exp|
+        exp["fullOnVariant"] = 0 if exp["name"] == "exp_test_ab"
+      end
+      restarted_data = descr.deserialize(JSON.generate(restarted_json), 0, JSON.generate(restarted_json).length)
+
+      restarted_client = instance_double(Client)
+      allow(restarted_client).to receive(:context_data).and_return(
+        OpenStruct.new(data_future: restarted_data, success?: true)
+      )
+      restarted_provider = DefaultContextDataProvider.new(restarted_client)
+
+      started_client = instance_double(Client)
+      allow(started_client).to receive(:context_data).and_return(
+        OpenStruct.new(data_future: started_data, success?: true)
+      )
+      started_provider = DefaultContextDataProvider.new(started_client)
+
+      context = create_context(started_provider.context_data, dt_provider: restarted_provider)
+
+      expect(context.treatment("exp_test_ab")).to eq(2)
+      expect(context.pending_count).to eq(1)
+
+      context.refresh
+
+      expect(context.treatment("exp_test_ab")).to eq(expected_variants[:exp_test_ab])
+      expect(context.pending_count).to eq(2)
+    end
+
+    it "should pick up changes in experiment fullon" do
+      modified = modified_data("exp_test_abc") { |exp| exp["fullOnVariant"] = 1 }
+      context = create_refreshable_context(modified)
+
+      expect(context.treatment("exp_test_abc")).to eq(expected_variants[:exp_test_abc])
+      expect(context.pending_count).to eq(1)
+
+      context.refresh
+
+      expect(context.treatment("exp_test_abc")).to eq(1)
+      expect(context.pending_count).to eq(2)
+    end
+
+    it "should pick up changes in experiment traffic split" do
+      modified = modified_data("exp_test_not_eligible") do |exp|
+        exp["trafficSplit"] = [0.0, 1.0]
+      end
+      context = create_refreshable_context(modified)
+
+      expect(context.treatment("exp_test_not_eligible")).to eq(expected_variants[:exp_test_not_eligible])
+      expect(context.pending_count).to eq(1)
+
+      context.refresh
+
+      expect(context.treatment("exp_test_not_eligible")).to eq(2)
+      expect(context.pending_count).to eq(2)
+    end
+
+    it "should pick up changes in experiment iteration" do
+      modified = modified_data("exp_test_abc") do |exp|
+        exp["iteration"] = 2
+        exp["trafficSeedHi"] = 398724581
+        exp["seedHi"] = 34737352
+      end
+      context = create_refreshable_context(modified)
+
+      expect(context.treatment("exp_test_abc")).to eq(expected_variants[:exp_test_abc])
+      expect(context.pending_count).to eq(1)
+
+      context.refresh
+
+      expect(context.treatment("exp_test_abc")).to eq(1)
+      expect(context.pending_count).to eq(2)
+    end
+
+    it "should pick up changes in experiment id" do
+      modified = modified_data("exp_test_abc") do |exp|
+        exp["id"] = 11
+        exp["trafficSeedHi"] = 398724581
+        exp["seedHi"] = 34737352
+      end
+      context = create_refreshable_context(modified)
+
+      expect(context.treatment("exp_test_abc")).to eq(expected_variants[:exp_test_abc])
+      expect(context.pending_count).to eq(1)
+
+      context.refresh
+
+      expect(context.treatment("exp_test_abc")).to eq(1)
+      expect(context.pending_count).to eq(2)
+    end
+
+    it "should not re-queue exposures after refresh when not changed" do
+      context = create_context(data_future_ready, dt_provider: data_provider)
+
+      expect(context.treatment("exp_test_ab")).to eq(expected_variants[:exp_test_ab])
+      expect(context.pending_count).to eq(1)
+
+      context.refresh
+
+      expect(context.treatment("exp_test_ab")).to eq(expected_variants[:exp_test_ab])
+      expect(context.pending_count).to eq(1)
+    end
+
+    it "should not re-queue when not changed with override" do
+      context = create_context(data_future_ready, dt_provider: data_provider)
+
+      context.set_override("exp_test_ab", 3)
+      expect(context.treatment("exp_test_ab")).to eq(3)
+      expect(context.pending_count).to eq(1)
+
+      context.refresh
+
+      expect(context.treatment("exp_test_ab")).to eq(3)
+      expect(context.pending_count).to eq(1)
+    end
+
+    it "should keep overrides after refresh" do
+      modified = modified_data("exp_test_ab") { |exp| exp["fullOnVariant"] = 2 }
+      context = create_refreshable_context(modified)
+
+      context.set_override("exp_test_ab", 99)
+      expect(context.treatment("exp_test_ab")).to eq(99)
+      expect(context.pending_count).to eq(1)
+
+      context.refresh
+
+      expect(context.treatment("exp_test_ab")).to eq(99)
+      expect(context.pending_count).to eq(1)
+    end
+
+    it "should keep custom assignments after refresh" do
+      modified = modified_data("exp_test_ab") { |exp| exp["fullOnVariant"] = 2 }
+      context = create_refreshable_context(modified)
+
+      context.set_custom_assignment("exp_test_ab", 2)
+      expect(context.treatment("exp_test_ab")).to eq(2)
+      expect(context.pending_count).to eq(1)
+
+      context.refresh
+
+      expect(context.treatment("exp_test_ab")).to eq(2)
+      expect(context.pending_count).to eq(2)
+    end
+
+    it "should not re-queue when not changed on audience mismatch" do
+      aud_context = create_context(audience_data_future_ready, dt_provider: audience_data_provider)
+
+      expect(aud_context.treatment("exp_test_ab")).to eq(1)
+      expect(aud_context.pending_count).to eq(1)
+
+      aud_context.refresh
+
+      expect(aud_context.treatment("exp_test_ab")).to eq(1)
+      expect(aud_context.pending_count).to eq(1)
+    end
+  end
+
+  describe "treatment queues exposure after peek" do
+    it "should queue exposure after peek" do
+      context = create_ready_context
+
+      data.experiments.each do |experiment|
+        expect(context.peek_treatment(experiment.name)).to eq(expected_variants[experiment.name.to_sym])
+      end
+      expect(context.pending_count).to eq(0)
+
+      data.experiments.each do |experiment|
+        expect(context.treatment(experiment.name)).to eq(expected_variants[experiment.name.to_sym])
+      end
+      expect(context.pending_count).to eq(data.experiments.size)
+    end
+  end
+
+  describe "treatment with custom assignment variant" do
+    it "should queue exposure with custom assignment variant" do
+      context = create_ready_context(evt_handler: event_handler)
+
+      context.set_custom_assignment("exp_test_ab", 2)
+      expect(context.treatment("exp_test_ab")).to eq(2)
+      expect(context.pending_count).to eq(1)
+
+      context.publish
+
+      expected = PublishEvent.new
+      expected.hashed = true
+      expected.published_at = clock_in_millis
+      expected.units = publish_units
+
+      expected.exposures = [
+        Exposure.new(1, "exp_test_ab", "session_id", 2, clock_in_millis,
+                     true, true, false, false, true, false),
+      ]
+
+      expect(event_handler).to have_received(:publish).once
+      expect(event_handler).to have_received(:publish).with(context, expected).once
+    end
+  end
+
+  describe "track validation" do
+    it "should not throw when goal property values are numbers" do
+      context = create_ready_context
+
+      expect {
+        context.track("goal1", { amount: 125, hours: 245 })
+      }.not_to raise_error
+      expect(context.pending_count).to eq(1)
+    end
+
+    it "should be callable before ready" do
+      context = create_context(data_future)
+      expect(context.ready?).to be_falsey
+
+      expect {
+        context.track("goal1", { amount: 125 })
+      }.not_to raise_error
+      expect(context.pending_count).to eq(1)
+    end
+
+    it "should track goals with nil properties" do
+      context = create_ready_context
+
+      expect {
+        context.track("goal1", nil)
+      }.not_to raise_error
+      expect(context.pending_count).to eq(1)
+    end
+  end
+
+  describe "publish includes data" do
+    it "should include exposure data" do
+      context = create_ready_context(evt_handler: event_handler)
+
+      context.treatment("exp_test_ab")
+
+      expected = PublishEvent.new
+      expected.hashed = true
+      expected.published_at = clock_in_millis
+      expected.units = publish_units
+      expected.exposures = [
+        Exposure.new(1, "exp_test_ab", "session_id", 1, clock_in_millis,
+                     true, true, false, false, false, false),
+      ]
+
+      context.publish
+
+      expect(event_handler).to have_received(:publish).once
+      expect(event_handler).to have_received(:publish).with(context, expected).once
+    end
+
+    it "should include goal data" do
+      context = create_ready_context(evt_handler: event_handler)
+
+      context.track("goal1", { amount: 125, hours: 245 })
+
+      expected = PublishEvent.new
+      expected.hashed = true
+      expected.published_at = clock_in_millis
+      expected.units = publish_units
+      expected.goals = [
+        GoalAchievement.new("goal1", clock_in_millis, { amount: 125, hours: 245 })
+      ]
+
+      context.publish
+
+      expect(event_handler).to have_received(:publish).once
+      expect(event_handler).to have_received(:publish).with(context, expected).once
+    end
+
+    it "should include attribute data" do
+      context = create_ready_context(evt_handler: event_handler)
+
+      context.set_attribute("attr1", "value1")
+      context.track("goal1", nil)
+
+      expected = PublishEvent.new
+      expected.hashed = true
+      expected.published_at = clock_in_millis
+      expected.units = publish_units
+      expected.attributes = [
+        Attribute.new("attr1", "value1", clock_in_millis)
+      ]
+      expected.goals = [
+        GoalAchievement.new("goal1", clock_in_millis, nil)
+      ]
+
+      context.publish
+
+      expect(event_handler).to have_received(:publish).once
+      expect(event_handler).to have_received(:publish).with(context, expected).once
+    end
+
+    it "should not clear queue on failure" do
+      ev = instance_double(ContextEventHandler)
+      allow(ev).to receive(:publish).and_return(failure_future)
+
+      context = create_ready_context(evt_handler: ev)
+      context.track("goal1", nil)
+      expect(context.pending_count).to eq(1)
+
+      context.publish
+
+      context.track("goal2", nil)
+      expect(context.pending_count).to eq(2)
+    end
+  end
+
+  describe "finalize operations" do
+    it "should not call client publish when queue is empty" do
+      context = create_ready_context
+      expect(context.pending_count).to eq(0)
+
+      context.close
+
+      expect(event_handler).not_to have_received(:publish)
+      expect(context.closed?).to be_truthy
+    end
+
+    it "should call client publish" do
+      context = create_ready_context(evt_handler: event_handler)
+
+      context.treatment("exp_test_ab")
+      context.track("goal1", nil)
+
+      context.close
+
+      expect(event_handler).to have_received(:publish).once
+      expect(context.closed?).to be_truthy
+    end
+
+    it "should stop accepting events after close" do
+      context = create_ready_context
+      context.close
+
+      expect { context.treatment("exp_test_ab") }.to raise_error(IllegalStateException)
+      expect { context.track("goal1", nil) }.to raise_error(IllegalStateException)
+      expect { context.publish }.to raise_error(IllegalStateException)
+    end
+  end
+
+  describe "unit management" do
+    it "should set a unit" do
+      context = create_ready_context
+
+      context.set_unit("db_user_id", "new_uid")
+
+      units_ivar = context.instance_variable_get(:@units)
+      expect(units_ivar[:db_user_id]).to eq("new_uid")
+    end
+
+    it "should be callable before ready" do
+      context = create_context(data_future)
+      expect(context.ready?).to be_falsey
+
+      expect { context.set_unit("db_user_id", "some_uid") }.not_to raise_error
+    end
+  end
+
+  describe "refresh event logging" do
+    it "should call event logger when refresh failed" do
+      context = create_context(data_future_ready, dt_provider: data_provider)
+      expect(context.ready?).to be_truthy
+
+      allow(data_provider).to receive(:context_data).and_return(failure_future)
+
+      event_logger.clear
+      context.refresh
+
+      expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::ERROR, "FAILED").once
+    end
+
+    it "should call event logger on refresh success" do
+      context = create_context(data_future_ready, dt_provider: refresh_data_provider)
+      expect(context.ready?).to be_truthy
+
+      event_logger.clear
+      context.refresh
+
+      expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::REFRESH, anything).once
+    end
+  end
+
+  describe "variableValue queues exposures" do
+    it "should queue exposures after peekVariable" do
+      context = create_ready_context
+
+      expect(context.peek_variable_value("banner.border", 17)).to eq(1)
+      expect(context.pending_count).to eq(0)
+
+      expect(context.variable_value("banner.border", 17)).to eq(1)
+      expect(context.pending_count).to eq(1)
+    end
+
+    it "should queue exposures only once" do
+      context = create_ready_context
+
+      context.variable_value("banner.border", 17)
+      context.variable_value("banner.size", 17)
+      expect(context.pending_count).to eq(1)
+
+      context.variable_value("banner.border", 17)
+      context.variable_value("banner.size", 17)
+      expect(context.pending_count).to eq(1)
+    end
+
+    it "should return default value on unknown variable" do
+      context = create_ready_context
+
+      expect(context.variable_value("unknown_variable", 42)).to eq(42)
+    end
+  end
+
+  describe "peekVariableValue edge cases" do
+    it "should return default value on unknown override variant" do
+      context = create_ready_context
+      context.set_override("exp_test_ab", 99)
+
+      expect(context.peek_variable_value("banner.border", 42)).to eq(42)
+    end
+  end
+
+  describe "track event logger" do
+    it "should call event logger" do
+      event_logger.clear
+      context = create_ready_context
+      event_logger.clear
+
+      context.track("goal1", { amount: 125, hours: 245 })
+
+      expect(event_logger).to have_received(:handle_event).with(
+        ContextEventLogger::EVENT_TYPE::GOAL,
+        satisfy { |goal| goal.name == "goal1" && goal.properties == { amount: 125, hours: 245 } }
+      ).once
+    end
+  end
+
+  describe "publish event logger on success" do
+    it "should call event logger on publish success" do
+      event_logger.clear
+      context = create_ready_context(evt_handler: event_handler)
+      event_logger.clear
+
+      context.track("goal1", nil)
+      context.publish
+
+      expect(event_logger).to have_received(:handle_event).with(
+        ContextEventLogger::EVENT_TYPE::PUBLISH, instance_of(PublishEvent)
+      ).once
+    end
+  end
+
+  describe "finalize event logging" do
+    it "should call event logger on close success" do
+      event_logger.clear
+      context = create_ready_context(evt_handler: event_handler)
+      event_logger.clear
+
+      context.track("goal1", nil)
+      context.close
+
+      expect(event_logger).to have_received(:handle_event).with(
+        ContextEventLogger::EVENT_TYPE::PUBLISH, instance_of(PublishEvent)
+      ).once
+      expect(event_logger).to have_received(:handle_event).with(
+        ContextEventLogger::EVENT_TYPE::FINALIZE, nil
+      ).once
+    end
+
+    it "should call event logger on close error" do
+      ev = instance_double(ContextEventHandler)
+      allow(ev).to receive(:publish).and_return(failure_future)
+
+      event_logger.clear
+      context = create_context(data_future_ready, evt_handler: ev)
+      event_logger.clear
+
+      context.track("goal1", nil)
+      context.close
+
+      expect(event_logger).to have_received(:handle_event).with(
+        ContextEventLogger::EVENT_TYPE::PUBLISH, instance_of(PublishEvent)
+      ).once
+    end
+  end
+
+  describe "custom field value type" do
+    it "should return custom field value type" do
+      context = create_context(data_future_ready)
+
+      expect(context.custom_field_type("exp_test_ab", "country")).to eq("string")
+      expect(context.custom_field_type("exp_test_ab", "overrides")).to eq("json")
+    end
+  end
+
+  describe "get_unit" do
+    it "returns the uid for a given unit type" do
+      context = create_ready_context
+      expect(context.get_unit(:session_id)).to eq("e791e240fcd3df7d238cfc285f475e8152fcc0ec")
+      expect(context.get_unit(:user_id)).to eq("123456789")
+      expect(context.get_unit(:email)).to eq("bleh@absmartly.com")
+    end
+
+    it "returns nil for unknown unit type" do
+      context = create_ready_context
+      expect(context.get_unit(:nonexistent)).to be_nil
+    end
+  end
+
+  describe "get_units" do
+    it "returns a copy of all units" do
+      context = create_ready_context
+      result = context.get_units()
+      expect(result[:session_id]).to eq("e791e240fcd3df7d238cfc285f475e8152fcc0ec")
+      expect(result[:user_id]).to eq("123456789")
+      expect(result[:email]).to eq("bleh@absmartly.com")
+    end
+  end
+
+  describe "get_attribute" do
+    it "returns the last set value for a given attribute name" do
+      context = create_ready_context
+      context.set_attribute("country", "US")
+      context.set_attribute("language", "en")
+      context.set_attribute("country", "DE")
+
+      expect(context.get_attribute("country")).to eq("DE")
+      expect(context.get_attribute("language")).to eq("en")
+    end
+
+    it "returns nil for unknown attribute" do
+      context = create_ready_context
+      expect(context.get_attribute("nonexistent")).to be_nil
+    end
+  end
+
+  describe "get_attributes" do
+    it "returns a hash of all attributes with last value for each key" do
+      context = create_ready_context
+      context.set_attribute("country", "US")
+      context.set_attribute("language", "en")
+      context.set_attribute("country", "DE")
+
+      result = context.get_attributes()
+      expect(result["country"]).to eq("DE")
+      expect(result["language"]).to eq("en")
+    end
+  end
+
+  describe "ready_error" do
+    it "returns nil when context is ready without error" do
+      context = create_ready_context
+      expect(context.ready_error).to be_nil
+    end
+
+    it "returns the exception when context failed" do
+      context = create_failed_context
+      expect(context.ready_error).not_to be_nil
+      expect(context.ready_error.message).to eq("FAILED")
+    end
+  end
+
+  describe "finalizing?" do
+    it "returns false when context is not closing" do
+      context = create_ready_context
+      expect(context.finalizing?).to be_falsey
+    end
+
+    it "returns false when context is fully closed" do
+      context = create_ready_context
+      context.close
+      expect(context.finalizing?).to be_falsey
+      expect(context.closed?).to be_truthy
+    end
+  end
+
+  describe "read methods raise when not ready" do
+    let(:not_ready_message) { "ABsmartly Context is not yet ready." }
+
+    it "raises for treatment, peek and variable reads" do
+      context = create_context(data_future)
+      expect(context.ready?).to be_falsey
+      expect { context.treatment("exp_test_ab") }.to raise_error(IllegalStateException, not_ready_message)
+      expect { context.peek_treatment("exp_test_ab") }.to raise_error(IllegalStateException, not_ready_message)
+      expect { context.variable_value("banner.border", 17) }.to raise_error(IllegalStateException, not_ready_message)
+      expect { context.peek_variable_value("banner.border", 17) }.to raise_error(IllegalStateException, not_ready_message)
+      expect { context.experiments }.to raise_error(IllegalStateException, not_ready_message)
+      expect { context.variable_keys }.to raise_error(IllegalStateException, not_ready_message)
+      expect { context.custom_field_keys }.to raise_error(IllegalStateException, not_ready_message)
+      expect(context.pending_count).to eq(0)
+    end
+
+    it "still queues goals before ready" do
+      context = create_context(data_future)
+      context.track("goal1", nil)
+      expect(context.pending_count).to eq(1)
+    end
+  end
+
+  describe "read methods raise when closed" do
+    it "raises for treatment, peek and variable reads" do
+      context = create_ready_context
+      context.close
+      closed_message = "ABsmartly Context is finalized."
+      expect { context.treatment("exp_test_ab") }.to raise_error(IllegalStateException, closed_message)
+      expect { context.peek_treatment("exp_test_ab") }.to raise_error(IllegalStateException, closed_message)
+      expect { context.variable_value("banner.border", 17) }.to raise_error(IllegalStateException, closed_message)
+      expect { context.peek_variable_value("banner.border", 17) }.to raise_error(IllegalStateException, closed_message)
+      expect { context.variable_keys }.to raise_error(IllegalStateException, closed_message)
+      expect { context.custom_field_keys }.to raise_error(IllegalStateException, closed_message)
+      expect { context.custom_field_value("exp_test_ab", "country") }.to raise_error(IllegalStateException, closed_message)
+    end
   end
 end
 

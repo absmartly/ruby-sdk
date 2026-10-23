@@ -12,3 +12,11 @@
 .byebug_history
 
 .gemspec
+.claude/
+.DS_Store
+AUDIT_REPORT.md
+FIXES_SUMMARY.md
+SILENT_FAILURE_AUDIT.md
+vendor/
+*.bak
+*.backup
