@@ -9,11 +9,27 @@ class Hashing
   # A lone surrogate written as a 3-byte sequence.
   ENCODED_SURROGATE = /\xED[\xA0-\xBF][\x80-\xBF]/n.freeze
 
-  # Numeric units are hashed as their value rounded to an integer, like the
-  # JavaScript SDK's value.toFixed(0).
   def self.hash_unit(value)
-    unit = value.is_a?(Numeric) ? value.round.to_s : value
+    unit = value.is_a?(Numeric) ? number_to_fixed0(value) : value
     base64_url_no_padding(Digest::MD5.digest(to_utf8(unit).b))
+  end
+
+  # The text JavaScript's Number#toFixed(0) produces, which the JS SDK hashes
+  # for numeric units: rounded half away from zero, "-0" for small negative
+  # fractions, and exponent notation from 1e21 on.
+  def self.number_to_fixed0(value)
+    x = value.to_f
+    return "NaN" if x.nan?
+    return (x.positive? ? "Infinity" : "-Infinity") if x.infinite?
+
+    if x.abs >= 1e21
+      mantissa, exponent = x.to_s.split("e")
+      mantissa = mantissa.delete_suffix(".0")
+      return "#{mantissa}e#{exponent}"
+    end
+
+    rounded = x.abs.round
+    x.negative? ? "-#{rounded}" : rounded.to_s
   end
 
   def self.base64_url_no_padding(bytes)

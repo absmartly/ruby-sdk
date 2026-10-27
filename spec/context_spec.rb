@@ -319,6 +319,21 @@ RSpec.describe Context do
     expect(context.get_units[:db_user_id]).to eq(125)
   end
 
+  it "numeric uid assigns and publishes like its canonical string" do
+    make = lambda do |uid|
+      config = ContextConfig.create
+      config.set_units(units.merge(session_id: uid))
+      create_context(data_future_ready, config: config)
+    end
+    numeric = make.call(125.75)
+    string = make.call("126")
+    %w[exp_test_ab exp_test_abc exp_test_fullon].each do |name|
+      expect(numeric.treatment(name)).to eq(string.treatment(name))
+    end
+    expect(VariantAssigner.new(125.0).key).to eq(VariantAssigner.new("125").key)
+    expect(VariantAssigner.new(125.75).key).to eq(VariantAssigner.new("126").key)
+  end
+
   it "set unit rejects non string, non numeric uids" do
     context = create_ready_context
     expect {
@@ -1189,7 +1204,6 @@ RSpec.describe Context do
 
     context.publish
 
-    # A failed delivery logs an error, not a publish event (JS parity).
     expect(event_logger).not_to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::PUBLISH, anything)
     expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::ERROR, "FAILED").once
     expect(event_handler).to have_received(:publish).with(context, expected).once

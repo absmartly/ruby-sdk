@@ -41,6 +41,15 @@ RSpec.describe Hashing do
       expect(Hashing.hash_unit(125)).to eq("Pe8YStj0dV_yaYYup3OT3Q")
       expect(Hashing.hash_unit(125.75)).to eq("BpBZt--EDwx0qBTskje27A")
     end
+
+    it "formats numbers like JavaScript toFixed(0)" do
+      expect(Hashing.hash_unit(-0.1)).to eq("815ubasUW2p7sFI440lKaw")
+      expect(Hashing.hash_unit(1e21)).to eq("OKkjo8sn5USSUjdjCUBynw")
+      { -0.1 => "-0", -0.0 => "0", -2.5 => "-3", 2.5 => "3", 1e21 => "1e+21", 1.5e22 => "1.5e+22",
+        1e20 => "100000000000000000000", 2**60 + 1 => "1152921504606846976" }.each do |num, text|
+        expect(Hashing.number_to_fixed0(num)).to eq(text)
+      end
+    end
   end
 
   describe ".base64_url_no_padding" do
