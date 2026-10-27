@@ -1213,6 +1213,24 @@ RSpec.describe Context do
     expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::PUBLISH, expected).once
   end
 
+  it "a close from the error callback of a failed publish does not retry the batch" do
+    calls = 0
+    handler = Object.new
+    handler.define_singleton_method(:publish) { |_c, _e| calls += 1; StandardError.new("delivery failed") }
+    logger = Object.new
+    ctx = nil
+    logger.define_singleton_method(:handle_event) { |type, _d| ctx.close if type == ContextEventLogger::EVENT_TYPE::ERROR && calls < 50 }
+    config = ContextConfig.create
+    config.set_units(units)
+    ctx = Context.create(clock, config, data_future_ready, data_provider, handler, logger, variable_parser, audience_matcher)
+    ctx.track("goal1", nil)
+
+    expect(ctx.publish).to be_a(StandardError)
+    expect(calls).to eq(1)
+    expect(ctx.pending_count).to eq(1)
+    expect(ctx.closed?).to be false
+  end
+
   it "publishCallsEventLoggerOnError" do
     context = create_context(data_future_failed)
 

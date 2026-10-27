@@ -492,7 +492,9 @@ class Context
 
       if @close_pending
         @close_pending = false
-        close unless @closed
+        # A close requested from a callback during a failed delivery is not
+        # retried here: the events stay queued for an explicit retry.
+        close unless @closed || publish_failed?(result)
       end
       result
     end
