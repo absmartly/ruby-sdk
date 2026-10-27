@@ -27,11 +27,11 @@ class Experiment
         next
       end
 
-      if name == :applications
+      if key_str == "applications"
         @applications = assign_to_klass(ExperimentApplication, value)
-      elsif name == :variants
+      elsif key_str == "variants"
         @variants = assign_to_klass(ExperimentVariant, value)
-      elsif name == :customFieldValues
+      elsif key_str == "custom_field_values"
         if value != nil
           @custom_field_values = assign_to_klass(CustomFieldValue, value)
         end

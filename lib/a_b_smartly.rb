@@ -47,69 +47,68 @@ class ABSmartly
   end
 
   private
+    def initialize_from_config(config)
+      @context_data_provider = config.context_data_provider
+      @context_event_handler = config.context_event_handler
+      @context_event_logger = config.context_event_logger
+      @variable_parser = config.variable_parser
+      @audience_deserializer = config.audience_deserializer
+      @scheduler = config.scheduler
 
-  def initialize_from_config(config)
-    @context_data_provider = config.context_data_provider
-    @context_event_handler = config.context_event_handler
-    @context_event_logger = config.context_event_logger
-    @variable_parser = config.variable_parser
-    @audience_deserializer = config.audience_deserializer
-    @scheduler = config.scheduler
+      if @context_data_provider.nil? || @context_event_handler.nil?
+        @client = config.client
+        raise ArgumentError.new("Missing Client instance configuration") if @client.nil?
 
-    if @context_data_provider.nil? || @context_event_handler.nil?
-      @client = config.client
-      raise ArgumentError.new("Missing Client instance configuration") if @client.nil?
+        if @context_data_provider.nil?
+          @context_data_provider = DefaultContextDataProvider.new(@client)
+        end
 
-      if @context_data_provider.nil?
-        @context_data_provider = DefaultContextDataProvider.new(@client)
+        if @context_event_handler.nil?
+          @context_event_handler = DefaultContextPublisher.new(@client)
+        end
       end
 
-      if @context_event_handler.nil?
-        @context_event_handler = DefaultContextPublisher.new(@client)
+      if @variable_parser.nil?
+        @variable_parser = DefaultVariableParser.new
+      end
+
+      if @audience_deserializer.nil?
+        @audience_deserializer = DefaultAudienceDeserializer.new
+      end
+      if @scheduler.nil?
+        @scheduler = ScheduledThreadPoolExecutor.new(1)
       end
     end
 
-    if @variable_parser.nil?
+    def initialize_from_params(endpoint, api_key, application, environment, timeout, retries, event_logger)
+      raise ArgumentError.new("Missing required parameter: endpoint") if endpoint.nil? || endpoint.to_s.strip.empty?
+      raise ArgumentError.new("Missing required parameter: api_key") if api_key.nil? || api_key.to_s.strip.empty?
+      raise ArgumentError.new("Missing required parameter: application") if application.nil? || application.to_s.strip.empty?
+      raise ArgumentError.new("Missing required parameter: environment") if environment.nil? || environment.to_s.strip.empty?
+
+      timeout = parse_number(timeout || 3000, "timeout") { |value| Float(value) }
+      retries = parse_number(retries || 5, "retries") { |value| value.is_a?(Float) ? Integer(value.to_s) : Integer(value) }
+
+      raise ArgumentError.new("timeout must be a positive number") if timeout <= 0
+      raise ArgumentError.new("retries must be a non-negative number") if retries < 0
+
+      client_config = ClientConfig.create
+      client_config.endpoint = endpoint
+      client_config.api_key = api_key
+      client_config.application = application
+      client_config.environment = environment
+      client_config.connect_timeout = timeout / 1000.0
+      client_config.connection_request_timeout = timeout / 1000.0
+      client_config.max_retries = retries
+
+      @client = Client.create(client_config)
+      @context_data_provider = DefaultContextDataProvider.new(@client)
+      @context_event_handler = DefaultContextPublisher.new(@client)
+      @context_event_logger = event_logger
       @variable_parser = DefaultVariableParser.new
-    end
-
-    if @audience_deserializer.nil?
       @audience_deserializer = DefaultAudienceDeserializer.new
-    end
-    if @scheduler.nil?
       @scheduler = ScheduledThreadPoolExecutor.new(1)
     end
-  end
-
-  def initialize_from_params(endpoint, api_key, application, environment, timeout, retries, event_logger)
-    raise ArgumentError.new("Missing required parameter: endpoint") if endpoint.nil? || endpoint.to_s.strip.empty?
-    raise ArgumentError.new("Missing required parameter: api_key") if api_key.nil? || api_key.to_s.strip.empty?
-    raise ArgumentError.new("Missing required parameter: application") if application.nil? || application.to_s.strip.empty?
-    raise ArgumentError.new("Missing required parameter: environment") if environment.nil? || environment.to_s.strip.empty?
-
-    timeout ||= 3000
-    retries ||= 5
-
-    raise ArgumentError.new("timeout must be a positive number") if Integer(timeout) <= 0
-    raise ArgumentError.new("retries must be a non-negative number") if Integer(retries) < 0
-
-    client_config = ClientConfig.create
-    client_config.endpoint = endpoint
-    client_config.api_key = api_key
-    client_config.application = application
-    client_config.environment = environment
-    client_config.connect_timeout = timeout.to_f / 1000.0
-    client_config.connection_request_timeout = timeout.to_f / 1000.0
-    client_config.max_retries = retries
-
-    @client = Client.create(client_config)
-    @context_data_provider = DefaultContextDataProvider.new(@client)
-    @context_event_handler = DefaultContextPublisher.new(@client)
-    @context_event_logger = event_logger
-    @variable_parser = DefaultVariableParser.new
-    @audience_deserializer = DefaultAudienceDeserializer.new
-    @scheduler = ScheduledThreadPoolExecutor.new(1)
-  end
 
   public
 
@@ -127,12 +126,10 @@ class ABSmartly
                                    AudienceMatcher.new(@audience_deserializer))
     data_provider = @context_data_provider
     Thread.new do
-      begin
-        data_future = data_provider.context_data
-        context.set_data(data_future)
-      rescue => e
-        context.set_data(OpenStruct.new(success?: false, exception: e))
-      end
+      data_future = data_provider.context_data
+      context.set_data(data_future)
+    rescue => e
+      context.set_data(OpenStruct.new(success?: false, exception: e))
     end
     context
   end
@@ -163,6 +160,12 @@ class ABSmartly
           raise ArgumentError.new("Unit '#{key}' UID length must be >= 1")
         end
       end
+    end
+
+    def parse_number(value, name)
+      yield value
+    rescue ArgumentError, TypeError
+      raise ArgumentError.new("#{name} must be a number")
     end
 end
 

@@ -106,9 +106,7 @@ class Context
     !@closed && @closing
   end
 
-  def ready_error
-    @ready_error
-  end
+  attr_reader :ready_error
 
   def get_unit(unit_type)
     @units[unit_type.to_sym]
@@ -296,7 +294,7 @@ class Context
       end
     end
 
-    return keys.sort.uniq
+    keys.sort.uniq
   end
 
   def custom_field_value(experimentName, key)
@@ -345,12 +343,9 @@ class Context
   def publish
     check_ready?(true)
 
-    result = flush
-    result
+    flush
   end
 
-  # A failed context is never recovered: refresh is a no-op. A failed fetch
-  # keeps the current data, logs the error and returns it.
   def refresh
     check_ready?(true)
     return nil if @failed
@@ -383,13 +378,10 @@ class Context
     begin
       loop do
         result = flush
-        # A failed context discards its events; only a real publish failure
-        # keeps the context open.
         return result if !@failed && publish_failed?(result)
 
         sealed = @queue_mutex.synchronize do
           next :done if @closed
-          # Events queued while the final publish was in flight go out too.
           next :retry unless @exposures.empty? && @achievements.empty?
 
           @closed = true
@@ -492,8 +484,6 @@ class Context
 
       if @close_pending
         @close_pending = false
-        # A close requested from a callback during a failed delivery is not
-        # retried here: the events stay queued for an explicit retry.
         close unless @closed || publish_failed?(result)
       end
       result
@@ -554,6 +544,10 @@ class Context
     end
 
     def assignment(experiment_name, state = @state)
+      @assignment_mutex.synchronize { cached_or_new_assignment(experiment_name, state) }
+    end
+
+    def cached_or_new_assignment(experiment_name, state)
       assignment = @assignment_cache[experiment_name.to_s]
       exp_key = experiment_name.to_s.to_sym
 
@@ -728,7 +722,6 @@ class Context
                 experiment_custom_field_values[custom_field_value.name] = value
 
               end
-
             end
           end
 
@@ -748,7 +741,6 @@ class Context
       @failed = true
     end
 
-    # A raising logger must not break the operation that is logging.
     def log_event(event, data)
       unless @event_logger.nil?
         @event_logger.handle_event(event, data)
@@ -770,6 +762,7 @@ class Context
       @state = State.new(nil, {}, {}, {})
       @achievements = []
       @assignment_cache = {}
+      @assignment_mutex = Mutex.new
       @assignments = {}
       @clock = clock.is_a?(String) ? Time.iso8601(clock) : clock
       @publish_delay = config.publish_delay
@@ -791,7 +784,7 @@ class Context
       @assigners = {}
       @hashed_units = {}
       @pending_count = 0
-      @exposures ||= []
+      @exposures = []
       @attrs_seq = 0
       @ready_mutex = Mutex.new
       @ready_condvar = ConditionVariable.new

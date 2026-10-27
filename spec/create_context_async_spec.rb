@@ -31,7 +31,7 @@ RSpec.describe "create_context_async" do
 
   let(:publish_future) { OpenStruct.new(success?: true) }
   let(:event_handler) do
-    ev = instance_double(ContextEventHandler)
+    ev = instance_double(ContextPublisher)
     allow(ev).to receive(:publish).and_return(publish_future)
     ev
   end
@@ -129,7 +129,7 @@ RSpec.describe "create_context_async" do
 
     it "raises for treatment before ready" do
       config = ABSmartlyConfig.create
-      config.client = slow_client_mock(delay: 5)
+      config.client = slow_client_mock(delay: 0.2)
       sdk = ABSmartly.create(config)
 
       context_config = ContextConfig.create
@@ -139,6 +139,7 @@ RSpec.describe "create_context_async" do
 
       expect { context.treatment("exp_test_ab") }
         .to raise_error(IllegalStateException, "ABsmartly Context is not yet ready.")
+      context.wait_until_ready
     end
 
     it "validates params just like create_context" do

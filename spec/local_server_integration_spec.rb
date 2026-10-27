@@ -91,7 +91,6 @@ RSpec.describe "Local server integration (real HTTP)" do
     context = sdk.create_context(context_config)
     context.wait_until_ready
 
-    # --- assert the real GET /context ---
     get_req = server.requests.find { |r| r[:method] == "GET" }
     expect(get_req).not_to be_nil
     uri = URI.parse(get_req[:path])
@@ -100,7 +99,6 @@ RSpec.describe "Local server integration (real HTTP)" do
     expect(query["application"]).to eq("website")
     expect(query["environment"]).to eq("dev")
 
-    # --- queue an event then publish ---
     context.track("payment", { value: 99 })
     context.publish
 
@@ -108,7 +106,6 @@ RSpec.describe "Local server integration (real HTTP)" do
     expect(put_req).not_to be_nil
     expect(URI.parse(put_req[:path]).path).to eq("/context")
 
-    # --- headers ---
     h = put_req[:headers]
     expect(h["x-api-key"]).to eq("test-api-key")
     expect(h["x-application"]).to eq("website")
@@ -118,7 +115,6 @@ RSpec.describe "Local server integration (real HTTP)" do
     expect(h["x-agent"]).not_to be_empty
     expect(h["content-type"]).to include("application/json")
 
-    # --- body ---
     body = JSON.parse(put_req[:body])
     expect(body).to have_key("hashed")
     expect(body["units"]).to be_an(Array)

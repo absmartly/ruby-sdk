@@ -31,7 +31,7 @@ RSpec.describe "Concurrent Operations" do
 
   let(:publish_future) { OpenStruct.new(success?: true) }
   let(:event_handler) do
-    ev = instance_double(ContextEventHandler)
+    ev = instance_double(ContextPublisher)
     allow(ev).to receive(:publish).and_return(publish_future)
     ev
   end
@@ -57,6 +57,21 @@ RSpec.describe "Concurrent Operations" do
   end
 
   describe "thread-safe treatment access" do
+    it "computes one assignment and queues one exposure for concurrent first calls" do
+      context = create_context
+      original_new = VariantAssigner.method(:new)
+      allow(VariantAssigner).to receive(:new) do |*args|
+        sleep(0.05)
+        original_new.call(*args)
+      end
+
+      variants = 8.times.map { Thread.new { context.treatment("exp_test_ab") } }.map(&:value)
+
+      expect(variants.uniq.size).to eq(1)
+      expect(context.pending_count).to eq(1)
+      expect(context.instance_variable_get(:@exposures).size).to eq(1)
+    end
+
     it "handles concurrent getTreatment calls without errors" do
       context = create_context
       errors = []
@@ -66,12 +81,10 @@ RSpec.describe "Concurrent Operations" do
       threads = 10.times.map do
         Thread.new do
           20.times do
-            begin
-              result = context.treatment("exp_test_ab")
-              mutex.synchronize { results << result }
-            rescue StandardError => e
-              mutex.synchronize { errors << e }
-            end
+            result = context.treatment("exp_test_ab")
+            mutex.synchronize { results << result }
+          rescue StandardError => e
+            mutex.synchronize { errors << e }
           end
         end
       end
@@ -112,11 +125,9 @@ RSpec.describe "Concurrent Operations" do
       threads = 10.times.map do |i|
         Thread.new do
           10.times do |j|
-            begin
-              context.track("goal_#{i}_#{j}", { value: i * j })
-            rescue StandardError => e
-              mutex.synchronize { errors << e }
-            end
+            context.track("goal_#{i}_#{j}", { value: i * j })
+          rescue StandardError => e
+            mutex.synchronize { errors << e }
           end
         end
       end
@@ -160,12 +171,10 @@ RSpec.describe "Concurrent Operations" do
 
       threads = 5.times.map do
         Thread.new do
-          begin
-            result = context.publish
-            mutex.synchronize { publish_results << result }
-          rescue StandardError => e
-            mutex.synchronize { errors << e }
-          end
+          result = context.publish
+          mutex.synchronize { publish_results << result }
+        rescue StandardError => e
+          mutex.synchronize { errors << e }
         end
       end
 
@@ -177,7 +186,7 @@ RSpec.describe "Concurrent Operations" do
     it "includes each queued event in at most one publish" do
       sent = []
       sent_mutex = Mutex.new
-      handler = instance_double(ContextEventHandler)
+      handler = instance_double(ContextPublisher)
       allow(handler).to receive(:publish) do |_ctx, event|
         sleep 0.02
         sent_mutex.synchronize { sent.concat((event.goals || []).map(&:name)) }
@@ -233,7 +242,7 @@ RSpec.describe "Concurrent Operations" do
 
     it "does not strand events when a PUBLISH callback queues an event and closes" do
       sent = []
-      handler = instance_double(ContextEventHandler)
+      handler = instance_double(ContextPublisher)
       allow(handler).to receive(:publish) do |_ctx, event|
         sent.concat((event.goals || []).map(&:name))
         publish_future
@@ -305,11 +314,9 @@ RSpec.describe "Concurrent Operations" do
       threads = 10.times.map do |i|
         Thread.new do
           10.times do |j|
-            begin
-              context.set_attribute("attr_#{i}_#{j}", "value_#{i}_#{j}")
-            rescue StandardError => e
-              mutex.synchronize { errors << e }
-            end
+            context.set_attribute("attr_#{i}_#{j}", "value_#{i}_#{j}")
+          rescue StandardError => e
+            mutex.synchronize { errors << e }
           end
         end
       end
@@ -330,12 +337,10 @@ RSpec.describe "Concurrent Operations" do
 
       threads = 10.times.map do
         Thread.new do
-          begin
-            ctx = create_context
-            mutex.synchronize { contexts << ctx }
-          rescue StandardError => e
-            mutex.synchronize { errors << e }
-          end
+          ctx = create_context
+          mutex.synchronize { contexts << ctx }
+        rescue StandardError => e
+          mutex.synchronize { errors << e }
         end
       end
 

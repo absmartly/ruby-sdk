@@ -42,7 +42,9 @@ RSpec.describe ABSmartly do
           environment: valid_params[:environment]
         )
 
-        expect(sdk).not_to be_nil
+        http_config = sdk.client.http_client.config
+        expect(http_config.connect_timeout).to eq(3.0)
+        expect(http_config.connection_request_timeout).to eq(3.0)
       end
 
       it "uses default retries of 5" do
@@ -53,7 +55,7 @@ RSpec.describe ABSmartly do
           environment: valid_params[:environment]
         )
 
-        expect(sdk).not_to be_nil
+        expect(sdk.client.http_client.config.max_retries).to eq(5)
       end
     end
 
@@ -80,6 +82,30 @@ RSpec.describe ABSmartly do
             timeout: -1000
           )
         }.to raise_error(ArgumentError, "timeout must be a positive number")
+      end
+
+      it "rejects a non-numeric timeout" do
+        expect {
+          ABSmartly.new(
+            valid_params[:endpoint],
+            api_key: valid_params[:api_key],
+            application: valid_params[:application],
+            environment: valid_params[:environment],
+            timeout: "abc"
+          )
+        }.to raise_error(ArgumentError, "timeout must be a number")
+      end
+
+      it "forwards a numeric string timeout in seconds" do
+        sdk = ABSmartly.new(
+          valid_params[:endpoint],
+          api_key: valid_params[:api_key],
+          application: valid_params[:application],
+          environment: valid_params[:environment],
+          timeout: "1500"
+        )
+
+        expect(sdk.client.http_client.config.connect_timeout).to eq(1.5)
       end
 
       it "rejects zero timeout" do
@@ -118,6 +144,32 @@ RSpec.describe ABSmartly do
         )
 
         expect(sdk).not_to be_nil
+      end
+
+      it "rejects non-integer retries" do
+        ["abc", 1.5].each do |retries|
+          expect {
+            ABSmartly.new(
+              valid_params[:endpoint],
+              api_key: valid_params[:api_key],
+              application: valid_params[:application],
+              environment: valid_params[:environment],
+              retries: retries
+            )
+          }.to raise_error(ArgumentError, "retries must be a number")
+        end
+      end
+
+      it "forwards a numeric string retries value as an integer" do
+        sdk = ABSmartly.new(
+          valid_params[:endpoint],
+          api_key: valid_params[:api_key],
+          application: valid_params[:application],
+          environment: valid_params[:environment],
+          retries: "3"
+        )
+
+        expect(sdk.client.http_client.config.max_retries).to eq(3)
       end
 
       it "rejects negative retries" do

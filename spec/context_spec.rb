@@ -101,7 +101,7 @@ RSpec.describe Context do
 
   let(:publish_future) { OpenStruct.new(success?: true) }
   let(:event_handler) do
-    ev = instance_double(ContextEventHandler)
+    ev = instance_double(ContextPublisher)
     allow(ev).to receive(:publish).and_return(publish_future)
     ev
   end
@@ -735,7 +735,7 @@ RSpec.describe Context do
     expect(context.custom_field_value("exp_test_ab", "country")).to eq("US,PT,ES,DE,FR")
     expect(context.custom_field_type("exp_test_ab", "country")).to eq("string")
 
-    data = {"123":  1, "456": 0}
+    data = { "123":  1, "456": 0 }
     expect(context.custom_field_value("exp_test_ab", "overrides")).to eq(data)
     expect(context.custom_field_type("exp_test_ab", "overrides")).to eq("json")
 
@@ -756,7 +756,6 @@ RSpec.describe Context do
 
     expect(context.custom_field_type("exp_test_no_custom_fields", "languages")).to be_nil
     expect(context.custom_field_value("exp_test_no_custom_fields", "languages")).to be_nil
-
   end
 
   it "peek_treatmentReturnsOverrideVariant" do
@@ -1259,7 +1258,7 @@ RSpec.describe Context do
   end
 
   it "publishExceptionally" do
-    ev = instance_double(ContextEventHandler)
+    ev = instance_double(ContextPublisher)
     context = create_ready_context(evt_handler: ev)
     expect(context.ready?).to be_truthy
     expect(context.failed?).to be_falsey
@@ -1402,7 +1401,6 @@ RSpec.describe Context do
 
     it "updates data on successful refresh" do
       context = create_context(data_future_ready, dt_provider: refresh_data_provider)
-      original_experiments = context.experiments.dup
 
       context.refresh
 
@@ -1432,7 +1430,7 @@ RSpec.describe Context do
 
   describe "error recovery and resilience" do
     it "context remains usable after failed publish" do
-      ev = instance_double(ContextEventHandler)
+      ev = instance_double(ContextPublisher)
       allow(ev).to receive(:publish).and_return(failure_future)
 
       context = create_ready_context(evt_handler: ev)
@@ -1447,7 +1445,7 @@ RSpec.describe Context do
     end
 
     it "queues new events after failed publish" do
-      ev = instance_double(ContextEventHandler)
+      ev = instance_double(ContextPublisher)
       allow(ev).to receive(:publish).and_return(failure_future)
 
       context = create_ready_context(evt_handler: ev)
@@ -1935,7 +1933,7 @@ RSpec.describe Context do
     end
 
     it "should not clear queue on failure" do
-      ev = instance_double(ContextEventHandler)
+      ev = instance_double(ContextPublisher)
       allow(ev).to receive(:publish).and_return(failure_future)
 
       context = create_ready_context(evt_handler: ev)
@@ -2111,7 +2109,7 @@ RSpec.describe Context do
     end
 
     it "should call event logger on close error" do
-      ev = instance_double(ContextEventHandler)
+      ev = instance_double(ContextPublisher)
       allow(ev).to receive(:publish).and_return(failure_future)
 
       event_logger.clear

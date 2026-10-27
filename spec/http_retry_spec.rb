@@ -9,8 +9,6 @@ RSpec.describe "HTTP Retry Logic" do
       config = DefaultHttpClientConfig.create
       config.max_retries = 3
 
-      client = DefaultHttpClient.create(config)
-
       expect(config.max_retries).to eq(3)
     end
 
@@ -137,7 +135,7 @@ RSpec.describe "HTTP Retry Logic" do
     end
 
     it "creates response with content type header" do
-      response = DefaultHttpClient.default_response(200, "OK", "application/json", '{}')
+      response = DefaultHttpClient.default_response(200, "OK", "application/json", "{}")
 
       expect(response.headers["Content-Type"]).to eq("application/json")
     end

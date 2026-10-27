@@ -4,3 +4,4 @@ require_relative "context_publisher"
 
 # @deprecated Use ContextPublisher instead.
 ContextEventHandler = ContextPublisher
+Object.deprecate_constant :ContextEventHandler

@@ -33,7 +33,7 @@ RSpec.describe "Fix Plan Validations" do
   let(:data) { descr.deserialize(json, 0, json.length) }
   let(:publish_future) { OpenStruct.new(success?: true) }
   let(:event_handler) do
-    ev = instance_double(ContextEventHandler)
+    ev = instance_double(ContextPublisher)
     allow(ev).to receive(:publish).and_return(publish_future)
     ev
   end
@@ -66,11 +66,9 @@ RSpec.describe "Fix Plan Validations" do
       threads = 10.times.map do
         Thread.new do
           10.times do
-            begin
-              context.track("goal", { value: 1 })
-            rescue => e
-              mutex.synchronize { errors << e }
-            end
+            context.track("goal", { value: 1 })
+          rescue => e
+            mutex.synchronize { errors << e }
           end
         end
       end
@@ -88,11 +86,9 @@ RSpec.describe "Fix Plan Validations" do
 
       threads = 10.times.map do
         Thread.new do
-          begin
-            context.treatment("exp_test_ab")
-          rescue => e
-            mutex.synchronize { errors << e }
-          end
+          context.treatment("exp_test_ab")
+        rescue => e
+          mutex.synchronize { errors << e }
         end
       end
 
@@ -100,11 +96,11 @@ RSpec.describe "Fix Plan Validations" do
 
       expect(errors).to be_empty
       exposures = context.instance_variable_get(:@exposures)
-      expect(exposures.length).to be <= 10
+      expect(exposures.length).to eq(1)
     end
 
     it "flush atomically clears events before publishing" do
-      ev = instance_double(ContextEventHandler)
+      ev = instance_double(ContextPublisher)
       allow(ev).to receive(:publish).and_return(publish_future)
 
       context = create_ready_context(evt_handler: ev)
@@ -263,14 +259,12 @@ RSpec.describe "Fix Plan Validations" do
 
   describe "Fix #16: transform_keys hot path removed" do
     it "looks up experiments without transform_keys on every call" do
-      context = create_ready_context
       source = File.read(File.join("lib", "context.rb"))
       experiment_method = source[/def experiment\(experiment.*?end/m]
       expect(experiment_method).not_to include("transform_keys")
     end
 
     it "looks up variable_experiment without transform_keys on every call" do
-      context = create_ready_context
       source = File.read(File.join("lib", "context.rb"))
       variable_method = source[/def variable_experiment\(key.*?end/m]
       expect(variable_method).not_to include("transform_keys")
@@ -307,7 +301,6 @@ RSpec.describe "Fix Plan Validations" do
 
   describe "Fix #20: camelCase instance variable renamed" do
     it "uses snake_case @experiment_custom_field_values" do
-      context = create_ready_context
       source = File.read(File.join("lib", "context.rb"))
       expect(source).not_to include("@experimentCustomFieldValues")
       expect(source).to include("experiment_custom_field_values")
@@ -322,7 +315,7 @@ RSpec.describe "Fix Plan Validations" do
 
   describe "Fix 1.3: publish error handling preserves events on failure" do
     it "preserves pending_count after publish failure" do
-      ev = instance_double(ContextEventHandler)
+      ev = instance_double(ContextPublisher)
       failure = Exception.new("FAILED")
       failure_future = OpenStruct.new(exception: failure, success?: false, data_future: nil)
       allow(ev).to receive(:publish).and_return(failure_future)

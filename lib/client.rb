@@ -55,7 +55,6 @@ class Client
     begin
       @promise = @http_client.get(@url, @query, @headers)
     rescue StandardError => e
-      # A network failure fails the context instead of escaping create_context.
       @promise = nil
       @exception = e
       warn("Failed to fetch context data: #{e.class} - #{e.message}")
@@ -97,5 +96,4 @@ class Client
   def inspect
     "#<Client url=#{@url.inspect}>"
   end
-
 end

@@ -110,7 +110,7 @@ RSpec.describe "JavaScript SDK parity" do
     let(:failure_future) { OpenStruct.new(exception: failure, success?: false, data_future: nil) }
     let(:ok_future) { OpenStruct.new(success?: true) }
     let(:data_provider) { instance_double(ContextDataProvider, context_data: ready_future) }
-    let(:handler) { instance_double(ContextEventHandler) }
+    let(:handler) { instance_double(ContextPublisher) }
     let(:events) { [] }
     let(:logger) do
       log = events
@@ -215,7 +215,6 @@ RSpec.describe "JavaScript SDK parity" do
   end
 
   describe "transport" do
-    # Answers each request with the next status from the list.
     def with_server(statuses)
       server = TCPServer.new("127.0.0.1", 0)
       seen = []
