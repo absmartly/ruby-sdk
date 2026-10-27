@@ -457,19 +457,28 @@ class Context
         event.exposures = exposures unless exposures.empty?
         event.attributes = @attributes unless @attributes.empty?
         event.goals = achievements unless achievements.empty?
-        log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
-
-        response = @event_handler.publish(self, event)
+        # Like the JavaScript SDK, the publish event is logged once the batch is
+        # delivered; a failed delivery logs an error event instead.
+        begin
+          response = @event_handler.publish(self, event)
+        rescue StandardError => e
+          log_error(e)
+          raise
+        end
 
         if response.is_a?(Exception)
           warn("Publish failed: #{response.message}")
+          log_error(response)
           response
         elsif response.respond_to?(:exception) && response.exception
+          log_error(response.exception)
           response
         elsif response.respond_to?(:success?) && !response.success?
           warn("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})")
+          log_error(StandardError.new("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})"))
           response
         else
+          log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
           # Remove only the events that were published; others may have been
           # queued concurrently while the request was in flight.
           @queue_mutex.synchronize do

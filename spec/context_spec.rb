@@ -1189,8 +1189,14 @@ RSpec.describe Context do
 
     context.publish
 
-    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::PUBLISH, expected).once
+    # A failed delivery logs an error, not a publish event (JS parity).
+    expect(event_logger).not_to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::PUBLISH, anything)
+    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::ERROR, "FAILED").once
     expect(event_handler).to have_received(:publish).with(context, expected).once
+
+    allow(event_handler).to receive(:publish).and_return(nil)
+    context.publish
+    expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::PUBLISH, expected).once
   end
 
   it "publishCallsEventLoggerOnError" do
@@ -2084,8 +2090,12 @@ RSpec.describe Context do
       context.close
 
       expect(event_logger).to have_received(:handle_event).with(
-        ContextEventLogger::EVENT_TYPE::PUBLISH, instance_of(PublishEvent)
+        ContextEventLogger::EVENT_TYPE::ERROR, "FAILED"
       ).once
+      expect(event_logger).not_to have_received(:handle_event).with(
+        ContextEventLogger::EVENT_TYPE::PUBLISH, anything
+      )
+      expect(context.closed?).to be false
     end
   end
 
