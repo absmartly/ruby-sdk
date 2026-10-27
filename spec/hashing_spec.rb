@@ -35,6 +35,33 @@ RSpec.describe Hashing do
         expect(md5).to eq(test.last)
       end
     end
+
+    it "hashes numbers as their value rounded to an integer" do
+      expect(Hashing.hash_unit(12345)).to eq("gnzLDuqKcGxMNKFokfhOew")
+      expect(Hashing.hash_unit(125)).to eq("Pe8YStj0dV_yaYYup3OT3Q")
+      expect(Hashing.hash_unit(125.75)).to eq("BpBZt--EDwx0qBTskje27A")
+    end
+  end
+
+  describe ".base64_url_no_padding" do
+    it "encodes url-safe without padding" do
+      expect(Hashing.base64_url_no_padding("")).to eq("")
+      expect(Hashing.base64_url_no_padding("\xfb\xff".b)).to eq("-_8")
+      expect(Hashing.base64_url_no_padding("a")).to eq("YQ")
+    end
+  end
+end
+
+RSpec.describe TypeUtils do
+  require "type_utils"
+  it "object? is true only for hashes" do
+    expect(TypeUtils.object?({})).to be true
+    expect([[], 1, "s", nil].map { |v| TypeUtils.object?(v) }).to all(be false)
+  end
+
+  it "numeric? is true only for numbers" do
+    expect([1, 1.5].map { |v| TypeUtils.numeric?(v) }).to all(be true)
+    expect(["1", true, {}, nil].map { |v| TypeUtils.numeric?(v) }).to all(be false)
   end
 end
 

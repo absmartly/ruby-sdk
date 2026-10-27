@@ -1,6 +1,14 @@
 # frozen_string_literal: true
 
 module TypeUtils
+  def self.object?(value)
+    value.is_a?(Hash)
+  end
+
+  def self.numeric?(value)
+    value.is_a?(Numeric)
+  end
+
   def self.boolean?(value)
     case value
     when String then %w[true false].include?(value)

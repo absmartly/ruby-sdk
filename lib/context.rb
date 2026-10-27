@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "hashing"
+require_relative "type_utils"
 require_relative "variant_assigner"
 require_relative "context_event_logger"
 require_relative "json/unit"
@@ -174,9 +175,15 @@ class Context
   def set_unit(unit_type, uid)
     check_not_closed?
 
-    trimmed = Hashing.to_utf8(uid).strip
-    if trimmed.empty?
-      raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
+    if uid.is_a?(String)
+      trimmed = Hashing.to_utf8(uid).strip
+      if trimmed.empty?
+        raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
+      end
+    elsif TypeUtils.numeric?(uid)
+      trimmed = uid
+    else
+      raise IllegalStateException.new("Unit '#{unit_type}' must be a string or a number.")
     end
 
     previous = @units[unit_type.to_sym]
@@ -317,7 +324,7 @@ class Context
 
   def track(goal_name, properties = nil)
     check_not_closed?
-    unless properties.nil? || properties.is_a?(Hash)
+    unless properties.nil? || TypeUtils.object?(properties)
       raise ArgumentError, "Goal '#{goal_name}' properties must be of type object."
     end
 

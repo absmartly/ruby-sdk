@@ -9,8 +9,15 @@ class Hashing
   # A lone surrogate written as a 3-byte sequence.
   ENCODED_SURROGATE = /\xED[\xA0-\xBF][\x80-\xBF]/n.freeze
 
-  def self.hash_unit(str)
-    Digest::MD5.base64digest(to_utf8(str).b).gsub("==", "").gsub("+", "-").gsub("/", "_")
+  # Numeric units are hashed as their value rounded to an integer, like the
+  # JavaScript SDK's value.toFixed(0).
+  def self.hash_unit(value)
+    unit = value.is_a?(Numeric) ? value.round.to_s : value
+    base64_url_no_padding(Digest::MD5.digest(to_utf8(unit).b))
+  end
+
+  def self.base64_url_no_padding(bytes)
+    [bytes.to_s.b].pack("m0").delete("=").tr("+/", "-_")
   end
 
   # Returns the UTF-8 form of the unit's Unicode text. Characters outside the

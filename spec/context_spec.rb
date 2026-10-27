@@ -310,6 +310,22 @@ RSpec.describe Context do
     }.to raise_error(IllegalStateException, "Unit 'db_user_id' UID must not be blank.")
   end
 
+  it "set unit keeps numeric uids as numbers" do
+    context = create_ready_context
+    context.set_unit("db_user_id", 125)
+    context.set_unit("float_id", 125.75)
+    expect(context.get_unit("db_user_id")).to eq(125)
+    expect(context.get_unit("float_id")).to eq(125.75)
+    expect(context.get_units[:db_user_id]).to eq(125)
+  end
+
+  it "set unit rejects non string, non numeric uids" do
+    context = create_ready_context
+    expect {
+      context.set_unit("db_user_id", { a: 1 })
+    }.to raise_error(IllegalStateException, "Unit 'db_user_id' must be a string or a number.")
+  end
+
   it "set unit throws on already set" do
     context = create_ready_context
 
