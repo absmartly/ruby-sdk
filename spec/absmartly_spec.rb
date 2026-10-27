@@ -139,7 +139,7 @@ RSpec.describe Absmartly do
 
     let(:publish_future) { OpenStruct.new(success?: true) }
     let(:event_handler) do
-      ev = instance_double(ContextEventHandler)
+      ev = instance_double(ContextPublisher)
       allow(ev).to receive(:publish).and_return(publish_future)
       ev
     end
@@ -246,7 +246,7 @@ RSpec.describe Absmartly do
           .with(ContextEventLogger::EVENT_TYPE::PUBLISH, instance_of(PublishEvent)).once
       end
 
-      it "receives CLOSE event when close() is called" do
+      it "receives FINALIZE event when close() is called" do
         mock_logger.clear
         context = create_ready_context
         mock_logger.clear
@@ -254,7 +254,7 @@ RSpec.describe Absmartly do
         context.close
 
         expect(mock_logger).to have_received(:handle_event)
-          .with(ContextEventLogger::EVENT_TYPE::CLOSE, nil).once
+          .with(ContextEventLogger::EVENT_TYPE::FINALIZE, nil).once
       end
     end
   end

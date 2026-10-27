@@ -7,7 +7,7 @@ class VariantAssigner
   attr_reader :key
 
   def initialize(key)
-    md5 = Hashing.hash_unit(key.to_s)
+    md5 = Hashing.hash_unit(key.is_a?(Numeric) ? key : key.to_s)
     @key = MurmurHash3::V32.str_hash(md5)
     @normalizer = 1.0 / 0xffffffff
   end

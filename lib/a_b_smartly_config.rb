@@ -43,3 +43,5 @@ class ABSmartlyConfig
     self
   end
 end
+
+SDKConfig = ABSmartlyConfig

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "hashing"
+require_relative "type_utils"
 require_relative "variant_assigner"
 require_relative "context_event_logger"
 require_relative "json/unit"
@@ -10,7 +11,11 @@ require_relative "json/publish_event"
 require_relative "json/goal_achievement"
 
 class Context
-  attr_reader :data, :pending_count
+  # Immutable-by-convention snapshot swapped in with a single assignment so
+  # readers see either the complete old or the complete new state.
+  State = Struct.new(:data, :index, :index_variables, :custom_fields)
+
+  attr_reader :pending_count
 
   def self.create(clock, config, data_future, data_provider,
                   event_handler, event_logger, variable_parser, audience_matcher)
@@ -18,37 +23,19 @@ class Context
                 event_handler, event_logger, variable_parser, audience_matcher)
   end
 
+  def self.create_async(clock, config, data_provider,
+                        event_handler, event_logger, variable_parser, audience_matcher)
+    context = Context.allocate
+    context.send(:initialize_async, clock, config, data_provider,
+                 event_handler, event_logger, variable_parser, audience_matcher)
+    context
+  end
+
   def initialize(clock, config, data_future, data_provider,
                  event_handler, event_logger, variable_parser, audience_matcher)
-    @index = []
-    @context_custom_fields = {}
-    @achievements = []
-    @assignment_cache = {}
-    @assignments = {}
-    @clock = clock.is_a?(String) ? Time.iso8601(clock) : clock
-    @publish_delay = config.publish_delay
-    @refresh_interval = config.refresh_interval
-    @event_handler = event_handler
-    @event_logger = !config.event_logger.nil? ? config.event_logger : event_logger
-    @data_provider = data_provider
-    @variable_parser = variable_parser
-    @audience_matcher = audience_matcher
-    @closed = false
+    init_common(clock, config, data_provider, event_handler, event_logger,
+                variable_parser, audience_matcher)
 
-    @units = {}
-    @attributes = []
-    @overrides = {}
-    @cassignments = {}
-    @assigners = {}
-    @hashed_units = {}
-    @pending_count = 0
-    @exposures ||= []
-    @attrs_seq = 0
-
-    set_units(config.units) if config.units
-    set_attributes(config.attributes) if config.attributes
-    set_overrides(config.overrides) if config.overrides
-    set_custom_assignments(config.custom_assignments) if config.custom_assignments
     if data_future.success?
       assign_data(data_future.data_future)
       log_event(ContextEventLogger::EVENT_TYPE::READY, data_future.data_future)
@@ -58,8 +45,49 @@ class Context
     end
   end
 
+  def set_data(data_future)
+    ready_data = nil
+    failure = nil
+    @ready_mutex.synchronize do
+      if data_future.success?
+        assign_data(data_future.data_future)
+        ready_data = data_future.data_future
+      else
+        set_data_failed(data_future.exception)
+        failure = data_future.exception
+      end
+      @ready_condvar.broadcast
+    end
+
+    # User callbacks run outside the readiness lock so they may call
+    # wait_until_ready.
+    if failure.nil?
+      log_event(ContextEventLogger::EVENT_TYPE::READY, ready_data)
+    else
+      log_error(failure)
+    end
+  end
+
+  def wait_until_ready(timeout = nil)
+    @ready_mutex.synchronize do
+      unless ready? || failed?
+        if timeout
+          deadline = Time.now + timeout
+          until ready? || failed?
+            remaining = deadline - Time.now
+            break if remaining <= 0
+            @ready_condvar.wait(@ready_mutex, remaining)
+          end
+        else
+          @ready_condvar.wait(@ready_mutex) until ready? || failed?
+        end
+      end
+    end
+    self
+  end
+
   def ready?
-    !@data.nil?
+    !@state.data.nil?
   end
 
   def failed?
@@ -70,21 +98,51 @@ class Context
     @closed
   end
 
-  def experiments
-    check_ready?(true)
+  def finalized?
+    closed?
+  end
 
-    @data.experiments.map(&:name)
+  def finalizing?
+    !@closed && @closing
+  end
+
+  attr_reader :ready_error
+
+  def get_unit(unit_type)
+    @units[unit_type.to_sym]
+  end
+
+  def get_units
+    @units.dup
+  end
+
+  def get_attribute(name)
+    result = nil
+    @attributes.each do |attr|
+      result = attr.value if attr.name == name
+    end
+    result
+  end
+
+  def get_attributes
+    result = {}
+    @attributes.each do |attr|
+      result[attr.name] = attr.value
+    end
+    result
+  end
+
+  def experiments
+    check_ready?(false)
+
+    @state.data.experiments.map(&:name)
   end
 
   def set_override(experiment_name, variant)
-    check_not_closed?
-
     @overrides[experiment_name.to_s.to_sym] = variant
   end
 
   def set_overrides(overrides)
-    check_not_closed?
-
     @overrides.merge!(overrides.transform_keys(&:to_sym))
   end
 
@@ -115,17 +173,23 @@ class Context
   def set_unit(unit_type, uid)
     check_not_closed?
 
+    if uid.is_a?(String)
+      trimmed = Hashing.to_utf8(uid).strip
+      if trimmed.empty?
+        raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
+      end
+    elsif TypeUtils.numeric?(uid)
+      trimmed = uid
+    else
+      raise IllegalStateException.new("Unit '#{unit_type}' must be a string or a number.")
+    end
+
     previous = @units[unit_type.to_sym]
-    if !previous.nil? && previous != uid
-      raise IllegalStateException.new("Unit '#{unit_type}' already set.")
+    if !previous.nil? && previous != trimmed
+      raise IllegalStateException.new("Unit '#{unit_type}' UID already set.")
     end
 
-    trimmed = uid.to_s.strip
-    if trimmed.empty?
-      raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
-    end
-
-    @units[unit_type] = trimmed
+    @units[unit_type.to_sym] = trimmed
   end
 
   def set_units(units)
@@ -149,35 +213,41 @@ class Context
 
   def treatment(experiment_name)
     check_ready?(true)
-    assignment = assignment(experiment_name)
-    unless assignment.exposed
-      queue_exposure(assignment)
-    end
 
+    assignment = assignment(experiment_name)
+    queue_exposure(assignment)
     assignment.variant
   end
 
   def queue_exposure(assignment)
-    unless assignment.exposed
-      assignment.exposed = true
+    exposure = nil
+    @queue_mutex.synchronize do
+      # Checked under the queue lock so an exposure cannot slip in after close
+      # sealed the queue and be stranded.
+      check_not_closed?
 
-      exposure = Exposure.new
-      exposure.id = assignment.id || 0
-      exposure.name = assignment.name
-      exposure.unit = assignment.unit_type
-      exposure.variant = assignment.variant
-      exposure.exposed_at = @clock.to_i
-      exposure.assigned = assignment.assigned
-      exposure.eligible = assignment.eligible
-      exposure.overridden = assignment.overridden
-      exposure.full_on = assignment.full_on
-      exposure.custom = assignment.custom
-      exposure.audience_mismatch = assignment.audience_mismatch
+      unless assignment.exposed
+        assignment.exposed = true
 
-      @pending_count += 1
-      @exposures.push(exposure)
-      log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposure)
+        exposure = Exposure.new
+        exposure.id = assignment.id || 0
+        exposure.name = assignment.name
+        exposure.unit = assignment.unit_type
+        exposure.variant = assignment.variant
+        exposure.exposed_at = @clock.to_i
+        exposure.assigned = assignment.assigned
+        exposure.eligible = assignment.eligible
+        exposure.overridden = assignment.overridden
+        exposure.full_on = assignment.full_on
+        exposure.custom = assignment.custom
+        exposure.audience_mismatch = assignment.audience_mismatch
+
+        @pending_count += 1
+        @exposures.push(exposure)
+      end
     end
+    # User callbacks run outside the lock so they can call publish/track.
+    log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposure) unless exposure.nil?
   end
 
   def peek_treatment(experiment_name)
@@ -192,7 +262,9 @@ class Context
     check_ready?(true)
 
     hsh = {}
-    @index_variables.each { |key, value| hsh[key] = value.data.name }
+    @state.index_variables.each do |key, values|
+      hsh[key] = values.map { |v| v.data.name }
+    end
     hsh
   end
 
@@ -201,7 +273,7 @@ class Context
 
     assignment = variable_assignment(key)
     unless assignment.nil? || assignment.variables.nil?
-      queue_exposure(assignment) unless assignment.exposed
+      queue_exposure(assignment)
       return assignment.variables[key.to_s.to_sym] if assignment.variables.key?(key.to_s.to_sym)
     end
 
@@ -210,9 +282,10 @@ class Context
 
   def custom_field_keys
     check_ready?(true)
+
     keys = []
 
-    @data.experiments.each do |experiment|
+    @state.data.experiments.each do |experiment|
       custom_field_values = experiment.custom_field_values
       if custom_field_values != nil
         custom_field_values.each do |custom_field|
@@ -221,37 +294,19 @@ class Context
       end
     end
 
-    return keys.sort.uniq
+    keys.sort.uniq
   end
 
   def custom_field_value(experimentName, key)
-    check_ready?(true)
+    custom_field(experimentName, key)&.value
+  end
 
-    experiment_custom_fields = @context_custom_fields[experimentName]
-
-    if experiment_custom_fields != nil
-      field = experiment_custom_fields[key]
-      if field != nil
-        return field.value
-      end
-    end
-
-    return nil
+  def custom_field_value_type(experimentName, key)
+    custom_field(experimentName, key)&.type
   end
 
   def custom_field_type(experimentName, key)
-    check_ready?(true)
-
-    experiment_custom_fields = @context_custom_fields[experimentName]
-
-    if experiment_custom_fields != nil
-      field = experiment_custom_fields[key]
-      if field != nil
-        return field.type
-      end
-    end
-
-    return nil
+    custom_field_value_type(experimentName, key)
   end
 
   def peek_variable_value(key, default_value)
@@ -265,110 +320,198 @@ class Context
     default_value
   end
 
-  def track(goal_name, properties)
+  def track(goal_name, properties = nil)
     check_not_closed?
+    unless properties.nil? || TypeUtils.object?(properties)
+      raise ArgumentError, "Goal '#{goal_name}' properties must be of type object."
+    end
 
     achievement = GoalAchievement.new
     achievement.achieved_at = @clock.to_i
     achievement.name = goal_name
-    achievement.properties = properties
+    achievement.properties = properties.nil? ? nil : properties.dup
 
-    @pending_count += 1
-    @achievements.push(achievement)
+    @queue_mutex.synchronize do
+      check_not_closed?
+
+      @pending_count += 1
+      @achievements.push(achievement)
+    end
     log_event(ContextEventLogger::EVENT_TYPE::GOAL, achievement)
   end
 
   def publish
-    check_not_closed?
+    check_ready?(true)
 
     flush
   end
 
   def refresh
-    check_not_closed?
+    check_ready?(true)
+    return nil if @failed
 
-    unless @failed
-      data_future = @data_provider.context_data
-      if data_future.success?
-        assign_data(data_future.data_future)
-        log_event(ContextEventLogger::EVENT_TYPE::REFRESH, data_future.data_future)
-      else
-        set_data_failed(data_future.exception)
-        log_error(data_future.exception)
-      end
+    data_future = @data_provider.context_data
+    if data_future.success?
+      assign_data(data_future.data_future)
+      log_event(ContextEventLogger::EVENT_TYPE::REFRESH, data_future.data_future)
+      nil
+    else
+      log_error(data_future.exception)
+      data_future.exception
     end
   end
 
+  # Publishes pending events, then seals the context. If the final publish
+  # fails the context stays open with the events queued, so close can be
+  # retried; the failure is returned (or raised, if the publisher raised).
   def close
-    unless @closed
-      if @pending_count > 0
-        flush
-      end
-      @closed = true
-      log_event(ContextEventLogger::EVENT_TYPE::CLOSE, nil)
+    return nil if @closed
+
+    # Called from a logger callback while a publish is in flight: defer so the
+    # events queued by the callback are still sent before finalizing.
+    if @publish_mutex.owned?
+      @close_pending = true
+      return nil
     end
+
+    @closing = true
+    begin
+      loop do
+        result = flush
+        return result if !@failed && publish_failed?(result)
+
+        sealed = @queue_mutex.synchronize do
+          next :done if @closed
+          next :retry unless @exposures.empty? && @achievements.empty?
+
+          @closed = true
+          :sealed
+        end
+        return nil if sealed == :done
+        next if sealed == :retry
+
+        log_event(ContextEventLogger::EVENT_TYPE::FINALIZE, nil)
+        return nil
+      end
+    ensure
+      @closing = false
+    end
+  end
+
+  def finalize
+    close
   end
 
   def data
     check_ready?(true)
 
-    @data
+    @state.data
+  end
+
+  def inspect
+    "#<Context ready=#{ready?} closed=#{closed?}>"
   end
 
   private
     def flush
-      if !@failed
-        if @pending_count > 0
-          exposures = nil
-          achievements = nil
-          event_count = @pending_count
-
-          if event_count > 0
-            unless @exposures.empty?
-              exposures = @exposures
-              @exposures = []
-            end
-
-            unless @achievements.empty?
-              achievements = @achievements
-              @achievements = []
-            end
-
-            @pending_count = 0
-
-            event = PublishEvent.new
-            event.hashed = true
-            event.published_at = @clock.to_i
-            event.units = @units.map do |key, value|
-              Unit.new(key.to_s, unit_hash(key, value))
-            end
-            event.exposures = exposures
-            event.attributes = @attributes unless @attributes.empty?
-            event.goals = achievements unless achievements.nil?
-            log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
-            @event_handler.publish(self, event)
-          end
+      if @failed
+        @queue_mutex.synchronize do
+          @exposures = []
+          @achievements = []
+          @pending_count = 0
         end
-      else
-        @exposures = []
-        @achievements = []
-        @pending_count = 0
-        @data_failed
+        return @data_failed
       end
+
+      # Serialize publishes so a queued event is part of at most one in-flight
+      # request; on failure the events stay queued for the next attempt.
+      # A logger callback that calls publish from inside a publish must not
+      # deadlock or re-send the in-flight snapshot; the outer call owns it.
+      return nil if @publish_mutex.owned?
+
+      result = @publish_mutex.synchronize do
+        exposures = achievements = nil
+        event_count = 0
+        @queue_mutex.synchronize do
+          exposures = @exposures.dup
+          achievements = @achievements.dup
+          event_count = exposures.size + achievements.size
+        end
+
+        next nil unless event_count > 0
+
+        event = PublishEvent.new
+        event.hashed = true
+        event.published_at = @clock.to_i
+        event.units = @units.map do |key, value|
+          Unit.new(key.to_s, unit_hash(key, value))
+        end
+        event.exposures = exposures unless exposures.empty?
+        event.attributes = @attributes unless @attributes.empty?
+        event.goals = achievements unless achievements.empty?
+        # Like the JavaScript SDK, the publish event is logged once the batch is
+        # delivered; a failed delivery logs an error event instead.
+        begin
+          response = @event_handler.publish(self, event)
+        rescue StandardError => e
+          log_error(e)
+          raise
+        end
+
+        if response.is_a?(Exception)
+          warn("Publish failed: #{response.message}")
+          log_error(response)
+          response
+        elsif response.respond_to?(:exception) && response.exception
+          log_error(response.exception)
+          response
+        elsif response.respond_to?(:success?) && !response.success?
+          warn("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})")
+          log_error(StandardError.new("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})"))
+          response
+        else
+          log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
+          # Remove only the events that were published; others may have been
+          # queued concurrently while the request was in flight.
+          @queue_mutex.synchronize do
+            @exposures.shift(exposures.size)
+            @achievements.shift(achievements.size)
+            @pending_count = [@pending_count - event_count, 0].max
+          end
+          response
+        end
+      end
+
+      if @close_pending
+        @close_pending = false
+        close unless @closed || publish_failed?(result)
+      end
+      result
+    end
+
+    def publish_failed?(result)
+      result.is_a?(Exception) ||
+        (result.respond_to?(:exception) && result.exception) ||
+        (result.respond_to?(:success?) && !result.success?)
     end
 
     def check_not_closed?
       if @closed
-        raise IllegalStateException.new("ABSmartly Context is closed")
+        raise IllegalStateException.new("ABsmartly Context is finalized.")
       end
     end
 
     def check_ready?(expect_not_closed)
       if !ready?
-        raise IllegalStateException.new("ABSmartly Context is not yet ready")
+        raise IllegalStateException.new("ABsmartly Context is not yet ready.")
       elsif expect_not_closed
         check_not_closed?
       end
+    end
+
+    def custom_field(experiment_name, key)
+      check_ready?(true)
+      @state.custom_fields.dig(experiment_name, key)
     end
 
     def experiment_matches(experiment, assignment)
@@ -387,7 +530,8 @@ class Context
             hash
           end
           match = @audience_matcher.evaluate(experiment.audience, attrs)
-          new_audience_mismatch = match && !match.result
+          # An indeterminate result (no filter, bad JSON) keeps the cached flag.
+          new_audience_mismatch = match.nil? ? assignment.audience_mismatch : !match.result
 
           if new_audience_mismatch != assignment.audience_mismatch
             return false
@@ -399,13 +543,18 @@ class Context
       true
     end
 
-    def assignment(experiment_name)
+    def assignment(experiment_name, state = @state)
+      @assignment_mutex.synchronize { cached_or_new_assignment(experiment_name, state) }
+    end
+
+    def cached_or_new_assignment(experiment_name, state)
       assignment = @assignment_cache[experiment_name.to_s]
+      exp_key = experiment_name.to_s.to_sym
 
       if !assignment.nil?
-        custom = @cassignments.transform_keys(&:to_sym)[experiment_name.to_s.to_sym]
-        override = @overrides.transform_keys(&:to_sym)[experiment_name.to_s.to_sym]
-        experiment = experiment(experiment_name.to_s)
+        custom = @cassignments[exp_key]
+        override = @overrides[exp_key]
+        experiment = experiment(experiment_name.to_s, state)
         if !override.nil?
           if assignment.overridden && assignment.variant == override
             return assignment
@@ -421,9 +570,9 @@ class Context
         end
       end
 
-      custom = @cassignments.transform_keys(&:to_sym)[experiment_name.to_s.to_sym]
-      override = @overrides.transform_keys(&:to_sym)[experiment_name.to_s.to_sym]
-      experiment = experiment(experiment_name.to_s)
+      custom = @cassignments[exp_key]
+      override = @overrides[exp_key]
+      experiment = experiment(experiment_name.to_s, state)
 
       assignment = Assignment.new
       assignment.name = experiment_name
@@ -455,7 +604,7 @@ class Context
           if experiment.data.audience_strict && assignment.audience_mismatch
             assignment.variant = 0
           elsif experiment.data.full_on_variant == 0
-            uid = @units.transform_keys(&:to_sym)[experiment.data.unit_type.to_sym]
+            uid = @units[experiment.data.unit_type.to_sym]
             unless uid.nil?
               assigner = VariantAssigner.new(uid)
               eligible = assigner.assign(experiment.data.traffic_split,
@@ -500,17 +649,19 @@ class Context
     end
 
     def variable_assignment(key)
-      experiment = variable_experiment(key)
+      state = @state
+      experiment = variable_experiment(key, state)
 
-      assignment(experiment.data.name) unless experiment.nil?
+      assignment(experiment.data.name, state) unless experiment.nil?
     end
 
-    def experiment(experiment)
-      @index.transform_keys(&:to_sym)[experiment.to_s.to_sym]
+    def experiment(experiment, state = @state)
+      state.index[experiment.to_s.to_sym]
     end
 
-    def variable_experiment(key)
-      @index_variables.transform_keys(&:to_sym)[key.to_s.to_sym]
+    def variable_experiment(key, state = @state)
+      experiments = state.index_variables[key.to_s.to_sym]
+      experiments&.first
     end
 
     def unit_hash(unit_type, unit_uid)
@@ -522,13 +673,13 @@ class Context
     end
 
     def assign_data(data)
-      @data = data
-      @index = {}
-      @index_variables = {}
+      index = {}
+      index_variables = {}
+      custom_fields = {}
 
       if data && !data.experiments.nil? && !data.experiments.empty?
         data.experiments.each do |experiment|
-          @experimentCustomFieldValues = {}
+          experiment_custom_field_values = {}
 
           experiment_variables = ExperimentVariables.new
           experiment_variables.data = experiment
@@ -537,7 +688,10 @@ class Context
             if !variant.config.nil? && !variant.config.empty?
               variables = @variable_parser.parse(self, experiment.name, variant.name,
                                                  variant.config)
-              variables.keys.each { |key| @index_variables[key] = experiment_variables }
+              variables.keys.each do |key|
+                index_variables[key] ||= []
+                index_variables[key] << experiment_variables unless index_variables[key].include?(experiment_variables)
+              end
               experiment_variables.variables.push(variables)
             else
               experiment_variables.variables.push({})
@@ -565,24 +719,25 @@ class Context
                   value.value = custom_field_value.value
                 end
 
-                @experimentCustomFieldValues[custom_field_value.name] = value
+                experiment_custom_field_values[custom_field_value.name] = value
 
               end
-
             end
           end
 
-          @index[experiment.name] = experiment_variables
-          @context_custom_fields[experiment.name] = @experimentCustomFieldValues
+          index[experiment.name.to_sym] = experiment_variables
+          custom_fields[experiment.name] = experiment_custom_field_values
         end
       end
+
+      # Publish the fully built snapshot; the maps are never mutated after this.
+      @state = State.new(data, index, index_variables, custom_fields)
     end
 
     def set_data_failed(exception)
       @data_failed = exception
-      @index = {}
-      @index_variables = {}
-      @data = ContextData.new
+      @ready_error = exception
+      @state = State.new(ContextData.new, {}, {}, {})
       @failed = true
     end
 
@@ -590,12 +745,63 @@ class Context
       unless @event_logger.nil?
         @event_logger.handle_event(event, data)
       end
+    rescue StandardError => e
+      warn("Context event logger raised: #{e.class} - #{e.message}")
     end
 
     def log_error(error)
       unless @event_logger.nil?
         @event_logger.handle_event(ContextEventLogger::EVENT_TYPE::ERROR, error.message)
       end
+    rescue StandardError => e
+      warn("Context event logger raised: #{e.class} - #{e.message}")
+    end
+
+    def init_common(clock, config, data_provider, event_handler, event_logger,
+                    variable_parser, audience_matcher)
+      @state = State.new(nil, {}, {}, {})
+      @achievements = []
+      @assignment_cache = {}
+      @assignment_mutex = Mutex.new
+      @assignments = {}
+      @clock = clock.is_a?(String) ? Time.iso8601(clock) : clock
+      @publish_delay = config.publish_delay
+      @refresh_interval = config.refresh_interval
+      @event_handler = event_handler
+      @event_logger = !config.event_logger.nil? ? config.event_logger : event_logger
+      @data_provider = data_provider
+      @variable_parser = variable_parser
+      @audience_matcher = audience_matcher
+      @closed = false
+      @closing = false
+      @failed = false
+      @ready_error = nil
+
+      @units = {}
+      @attributes = []
+      @overrides = {}
+      @cassignments = {}
+      @assigners = {}
+      @hashed_units = {}
+      @pending_count = 0
+      @exposures = []
+      @attrs_seq = 0
+      @ready_mutex = Mutex.new
+      @ready_condvar = ConditionVariable.new
+      @queue_mutex = Mutex.new
+      @publish_mutex = Mutex.new
+      @close_pending = false
+
+      set_units(config.units) if config.units
+      set_attributes(config.attributes) if config.attributes
+      set_overrides(config.overrides) if config.overrides
+      set_custom_assignments(config.custom_assignments) if config.custom_assignments
+    end
+
+    def initialize_async(clock, config, data_provider, event_handler, event_logger,
+                         variable_parser, audience_matcher)
+      init_common(clock, config, data_provider, event_handler, event_logger,
+                  variable_parser, audience_matcher)
     end
 
     attr_accessor :clock,

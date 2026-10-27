@@ -16,7 +16,9 @@ class InOperator
       return !needle_string.nil? && haystack.include?(needle_string)
     elsif haystack.is_a?(Hash)
       needle_string = evaluator.string_convert(needle)
-      return !needle_string.nil? && haystack.key?(needle_string)
+      # Keys may be strings or, for audience JSON parsed with
+      # symbolize_names, symbols.
+      return !needle_string.nil? && (haystack.key?(needle_string) || haystack.key?(needle_string.to_sym))
     end
     nil
   end
