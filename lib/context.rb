@@ -315,13 +315,16 @@ class Context
     default_value
   end
 
-  def track(goal_name, properties)
+  def track(goal_name, properties = nil)
     check_not_closed?
+    unless properties.nil? || properties.is_a?(Hash)
+      raise ArgumentError, "Goal '#{goal_name}' properties must be of type object."
+    end
 
     achievement = GoalAchievement.new
     achievement.achieved_at = @clock.to_i
     achievement.name = goal_name
-    achievement.properties = properties
+    achievement.properties = properties.nil? ? nil : properties.dup
 
     @queue_mutex.synchronize do
       check_not_closed?

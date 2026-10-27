@@ -1119,6 +1119,22 @@ RSpec.describe Context do
     context.close
   end
 
+  it "track rejects non-object properties" do
+    context = create_ready_context
+    [[1, 2], "x", 5, true].each do |props|
+      expect { context.track("goal1", props) }.to raise_error(ArgumentError, "Goal 'goal1' properties must be of type object.")
+    end
+    expect(context.pending_count).to eq(0)
+  end
+
+  it "track copies properties" do
+    context = create_ready_context
+    props = { amount: 1 }
+    context.track("goal1", props)
+    props[:amount] = 2
+    expect(context.instance_variable_get(:@achievements).last.properties).to eq({ amount: 1 })
+  end
+
   it "trackQueuesWhenNotReady" do
     context = create_context(data_future)
 
