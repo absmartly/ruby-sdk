@@ -4,6 +4,10 @@ require "a_b_smartly"
 require "a_b_smartly_config"
 require "context_event_handler"
 require "json/experiment"
+require "default_context_event_handler"
+require "client"
+require "client_config"
+require "context_data_result"
 
 RSpec.describe "Backwards Compatibility" do
   it "SDK is an alias for ABSmartly" do
@@ -42,6 +46,124 @@ RSpec.describe "Backwards Compatibility" do
       expect(experiment.applications.first).to be_a(ExperimentApplication)
       expect(experiment.variants.first).to be_a(ExperimentVariant)
       expect(experiment.custom_field_values.first).to be_a(CustomFieldValue)
+    end
+  end
+
+  it "DefaultContextEventHandler is a deprecated alias for DefaultContextPublisher" do
+    original = Warning[:deprecated]
+    Warning[:deprecated] = true
+    expect { expect(Object.const_get(:DefaultContextEventHandler)).to eq(DefaultContextPublisher) }
+      .to output(/DefaultContextEventHandler is deprecated/).to_stderr
+  ensure
+    Warning[:deprecated] = original
+  end
+
+  it "the default publisher is a DefaultContextEventHandler and builds without warnings" do
+    original = Warning[:deprecated]
+    Warning[:deprecated] = false
+    client = instance_double(Client)
+    expect { @handler = Object.const_get(:DefaultContextEventHandler).new(client) }.not_to output.to_stderr
+    config = ABSmartlyConfig.create
+    config.client = client
+    expect(ABSmartly.create(config).context_event_handler).to be_a(Object.const_get(:DefaultContextEventHandler))
+    expect(@handler).to be_a(DefaultContextPublisher)
+  ensure
+    Warning[:deprecated] = original
+  end
+
+  it "ignores unknown experiment fields without writing to stderr" do
+    expect {
+      experiment = Experiment.new(id: 1, name: "exp", holdoutIds: [1, 2], someNewField: true)
+      expect(experiment.name).to eq("exp")
+    }.not_to output.to_stderr
+  end
+
+  it "does not load ostruct, which is not a default gem from Ruby 3.5" do
+    lib = File.expand_path("../lib", __dir__)
+    expect(Dir[File.join(lib, "**/*.rb")].grep_v(/_spec/).select { |f| File.read(f).match?(/require ["']ostruct["']|OpenStruct/) })
+      .to be_empty
+  end
+
+  describe "ABSmartly.new" do
+    it "accepts a duck-typed config object" do
+      client = instance_double(Client)
+      config = Struct.new(:context_data_provider, :context_event_handler, :context_event_logger,
+                          :variable_parser, :audience_deserializer, :scheduler, :client)
+                     .new(nil, nil, nil, nil, nil, nil, client)
+
+      sdk = ABSmartly.new(config)
+
+      expect(sdk.client).to be(client)
+      expect(sdk.context_data_provider).to be_a(DefaultContextDataProvider)
+    end
+
+    it "accepts an rspec instance_double of the config" do
+      client = instance_double(Client)
+      config = instance_double(ABSmartlyConfig, context_data_provider: nil, context_event_handler: nil,
+                               context_event_logger: nil, variable_parser: nil, audience_deserializer: nil,
+                               scheduler: nil, client: client)
+
+      expect(ABSmartly.new(config).client).to be(client)
+    end
+
+    it "runs a subclass's initialize" do
+      subclass = Class.new(ABSmartly) do
+        attr_reader :extra
+
+        def initialize(config)
+          super(config)
+          @extra = 1
+        end
+      end
+      config = ABSmartlyConfig.create
+      config.client = instance_double(Client)
+
+      sdk = subclass.new(config)
+
+      expect([sdk.class.superclass, sdk.extra]).to eq([ABSmartly, 1])
+    end
+  end
+
+  describe "Client" do
+    let(:config) do
+      ClientConfig.create.tap do |c|
+        c.endpoint = "https://localhost/v1"
+        c.api_key = "test-api-key"
+        c.application = "website"
+        c.environment = "dev"
+      end
+    end
+
+    it "keeps the public headers accessor" do
+      client = Client.new(config, instance_double(HttpClient))
+
+      expect(client.headers[:"X-API-Key"]).to eq("test-api-key")
+      client.headers = client.headers.merge("Proxy-Authorization": "Basic abc")
+      expect(client.headers[:"Proxy-Authorization"]).to eq("Basic abc")
+      expect(client.inspect).not_to include("test-api-key")
+    end
+
+    it "returns a separate immutable result per context_data call" do
+      http_client = instance_double(HttpClient)
+      deserializer = instance_double(ContextDataDeserializer)
+      config.context_data_deserializer = deserializer
+      client = Client.new(config, http_client)
+      ok = DefaultHttpClient.default_response(200, "OK", "application/json", "{}")
+      failed = DefaultHttpClient.default_response(503, "Service Unavailable", nil, nil)
+      allow(http_client).to receive(:get).and_return(ok, failed)
+      data = ContextData.new
+      allow(deserializer).to receive(:deserialize).and_return(data)
+
+      first = client.context_data
+      second = client.context_data
+
+      expect(first).not_to be(client)
+      expect(first).to be_frozen
+      expect([first.success?, first.data_future, first.exception]).to eq([true, data, nil])
+      expect([second.success?, second.data_future, second.exception.message])
+        .to eq([false, nil, "Service Unavailable"])
+      expect([client.success?, client.data_future, client.exception.message])
+        .to eq([false, nil, "Service Unavailable"])
     end
   end
 end

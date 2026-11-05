@@ -3,9 +3,10 @@
 require_relative "default_http_client"
 require_relative "default_context_data_deserializer"
 require_relative "default_context_event_serializer"
+require_relative "context_data_result"
 
 class Client
-  attr_accessor :url, :query, :http_client, :executor, :deserializer, :serializer
+  attr_accessor :url, :query, :headers, :http_client, :executor, :deserializer, :serializer
   attr_reader :data_future, :promise, :exception
 
   def self.create(config, http_client = nil)
@@ -49,27 +50,14 @@ class Client
     }
   end
 
+  # Returns a ContextDataResult for this fetch. The data_future, exception
+  # and promise readers on the client still mirror the latest fetch.
   def context_data
-    @exception = nil
-    @data_future = nil
-    begin
-      @promise = @http_client.get(@url, @query, @headers)
-    rescue StandardError => e
-      @promise = nil
-      @exception = e
-      warn("Failed to fetch context data: #{e.class} - #{e.message}")
-      return self
-    end
-
-    unless @promise.success?
-      @exception = Exception.new(@promise.body)
-      warn("Failed to fetch context data (status=#{@promise.respond_to?(:status) ? @promise.status : 'unknown'})")
-      return self
-    end
-
-    content = (@promise.body || {}).to_s
-    @data_future = @deserializer.deserialize(content, 0, content.size)
-    self
+    result = fetch_context_data
+    @promise = result.promise
+    @exception = result.exception
+    @data_future = result.data_future
+    result
   end
 
   def publish(event)
@@ -96,4 +84,22 @@ class Client
   def inspect
     "#<Client url=#{@url.inspect}>"
   end
+
+  private
+    def fetch_context_data
+      begin
+        promise = @http_client.get(@url, @query, @headers)
+      rescue StandardError => e
+        warn("Failed to fetch context data: #{e.class} - #{e.message}")
+        return ContextDataResult.failure(e)
+      end
+
+      unless promise.success?
+        warn("Failed to fetch context data (status=#{promise.respond_to?(:status) ? promise.status : 'unknown'})")
+        return ContextDataResult.failure(Exception.new(promise.body), promise)
+      end
+
+      content = (promise.body || {}).to_s
+      ContextDataResult.new(@deserializer.deserialize(content, 0, content.size), nil, promise)
+    end
 end

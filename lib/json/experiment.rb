@@ -22,10 +22,8 @@ class Experiment
       key_sym = name.to_sym
       key_str = TypeUtils.underscore(name.to_s)
 
-      unless ALLOWED_KEYS.include?(key_sym) || ALLOWED_KEYS.include?(key_str.to_sym)
-        warn("Ignoring unexpected experiment field: #{name}")
-        next
-      end
+      # Fields this SDK doesn't know (e.g. holdoutIds) are ignored silently.
+      next unless ALLOWED_KEYS.include?(key_sym) || ALLOWED_KEYS.include?(key_str.to_sym)
 
       if key_str == "applications"
         @applications = assign_to_klass(ExperimentApplication, value)

@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "time"
-require "ostruct"
 require_relative "context"
 require_relative "audience_matcher"
 require_relative "default_context_data_provider"
@@ -12,6 +11,7 @@ require_relative "default_audience_deserializer"
 require_relative "scheduled_thread_pool_executor"
 require_relative "client_config"
 require_relative "client"
+require_relative "context_data_result"
 
 class ABSmartly
   attr_accessor :context_data_provider, :context_event_handler,
@@ -22,27 +22,20 @@ class ABSmartly
     ABSmartly.new(config)
   end
 
-  def self.new(config_or_endpoint = nil,
-               api_key: nil,
-               application: nil,
-               environment: nil,
-               timeout: nil,
-               retries: nil,
-               context_event_logger: nil)
-    if config_or_endpoint.is_a?(ABSmartlyConfig)
-      allocate.tap { |instance| instance.send(:initialize_from_config, config_or_endpoint) }
+  # Accepts either a config object (ABSmartlyConfig or anything that responds
+  # like it) or an endpoint String with keyword options.
+  def initialize(config_or_endpoint = nil,
+                 api_key: nil,
+                 application: nil,
+                 environment: nil,
+                 timeout: nil,
+                 retries: nil,
+                 context_event_logger: nil)
+    if config_or_endpoint.nil? || config_or_endpoint.is_a?(String)
+      initialize_from_params(config_or_endpoint, api_key, application, environment, timeout, retries,
+                             context_event_logger)
     else
-      allocate.tap { |instance|
-        instance.send(:initialize_from_params,
-          config_or_endpoint,
-          api_key,
-          application,
-          environment,
-          timeout,
-          retries,
-          context_event_logger
-        )
-      }
+      initialize_from_config(config_or_endpoint)
     end
   end
 
@@ -129,7 +122,7 @@ class ABSmartly
       data_future = data_provider.context_data
       context.set_data(data_future)
     rescue => e
-      context.set_data(OpenStruct.new(success?: false, exception: e))
+      context.set_data(ContextDataResult.failure(e))
     end
     context
   end
