@@ -9,8 +9,17 @@ class Hashing
   # A lone surrogate written as a 3-byte sequence.
   ENCODED_SURROGATE = /\xED[\xA0-\xBF][\x80-\xBF]/n.freeze
 
+  # Integers hash as their exact decimal text (as in v1.3.0), so 64-bit IDs
+  # beyond 2**53 keep distinct buckets; for |n| <= 2**53 this is the same text
+  # as JavaScript's toFixed(0). Other numbers are formatted like toFixed(0).
   def self.hash_unit(value)
-    unit = value.is_a?(Numeric) ? number_to_fixed0(value) : value
+    unit = if value.is_a?(Integer)
+      value.to_s
+    elsif value.is_a?(Numeric)
+      number_to_fixed0(value)
+    else
+      value
+    end
     base64_url_no_padding(Digest::MD5.digest(to_utf8(unit).b))
   end
 

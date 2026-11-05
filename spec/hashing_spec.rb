@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "hashing"
+require "variant_assigner"
 require "murmurhash3"
 
 RSpec.describe Hashing do
@@ -40,6 +41,17 @@ RSpec.describe Hashing do
       expect(Hashing.hash_unit(12345)).to eq("gnzLDuqKcGxMNKFokfhOew")
       expect(Hashing.hash_unit(125)).to eq("Pe8YStj0dV_yaYYup3OT3Q")
       expect(Hashing.hash_unit(125.75)).to eq("BpBZt--EDwx0qBTskje27A")
+    end
+
+    it "hashes integers by their exact decimal text, like v1.3.0" do
+      expect(Hashing.hash_unit(9_007_199_254_740_992)).to eq(Hashing.hash_unit("9007199254740992"))
+      expect(Hashing.hash_unit(9_007_199_254_740_993)).to eq(Hashing.hash_unit("9007199254740993"))
+      expect(Hashing.hash_unit(9_007_199_254_740_993)).not_to eq(Hashing.hash_unit(9_007_199_254_740_992))
+      ids = [1_234_567_890_123_456_700, 1_234_567_890_123_456_789, 1_234_567_890_123_456_800]
+      expect(ids.map { |id| Hashing.hash_unit(id) }.uniq.size).to eq(3)
+      expect(Hashing.hash_unit(-42)).to eq(Hashing.hash_unit("-42"))
+      expect(VariantAssigner.new(1_234_567_890_123_456_789).key)
+        .to eq(VariantAssigner.new("1234567890123456789").key)
     end
 
     it "formats numbers like JavaScript toFixed(0)" do
