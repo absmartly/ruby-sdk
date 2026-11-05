@@ -173,7 +173,12 @@ class Context
   def set_unit(unit_type, uid)
     check_not_closed?
 
-    if uid.is_a?(String)
+    uid = uid.to_s if uid.is_a?(Symbol)
+    uid = uid.to_str if !uid.is_a?(String) && uid.respond_to?(:to_str)
+
+    if uid.nil?
+      raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
+    elsif uid.is_a?(String)
       trimmed = Hashing.to_utf8(uid).strip
       if trimmed.empty?
         raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
@@ -258,7 +263,18 @@ class Context
 
   alias peek peek_treatment
 
+  # Maps each variable key to the name of the experiment whose value
+  # variable_value returns for it, as in v1.3.0.
   def variable_keys
+    check_ready?(true)
+
+    hsh = {}
+    @state.index_variables.each { |key, values| hsh[key] = values.first.data.name }
+    hsh
+  end
+
+  # Maps each variable key to the names of every experiment that defines it.
+  def variable_keys_list
     check_ready?(true)
 
     hsh = {}
@@ -364,42 +380,13 @@ class Context
   # Publishes pending events, then seals the context. If the final publish
   # fails the context stays open with the events queued, so close can be
   # retried; the failure is returned (or raised, if the publisher raised).
+  # Logs the "close" event; finalize does the same but logs "finalize".
   def close
-    return nil if @closed
-
-    # Called from a logger callback while a publish is in flight: defer so the
-    # events queued by the callback are still sent before finalizing.
-    if @publish_mutex.owned?
-      @close_pending = true
-      return nil
-    end
-
-    @closing = true
-    begin
-      loop do
-        result = flush
-        return result if !@failed && publish_failed?(result)
-
-        sealed = @queue_mutex.synchronize do
-          next :done if @closed
-          next :retry unless @exposures.empty? && @achievements.empty?
-
-          @closed = true
-          :sealed
-        end
-        return nil if sealed == :done
-        next if sealed == :retry
-
-        log_event(ContextEventLogger::EVENT_TYPE::FINALIZE, nil)
-        return nil
-      end
-    ensure
-      @closing = false
-    end
+    seal(ContextEventLogger::EVENT_TYPE::CLOSE)
   end
 
   def finalize
-    close
+    seal(ContextEventLogger::EVENT_TYPE::FINALIZE)
   end
 
   def data
@@ -413,6 +400,40 @@ class Context
   end
 
   private
+    def seal(event_type)
+      return nil if @closed
+
+      # Called from a logger callback while a publish is in flight: defer so the
+      # events queued by the callback are still sent before finalizing.
+      if @publish_mutex.owned?
+        @close_pending = event_type
+        return nil
+      end
+
+      @closing = true
+      begin
+        loop do
+          result = flush
+          return result if !@failed && publish_failed?(result)
+
+          sealed = @queue_mutex.synchronize do
+            next :done if @closed
+            next :retry unless @exposures.empty? && @achievements.empty?
+
+            @closed = true
+            :sealed
+          end
+          return nil if sealed == :done
+          next if sealed == :retry
+
+          log_event(event_type, nil)
+          return nil
+        end
+      ensure
+        @closing = false
+      end
+    end
+
     def flush
       if @failed
         @queue_mutex.synchronize do
@@ -483,8 +504,9 @@ class Context
       end
 
       if @close_pending
+        event_type = @close_pending
         @close_pending = false
-        close unless @closed || publish_failed?(result)
+        seal(event_type) unless @closed || publish_failed?(result)
       end
       result
     end
@@ -497,13 +519,13 @@ class Context
 
     def check_not_closed?
       if @closed
-        raise IllegalStateException.new("ABsmartly Context is finalized.")
+        raise IllegalStateException.new("ABSmartly Context is closed")
       end
     end
 
     def check_ready?(expect_not_closed)
       if !ready?
-        raise IllegalStateException.new("ABsmartly Context is not yet ready.")
+        raise IllegalStateException.new("ABSmartly Context is not yet ready")
       elsif expect_not_closed
         check_not_closed?
       end

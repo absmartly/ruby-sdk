@@ -221,7 +221,7 @@ RSpec.describe Context do
     expect(context.ready?).to be_falsey
     expect(context.failed?).to be_falsey
 
-    not_ready_message = "ABsmartly Context is not yet ready."
+    not_ready_message = "ABSmartly Context is not yet ready"
 
     expect { context.peek_treatment("exp_test_ab") }.to raise_error(IllegalStateException, not_ready_message)
     expect { context.treatment("exp_test_ab") }.to raise_error(IllegalStateException, not_ready_message)
@@ -250,7 +250,7 @@ RSpec.describe Context do
 
     expect(context.closed?).to be_truthy
 
-    closed_message = "ABsmartly Context is finalized."
+    closed_message = "ABSmartly Context is closed"
     expect {
       context.set_attribute("attr1", "value1")
     }.to raise_error(IllegalStateException, closed_message)
@@ -332,6 +332,26 @@ RSpec.describe Context do
     end
     expect(VariantAssigner.new(125.0).key).to eq(VariantAssigner.new("125").key)
     expect(VariantAssigner.new(125.75).key).to eq(VariantAssigner.new("126").key)
+  end
+
+  it "set unit converts symbols and string-like uids to strings, as in v1.3.0" do
+    string_like = Class.new do
+      def to_str
+        "session-abc"
+      end
+    end
+    context = create_ready_context
+    context.set_unit("sym_id", :abc)
+    context.set_unit("rack_id", string_like.new)
+    expect(context.get_unit("sym_id")).to eq("abc")
+    expect(context.get_unit("rack_id")).to eq("session-abc")
+  end
+
+  it "set unit rejects a nil uid as blank" do
+    context = create_ready_context
+    expect {
+      context.set_unit("db_user_id", nil)
+    }.to raise_error(IllegalStateException, "Unit 'db_user_id' UID must not be blank.")
   end
 
   it "set unit rejects non string, non numeric uids" do
@@ -718,7 +738,14 @@ RSpec.describe Context do
   it "getVariableKeys" do
     context = create_context(refresh_data_future_ready)
 
-    expect(variable_experiments).to eq(context.variable_keys)
+    expect(context.variable_keys).to eq(variable_experiments.transform_values(&:first))
+    expect(context.variable_keys[:"banner.border"]).to eq("exp_test_ab")
+  end
+
+  it "variable_keys_list lists every experiment for each key" do
+    context = create_context(refresh_data_future_ready)
+
+    expect(context.variable_keys_list).to eq(variable_experiments)
   end
 
   it "getCustomFieldKeys" do
@@ -1424,7 +1451,7 @@ RSpec.describe Context do
 
       expect {
         context.refresh
-      }.to raise_error(IllegalStateException, "ABsmartly Context is finalized.")
+      }.to raise_error(IllegalStateException, "ABSmartly Context is closed")
     end
   end
 
@@ -2104,7 +2131,7 @@ RSpec.describe Context do
         ContextEventLogger::EVENT_TYPE::PUBLISH, instance_of(PublishEvent)
       ).once
       expect(event_logger).to have_received(:handle_event).with(
-        ContextEventLogger::EVENT_TYPE::FINALIZE, nil
+        ContextEventLogger::EVENT_TYPE::CLOSE, nil
       ).once
     end
 
@@ -2220,7 +2247,7 @@ RSpec.describe Context do
   end
 
   describe "read methods raise when not ready" do
-    let(:not_ready_message) { "ABsmartly Context is not yet ready." }
+    let(:not_ready_message) { "ABSmartly Context is not yet ready" }
 
     it "raises for treatment, peek and variable reads" do
       context = create_context(data_future)
@@ -2246,7 +2273,7 @@ RSpec.describe Context do
     it "raises for treatment, peek and variable reads" do
       context = create_ready_context
       context.close
-      closed_message = "ABsmartly Context is finalized."
+      closed_message = "ABSmartly Context is closed"
       expect { context.treatment("exp_test_ab") }.to raise_error(IllegalStateException, closed_message)
       expect { context.peek_treatment("exp_test_ab") }.to raise_error(IllegalStateException, closed_message)
       expect { context.variable_value("banner.border", 17) }.to raise_error(IllegalStateException, closed_message)

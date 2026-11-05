@@ -137,21 +137,29 @@ RSpec.describe "JavaScript SDK parity" do
       expect(context.closed?).to be(false)
       expect(context.finalizing?).to be(false)
       expect(context.pending_count).to eq(1)
-      expect(events.map(&:first)).not_to include(ContextEventLogger::EVENT_TYPE::FINALIZE)
+      expect(events.map(&:first)).not_to include(ContextEventLogger::EVENT_TYPE::CLOSE)
 
       allow(handler).to receive(:publish).and_return(ok_future)
       expect(context.close).to be_nil
       expect(context.closed?).to be(true)
       expect(context.pending_count).to eq(0)
       expect(handler).to have_received(:publish).twice
-      expect(events.map(&:first)).to include(ContextEventLogger::EVENT_TYPE::FINALIZE)
+      expect(events.map(&:first)).to include(ContextEventLogger::EVENT_TYPE::CLOSE)
     end
 
-    it "emits the finalize event under the name \"finalize\"" do
+    it "emits the finalize event under the name \"finalize\" from finalize" do
+      allow(handler).to receive(:publish).and_return(ok_future)
+      context = make_context
+      context.finalize
+      expect(events.last).to eq(["finalize", nil])
+    end
+
+    it "emits the \"close\" event from close, as in v1.3.0" do
       allow(handler).to receive(:publish).and_return(ok_future)
       context = make_context
       context.close
-      expect(events.last).to eq(["finalize", nil])
+      expect(events.last).to eq(["close", nil])
+      expect(ContextEventLogger::EVENT_TYPE::CLOSE).to eq("close")
     end
 
     it "closes a failed context, discarding its events" do

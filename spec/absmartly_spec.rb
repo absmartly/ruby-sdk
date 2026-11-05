@@ -246,12 +246,23 @@ RSpec.describe Absmartly do
           .with(ContextEventLogger::EVENT_TYPE::PUBLISH, instance_of(PublishEvent)).once
       end
 
-      it "receives FINALIZE event when close() is called" do
+      it "receives CLOSE event when close() is called" do
         mock_logger.clear
         context = create_ready_context
         mock_logger.clear
 
         context.close
+
+        expect(mock_logger).to have_received(:handle_event)
+          .with(ContextEventLogger::EVENT_TYPE::CLOSE, nil).once
+      end
+
+      it "receives FINALIZE event when finalize() is called" do
+        mock_logger.clear
+        context = create_ready_context
+        mock_logger.clear
+
+        context.finalize
 
         expect(mock_logger).to have_received(:handle_event)
           .with(ContextEventLogger::EVENT_TYPE::FINALIZE, nil).once

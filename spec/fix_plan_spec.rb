@@ -220,8 +220,8 @@ RSpec.describe "Fix Plan Validations" do
     end
   end
 
-  describe "Fix #14: Client headers not publicly accessible" do
-    it "does not expose headers as a public method" do
+  describe "Fix #14: Client does not leak headers when inspected" do
+    it "keeps the public headers accessor and redacts inspect" do
       config = ClientConfig.create
       config.endpoint = "https://localhost/v1"
       config.api_key = "test-key"
@@ -232,7 +232,8 @@ RSpec.describe "Fix Plan Validations" do
       allow(DefaultHttpClient).to receive(:create).and_return(http_client)
 
       client = Client.create(config)
-      expect { client.headers }.to raise_error(NoMethodError)
+      expect(client.headers[:"X-API-Key"]).to eq("test-key")
+      expect(client.inspect).not_to include("test-key")
     end
   end
 
@@ -368,10 +369,10 @@ RSpec.describe "Fix Plan Validations" do
     end
   end
 
-  describe "Fix 1.1: variableKeys returns array of experiment names" do
+  describe "Fix 1.1: variable_keys_list returns array of experiment names" do
     it "maps each variable key to an array of experiment names" do
       context = create_ready_context
-      keys = context.variable_keys
+      keys = context.variable_keys_list
       keys.each do |_key, names|
         expect(names).to be_a(Array)
         expect(names).not_to be_empty
@@ -418,10 +419,9 @@ RSpec.describe "Fix Plan Validations" do
                                event_handler, nil, DefaultVariableParser.new,
                                AudienceMatcher.new(DefaultAudienceDeserializer.new))
 
-      keys = context.variable_keys
-      expect(keys[:"shared.key"]).to be_a(Array)
-      expect(keys[:"shared.key"]).to include("exp_a")
-      expect(keys[:"shared.key"]).to include("exp_b")
+      keys = context.variable_keys_list
+      expect(keys[:"shared.key"]).to eq(%w[exp_a exp_b])
+      expect(context.variable_keys[:"shared.key"]).to eq("exp_a")
     end
   end
 end
