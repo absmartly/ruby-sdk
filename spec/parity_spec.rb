@@ -248,30 +248,48 @@ RSpec.describe "JavaScript SDK parity" do
       server&.close
     end
 
-    def client_for(endpoint)
+    def client_for(endpoint, retry_statuses: nil)
       config = ClientConfig.create
       config.endpoint = endpoint
       config.api_key = "k"
       config.application = "a"
       config.environment = "e"
       config.retry_interval = 0.01
+      config.retry_statuses = retry_statuses unless retry_statuses.nil?
       Client.create(config)
     end
 
-    it "retries a 5xx publish and reports success" do
+    it "does not retry a 5xx publish by default" do
       with_server([503, 200]) do |endpoint, seen|
         event = PublishEvent.new
         event.hashed = true
         event.units = []
-        response = client_for(endpoint).publish(event)
+        expect(client_for(endpoint).publish(event)).to be_a(Exception)
+        expect(seen).to eq(%w[PUT])
+      end
+    end
+
+    it "does not retry a 5xx context fetch by default" do
+      with_server([500, 200]) do |endpoint, seen|
+        expect(client_for(endpoint).context_data.exception).not_to be_nil
+        expect(seen).to eq(%w[GET])
+      end
+    end
+
+    it "retries a 5xx publish and reports success when the status is opted in" do
+      with_server([503, 200]) do |endpoint, seen|
+        event = PublishEvent.new
+        event.hashed = true
+        event.units = []
+        response = client_for(endpoint, retry_statuses: [500, 502, 503, 504]).publish(event)
         expect(response).not_to be_a(Exception)
         expect(seen).to eq(%w[PUT PUT])
       end
     end
 
-    it "retries a 5xx context fetch" do
+    it "retries a 5xx context fetch when the status is opted in" do
       with_server([500, 200]) do |endpoint, seen|
-        client = client_for(endpoint).context_data
+        client = client_for(endpoint, retry_statuses: [500, 502, 503, 504]).context_data
         expect(client.exception).to be_nil
         expect(seen).to eq(%w[GET GET])
       end
