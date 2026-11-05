@@ -87,6 +87,9 @@ client_config.connect_timeout = 3.0
 client_config.connection_request_timeout = 3.0
 client_config.retry_interval = 0.5
 client_config.max_retries = 5
+# Opt in to retrying HTTP statuses (none by default). Retrying a publish after
+# a 5xx may duplicate events the collector already stored.
+client_config.retry_statuses = [502, 503, 504]
 
 sdk_config = ABSmartlyConfig.create
 sdk_config.client = Client.create(client_config)
@@ -168,7 +171,7 @@ if context.ready?
 end
 ```
 
-Read methods (`treatment`, `peek_treatment`, `variable_value`, `peek_variable_value`, `variable_keys`, `experiments`, `custom_field_keys`, `custom_field_value`) raise `IllegalStateException` ("ABsmartly Context is not yet ready.") until the context is ready, and ("ABsmartly Context is finalized.") after `close`. Check `ready?` first. A context whose data fetch failed is ready and failed: reads return control (0) and the caller's defaults.
+Read methods (`treatment`, `peek_treatment`, `variable_value`, `peek_variable_value`, `variable_keys`, `experiments`, `custom_field_keys`, `custom_field_value`) raise `IllegalStateException` ("ABSmartly Context is not yet ready") until the context is ready, and ("ABSmartly Context is closed") after `close`. Check `ready?` first. A context whose data fetch failed is ready and failed: reads return control (0) and the caller's defaults.
 
 Or using the global configuration approach:
 
@@ -347,6 +350,8 @@ If the final publish fails, `close` returns the failure, the context stays open 
 context.close
 ```
 
+`finalize` does the same as `close`, but logs the `"finalize"` event instead of `"close"`.
+
 ### Custom Event Logger
 
 The ABsmartly SDK can be instantiated with an event logger used for all contexts. In addition, an event logger can be specified when creating a particular context in the context config.
@@ -367,8 +372,8 @@ class CustomEventLogger < ContextEventLogger
       puts "Context ready with #{data.experiments.length} experiments"
     when EVENT_TYPE::REFRESH
       puts "Context refreshed with #{data.experiments.length} experiments"
-    when EVENT_TYPE::FINALIZE
-      puts "Context finalized"
+    when EVENT_TYPE::CLOSE, EVENT_TYPE::FINALIZE
+      puts "Context closed"
     end
   end
 end
@@ -406,7 +411,8 @@ The data parameter depends on the type of event. Currently, the SDK logs the fol
 | `Publish`   | `Context.publish()` method succeeds                     | PublishEvent sent to the collector           |
 | `Exposure`  | `Context.treatment()` method succeeds on first exposure | Exposure data enqueued for publishing        |
 | `Goal`      | `Context.track()` method succeeds                       | GoalAchievement enqueued for publishing      |
-| `Finalize`  | `Context.close()` method succeeds the first time        | `nil`                                        |
+| `Close`     | `Context.close()` method succeeds the first time        | `nil`                                        |
+| `Finalize`  | `Context.finalize()` method succeeds the first time     | `nil`                                        |
 
 ## Platform-Specific Examples
 
