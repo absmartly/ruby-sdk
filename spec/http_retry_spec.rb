@@ -169,4 +169,69 @@ RSpec.describe "HTTP Retry Logic" do
       expect(retry_handler).not_to be_nil
     end
   end
+
+  describe "retry policy" do
+    def session(config, &stubs)
+      calls = Hash.new(0)
+      adapter_stubs = Faraday::Adapter::Test::Stubs.new do |stub|
+        stubs.call(stub, calls)
+      end
+      conn = Faraday.new("http://localhost") do |f|
+        f.request :retry, **DefaultHttpClient.retry_options(config)
+        f.adapter :test, adapter_stubs
+      end
+      [conn, calls]
+    end
+
+    let(:config) do
+      DefaultHttpClientConfig.create.tap do |c|
+        c.max_retries = 2
+        c.retry_interval = 0
+      end
+    end
+
+    it "does not retry status codes by default, like v1.3.0" do
+      expect(config.retry_statuses).to eq([])
+      conn, calls = session(config) do |stub, c|
+        stub.get("/context") { c[:get] += 1; [503, {}, "unavailable"] }
+        stub.put("/context") { c[:put] += 1; [503, {}, "unavailable"] }
+      end
+
+      expect(conn.get("/context").status).to eq(503)
+      expect(conn.put("/context", "{}").status).to eq(503)
+      expect(calls).to eq(get: 1, put: 1)
+    end
+
+    it "retries the configured status codes when opted in" do
+      config.retry_statuses = [503]
+      conn, calls = session(config) do |stub, c|
+        stub.get("/context") { c[:get] += 1; [503, {}, "unavailable"] }
+      end
+
+      expect(conn.get("/context").status).to eq(503)
+      expect(calls[:get]).to eq(3)
+    end
+
+    it "retries a refused connection on GET only" do
+      conn, calls = session(config) do |stub, c|
+        stub.get("/context") { c[:get] += 1; raise Faraday::ConnectionFailed, "refused" }
+        stub.put("/context") { c[:put] += 1; raise Faraday::ConnectionFailed, "refused" }
+      end
+
+      expect { conn.get("/context") }.to raise_error(Faraday::ConnectionFailed)
+      expect { conn.put("/context", "{}") }.to raise_error(Faraday::ConnectionFailed)
+      expect(calls).to eq(get: 3, put: 1)
+    end
+
+    it "retries timeouts on GET and PUT, like v1.3.0" do
+      conn, calls = session(config) do |stub, c|
+        stub.get("/context") { c[:get] += 1; raise Faraday::TimeoutError }
+        stub.put("/context") { c[:put] += 1; raise Faraday::TimeoutError }
+      end
+
+      expect { conn.get("/context") }.to raise_error(Faraday::TimeoutError)
+      expect { conn.put("/context", "{}") }.to raise_error(Faraday::TimeoutError)
+      expect(calls).to eq(get: 3, put: 3)
+    end
+  end
 end

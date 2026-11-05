@@ -29,6 +29,21 @@ RSpec.describe DefaultHttpClientConfig do
     expect(config.pool_size).to eq(50)
   end
 
+  it ".retry_statuses" do
+    config = described_class.new
+    expect(config.retry_statuses).to eq([])
+    config.retry_statuses = [502, 503]
+    expect(config.retry_statuses).to eq([502, 503])
+  end
+
+  it "takes retry_statuses from ClientConfig" do
+    require "client_config"
+    client_config = ClientConfig.create
+    expect(client_config.http_client_config.retry_statuses).to eq([])
+    client_config.retry_statuses = [503]
+    expect(client_config.http_client_config.retry_statuses).to eq([503])
+  end
+
   it ".pool_idle_timeout" do
     config = described_class.new
     expect(config.pool_idle_timeout).to eq(5)
