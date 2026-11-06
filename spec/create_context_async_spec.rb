@@ -246,7 +246,6 @@ RSpec.describe "create_context_async" do
         context.wait_until_ready
         context.ready?
       end
-      # Blocked on the readiness condition variable, not finished.
       Thread.pass until waiter.status == "sleep" || !waiter.alive?
       expect([waiter.alive?, context.ready?]).to eq([true, false])
 
