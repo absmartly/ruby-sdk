@@ -173,25 +173,23 @@ class Context
   def set_unit(unit_type, uid)
     check_not_closed?
 
-    uid = uid.to_s if uid.is_a?(Symbol)
-    uid = uid.to_str if !uid.is_a?(String) && uid.respond_to?(:to_str)
-
     if uid.nil?
       raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
-    elsif uid.is_a?(String)
+    elsif Absmartly::TypeUtils.numeric?(uid)
+      trimmed = uid
+    else
+      # Like v1.3.0, any other value (Symbol, session id, UUID object) is
+      # stored as its to_s text.
+      uid = uid.respond_to?(:to_str) ? uid.to_str : uid.to_s
       trimmed = Hashing.to_utf8(uid).strip
       if trimmed.empty?
         raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
       end
-    elsif Absmartly::TypeUtils.numeric?(uid)
-      trimmed = uid
-    else
-      raise IllegalStateException.new("Unit '#{unit_type}' must be a string or a number.")
     end
 
     previous = @units[unit_type.to_sym]
     if !previous.nil? && previous != trimmed
-      raise IllegalStateException.new("Unit '#{unit_type}' UID already set.")
+      raise IllegalStateException.new("Unit '#{unit_type}' already set.")
     end
 
     @units[unit_type.to_sym] = trimmed

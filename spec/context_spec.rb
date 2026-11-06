@@ -354,11 +354,28 @@ RSpec.describe Context do
     }.to raise_error(IllegalStateException, "Unit 'db_user_id' UID must not be blank.")
   end
 
-  it "set unit rejects non string, non numeric uids" do
+  it "set unit stores the to_s text of objects without to_str, as in v1.3.0" do
+    # e.g. Rack::Session::SessionId or a UUID value object
+    session_id = Class.new do
+      def to_s
+        " 4a9c0e1f "
+      end
+    end
+    context = create_ready_context
+    context.set_unit("rack_sid", session_id.new)
+    expect(context.get_unit("rack_sid")).to eq("4a9c0e1f")
+  end
+
+  it "set unit rejects an object whose to_s is blank" do
+    blank = Class.new do
+      def to_s
+        " "
+      end
+    end
     context = create_ready_context
     expect {
-      context.set_unit("db_user_id", { a: 1 })
-    }.to raise_error(IllegalStateException, "Unit 'db_user_id' must be a string or a number.")
+      context.set_unit("db_user_id", blank.new)
+    }.to raise_error(IllegalStateException, "Unit 'db_user_id' UID must not be blank.")
   end
 
   it "set unit throws on already set" do
@@ -367,7 +384,7 @@ RSpec.describe Context do
     expect {
       context.set_unit("session_id", "new_uid")
     }.to raise_error(IllegalStateException,
-                     "Unit 'session_id' UID already set.")
+                     "Unit 'session_id' already set.")
   end
 
   it "set override" do
