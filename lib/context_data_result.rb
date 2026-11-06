@@ -18,7 +18,7 @@ class ContextDataResult
   end
 
   def success?
-    @exception.nil?
+    @exception.nil? && !@data_future.nil?
   end
 
   alias data data_future

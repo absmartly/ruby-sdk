@@ -100,6 +100,11 @@ class Client
       end
 
       content = (promise.body || {}).to_s
-      ContextDataResult.new(@deserializer.deserialize(content, 0, content.size), nil, promise)
+      data = @deserializer.deserialize(content, 0, content.size)
+      # Fail rather than report success with no data, which would leave the
+      # context never ready.
+      return ContextDataResult.failure(StandardError.new("Failed to deserialize context data"), promise) if data.nil?
+
+      ContextDataResult.new(data, nil, promise)
     end
 end

@@ -127,6 +127,28 @@ RSpec.describe "create_context_async" do
       expect(context.failed?).to be true
     end
 
+    it "fails the context instead of never becoming ready on an unparseable 200 body" do
+      http_client = instance_double(HttpClient)
+      allow(http_client).to receive(:get)
+        .and_return(DefaultHttpClient.default_response(200, "OK", "application/json", "not json"))
+      client_config = ClientConfig.create.tap do |c|
+        c.endpoint = "https://localhost/v1"
+        c.api_key = "k"
+        c.application = "a"
+        c.environment = "e"
+      end
+      config = ABSmartlyConfig.create
+      config.client = Client.new(client_config, http_client)
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+
+      [ABSmartly.create(config).create_context(context_config),
+       ABSmartly.create(config).create_context_async(context_config)].each do |context|
+        context.wait_until_ready(5)
+        expect([context.ready?, context.failed?]).to eq([true, true])
+      end
+    end
+
     it "raises for treatment before ready" do
       config = ABSmartlyConfig.create
       config.client = slow_client_mock(delay: 0.2)
