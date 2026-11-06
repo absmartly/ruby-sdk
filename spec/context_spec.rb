@@ -1201,6 +1201,17 @@ RSpec.describe Context do
     expect(context.pending_count).to eq(0)
   end
 
+  it "track accepts hash-like properties through to_h, e.g. ActionController::Parameters" do
+    params = Class.new do
+      def to_h
+        { "amount" => 3 }
+      end
+    end
+    context = create_ready_context
+    context.track("goal1", params.new)
+    expect(context.instance_variable_get(:@achievements).last.properties).to eq({ "amount" => 3 })
+  end
+
   it "track copies properties" do
     context = create_ready_context
     props = { amount: 1 }
