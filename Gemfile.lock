@@ -30,6 +30,7 @@ GEM
     irb (1.6.3)
       reline (>= 0.3.0)
     json (2.7.6)
+    logger (1.7.0)
     murmurhash3 (0.1.7)
     net-http-persistent (4.0.8)
       connection_pool (>= 2.2.4, < 4)
@@ -85,6 +86,7 @@ DEPENDENCIES
   faraday
   faraday-net_http_persistent
   irb
+  logger
   murmurhash3
   ostruct
   rake (~> 13.0)
