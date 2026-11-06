@@ -322,7 +322,9 @@ RSpec.describe Client do
                                        .and_return(response_future)
     publish_future = client.publish(event)
     actual = publish_future
-    expect(actual).to eq(Exception.new("FAILED"))
+    expect(actual).to be_a(PublishError)
+    expect(actual).to be_a(StandardError)
+    expect(actual.message).to eq("FAILED")
 
     expect(ser).to have_received(:serialize).with(event).once
     expect(http_client).to have_received(:put).with("https://localhost/v1/context", nil, expected_headers, bytes).once

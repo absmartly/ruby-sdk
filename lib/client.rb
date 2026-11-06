@@ -4,6 +4,7 @@ require_relative "default_http_client"
 require_relative "default_context_data_deserializer"
 require_relative "default_context_event_serializer"
 require_relative "context_data_result"
+require_relative "publish_error"
 
 class Client
   attr_accessor :url, :query, :headers, :http_client, :executor, :deserializer, :serializer
@@ -65,7 +66,10 @@ class Client
     response = @http_client.put(@url, nil, @headers, content)
 
     unless response.success?
-      return Exception.new(response.body)
+      # A routine collector rejection must stay catchable with a normal
+      # `rescue StandardError` when close/finalize raises it, so use a
+      # StandardError subclass rather than Ruby's base Exception.
+      return PublishError.new(response.body)
     end
 
     response
