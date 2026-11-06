@@ -479,6 +479,31 @@ RSpec.describe "Fix Plan Validations" do
       expect(context.peek_variable_value("shared.key", "default")).to eq("from_exp_a")
     end
 
+    it "falls through when the assigned variant's config lacks the key" do
+      # exp_a's variant A defines other.key but not shared.key, while variant B
+      # defines shared.key, so exp_a is indexed for shared.key. Overriding exp_a
+      # to variant A means the unit is assigned/overridden there yet that variant
+      # doesn't carry shared.key: resolution falls through to exp_b.
+      exp_a = shared_experiment(1, "exp_a", "session_id", 1)
+      exp_a["variants"] = [{ "name" => "A", "config" => %({"other.key":"from_exp_a"}) },
+                           { "name" => "B", "config" => %({"shared.key":"from_exp_a"}) }]
+      json = JSON.generate({ "experiments" => [exp_a, shared_experiment(2, "exp_b", "session_id", 1)] })
+      published = []
+      handler = instance_double(ContextPublisher)
+      allow(handler).to receive(:publish) { |_ctx, event| published.concat(event.exposures || []); publish_future }
+      config = ContextConfig.create
+      config.set_unit(:session_id, "test-unit")
+      provider = DefaultContextDataProvider.new(client_mock(descr.deserialize(json, 0, json.length)))
+      context = Context.create(clock, config, provider.context_data, provider, handler, nil,
+                               variable_parser, audience_matcher)
+      context.set_override("exp_a", 0)
+
+      expect(context.peek_variable_value("shared.key", "default")).to eq("from_exp_b")
+      expect(context.variable_value("shared.key", "default")).to eq("from_exp_b")
+      context.publish
+      expect(published.map(&:name)).to eq(%w[exp_a exp_b])
+    end
+
     it "orders experiments by id, not payload order" do
       json = JSON.generate({ "experiments" => [shared_experiment(2, "exp_b", "session_id", 1),
                                                shared_experiment(1, "exp_a", "session_id", 1)] })
