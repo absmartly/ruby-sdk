@@ -375,9 +375,9 @@ class Context
   end
 
   # Publishes pending events, then seals the context. If the final publish
-  # fails the context stays open with the events queued, so close can be
-  # retried; the failure is returned (or raised, if the publisher raised).
-  # Logs the "close" event; finalize does the same but logs "finalize".
+  # fails the context stays open with the events queued and the failure is
+  # raised, so close can be retried. Logs the "close" event only once the
+  # context is sealed; finalize does the same but logs "finalize".
   def close
     seal(ContextEventLogger::EVENT_TYPE::CLOSE)
   end
@@ -411,7 +411,7 @@ class Context
       begin
         loop do
           result = flush
-          return result if !@failed && publish_failed?(result)
+          raise_publish_failure(result) if !@failed && publish_failed?(result)
 
           sealed = @queue_mutex.synchronize do
             next :done if @closed
@@ -510,6 +510,20 @@ class Context
       result.is_a?(Exception) ||
         (result.respond_to?(:exception) && result.exception) ||
         (result.respond_to?(:success?) && !result.success?)
+    end
+
+    # Raises the error behind a failed final publish so a caller that ignores
+    # the return value still finds out. The context is left open with its
+    # events queued; a later close retries.
+    def raise_publish_failure(result)
+      if result.is_a?(Exception)
+        raise result
+      elsif result.respond_to?(:exception) && result.exception
+        raise result.exception
+      else
+        status = result.respond_to?(:status) ? result.status : "unknown"
+        raise StandardError.new("Publish failed (status=#{status})")
+      end
     end
 
     def check_not_closed?

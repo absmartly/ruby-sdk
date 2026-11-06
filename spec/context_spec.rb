@@ -2074,6 +2074,39 @@ RSpec.describe Context do
       expect { context.track("goal1", nil) }.to raise_error(IllegalStateException)
       expect { context.publish }.to raise_error(IllegalStateException)
     end
+
+    it "raises the publish failure, stays open with events queued, and a second close seals" do
+      ev = instance_double(ContextPublisher)
+      allow(ev).to receive(:publish).and_return(failure_future)
+      context = create_ready_context(evt_handler: ev)
+      context.track("goal1", nil)
+      expect(context.pending_count).to eq(1)
+
+      expect { context.close }.to raise_error(Exception, "FAILED")
+      expect(context.closed?).to be false
+      expect(context.pending_count).to eq(1)
+
+      allow(ev).to receive(:publish).and_return(nil)
+      expect(context.close).to be_nil
+      expect(context.closed?).to be true
+      expect(context.pending_count).to eq(0)
+      expect(ev).to have_received(:publish).twice
+    end
+
+    it "finalize raises the publish failure and leaves the context open" do
+      ev = instance_double(ContextPublisher)
+      allow(ev).to receive(:publish).and_return(failure_future)
+      context = create_ready_context(evt_handler: ev)
+      context.track("goal1", nil)
+
+      expect { context.finalize }.to raise_error(Exception, "FAILED")
+      expect(context.closed?).to be false
+      expect(context.pending_count).to eq(1)
+
+      allow(ev).to receive(:publish).and_return(nil)
+      expect(context.finalize).to be_nil
+      expect(context.closed?).to be true
+    end
   end
 
   describe "unit management" do
@@ -2213,7 +2246,7 @@ RSpec.describe Context do
       event_logger.clear
 
       context.track("goal1", nil)
-      context.close
+      expect { context.close }.to raise_error(Exception, "FAILED")
 
       expect(event_logger).to have_received(:handle_event).with(
         ContextEventLogger::EVENT_TYPE::ERROR, "FAILED"
