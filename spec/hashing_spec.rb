@@ -54,6 +54,17 @@ RSpec.describe Hashing do
         .to eq(VariantAssigner.new("1234567890123456789").key)
     end
 
+    it "hashes BigDecimal and Rational UIDs from to_s, like v1.3.0" do
+      expect(Hashing.hash_unit(Rational(7, 2))).to eq(Hashing.hash_unit("7/2"))
+      expect(VariantAssigner.new(Rational(7, 2)).key).to eq(VariantAssigner.new("7/2").key)
+      begin
+        require "bigdecimal" # a bundled gem, not in the Gemfile, from Ruby 3.4
+      rescue LoadError
+        next
+      end
+      expect(Hashing.hash_unit(BigDecimal("123"))).to eq(Hashing.hash_unit("0.123e3"))
+    end
+
     it "formats numbers like JavaScript toFixed(0)" do
       expect(Hashing.hash_unit(-0.1)).to eq("815ubasUW2p7sFI440lKaw")
       expect(Hashing.hash_unit(1e21)).to eq("OKkjo8sn5USSUjdjCUBynw")

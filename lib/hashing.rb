@@ -11,12 +11,13 @@ class Hashing
 
   # Integers hash as their exact decimal text (as in v1.3.0), so 64-bit IDs
   # beyond 2**53 keep distinct buckets; for |n| <= 2**53 this is the same text
-  # as JavaScript's toFixed(0). Other numbers are formatted like toFixed(0).
+  # as JavaScript's toFixed(0). Floats are formatted like toFixed(0); other
+  # numbers (BigDecimal, Rational) hash from to_s, as in v1.3.0.
   def self.hash_unit(value)
-    unit = if value.is_a?(Integer)
-      value.to_s
-    elsif value.is_a?(Numeric)
+    unit = if value.is_a?(Float)
       number_to_fixed0(value)
+    elsif value.is_a?(Numeric)
+      value.to_s
     else
       value
     end
