@@ -1216,6 +1216,21 @@ RSpec.describe Context do
     expect(context.instance_variable_get(:@achievements).last.properties).to eq({ "amount" => 3 })
   end
 
+  it "track prefers to_unsafe_h, so unpermitted ActionController::Parameters don't raise" do
+    params = Class.new do
+      def to_h
+        raise "ActionController::UnfilteredParameters"
+      end
+
+      def to_unsafe_h
+        { "amount" => 4 }
+      end
+    end
+    context = create_ready_context
+    context.track("goal1", params.new)
+    expect(context.instance_variable_get(:@achievements).last.properties).to eq({ "amount" => 4 })
+  end
+
   it "track copies properties" do
     context = create_ready_context
     props = { amount: 1 }

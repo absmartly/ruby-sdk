@@ -326,10 +326,14 @@ class Context
   def track(goal_name, properties = nil)
     check_not_closed?
     # Hash-like objects such as ActionController::Parameters are accepted
-    # through to_h, as v1.3.0 accepted any properties object.
-    if !properties.nil? && !Absmartly::TypeUtils.object?(properties) &&
-       !properties.is_a?(Array) && properties.respond_to?(:to_h)
-      properties = properties.to_h
+    # through to_unsafe_h or to_h, as v1.3.0 accepted any properties object.
+    # to_unsafe_h comes first because Parameters#to_h raises unless permitted.
+    if !properties.nil? && !Absmartly::TypeUtils.object?(properties) && !properties.is_a?(Array)
+      if properties.respond_to?(:to_unsafe_h)
+        properties = properties.to_unsafe_h
+      elsif properties.respond_to?(:to_h)
+        properties = properties.to_h
+      end
     end
     unless properties.nil? || Absmartly::TypeUtils.object?(properties)
       raise ArgumentError, "Goal '#{goal_name}' properties must be of type object."
