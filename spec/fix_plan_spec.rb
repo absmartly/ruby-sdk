@@ -208,15 +208,11 @@ RSpec.describe "Fix Plan Validations" do
     end
   end
 
-  describe "Fix #12: Backtrace leak in AudienceMatcher" do
-    it "does not include backtrace in error output" do
+  describe "Fix #12: AudienceMatcher on invalid audience JSON" do
+    it "returns nil without writing to stderr, as in v1.3.0" do
       matcher = AudienceMatcher.new(DefaultAudienceDeserializer.new)
-      warnings = []
-      allow(matcher).to receive(:warn) { |msg| warnings << msg }
 
-      matcher.evaluate("not json {{", {})
-
-      expect(warnings.first).not_to include("\n")
+      expect { expect(matcher.evaluate("not json {{", {})).to be_nil }.not_to output.to_stderr
     end
   end
 

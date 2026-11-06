@@ -7,11 +7,7 @@ class DefaultAudienceDeserializer < AudienceDeserializer
 
   def deserialize(bytes, offset, length)
     JSON.parse(bytes[offset, length], symbolize_names: true)
-  rescue JSON::ParserError => e
-    warn("Failed to deserialize audience data: #{e.message}")
-    nil
-  rescue StandardError => e
-    warn("Unexpected error deserializing audience data: #{e.class} - #{e.message}")
+  rescue StandardError
     nil
   end
 end

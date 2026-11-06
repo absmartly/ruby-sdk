@@ -10,6 +10,7 @@ require "default_context_event_handler"
 require "client"
 require "client_config"
 require "context_data_result"
+require "context_config"
 
 RSpec.describe "Backwards Compatibility" do
   # Run in a fresh process so constants loaded by other specs can't hide a
@@ -157,6 +158,29 @@ RSpec.describe "Backwards Compatibility" do
       client.headers = client.headers.merge("Proxy-Authorization": "Basic abc")
       expect(client.headers[:"Proxy-Authorization"]).to eq("Basic abc")
       expect(client.inspect).not_to include("test-api-key")
+    end
+
+    it "fails a context without writing to stderr when the fetch fails or the event logger raises" do
+      http_client = instance_double(HttpClient)
+      allow(http_client).to receive(:get).and_return(
+        DefaultHttpClient.default_response(503, "Service Unavailable", nil, nil),
+        DefaultHttpClient.default_response(200, "OK", "application/json", "not json")
+      )
+      logger = Class.new do
+        def handle_event(_type, _data)
+          raise "logger bug"
+        end
+      end.new
+      sdk_config = ABSmartlyConfig.create
+      sdk_config.client = Client.new(config, http_client)
+      sdk_config.context_event_logger = logger
+      sdk = ABSmartly.create(sdk_config)
+      context_config = ContextConfig.create
+      context_config.set_unit(:session_id, "abc")
+
+      expect {
+        2.times { expect(sdk.create_context(context_config).failed?).to be(true) }
+      }.not_to output.to_stderr
     end
 
     it "returns a separate immutable result per context_data call" do

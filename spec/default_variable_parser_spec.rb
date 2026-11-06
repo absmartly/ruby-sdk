@@ -27,12 +27,12 @@ RSpec.describe DefaultVariableParser do
       "g": 9.123)
   end
 
-  it ".parse does not throw" do
+  it ".parse returns nil on invalid JSON without throwing, as in v1.3.0" do
     context = instance_double(Context)
     config_value = resource("variables.json")[5..]
 
     variable_parser = described_class.new
 
-    expect(variable_parser.parse(context, "test_exp", "B", config_value)).to eq({})
+    expect(variable_parser.parse(context, "test_exp", "B", config_value)).to be_nil
   end
 end

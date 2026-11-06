@@ -8,6 +8,10 @@ require "default_audience_deserializer"
 require "context_data_provider"
 require "default_context_data_provider"
 require "context_event_handler"
+require "client"
+require "client_config"
+require "default_context_publisher"
+require "default_http_client"
 require "context_event_logger"
 require "scheduled_executor_service"
 require "audience_matcher"
@@ -1519,6 +1523,28 @@ RSpec.describe Context do
       context.publish
 
       expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::ERROR, "FAILED")
+    end
+
+    it "reports a failed HTTP publish to the error callback only, without writing to stderr" do
+      client_config = ClientConfig.create.tap do |c|
+        c.endpoint = "https://localhost/v1"
+        c.api_key = "k"
+        c.application = "a"
+        c.environment = "e"
+      end
+      http_client = instance_double(DefaultHttpClient)
+      allow(http_client).to receive(:put)
+        .and_return(DefaultHttpClient.default_response(500, "Internal Server Error", nil, nil))
+      publisher = DefaultContextPublisher.new(Client.new(client_config, http_client))
+      context = create_ready_context(evt_handler: publisher)
+      context.track("goal1", nil)
+
+      expect { context.publish }.not_to output.to_stderr
+      expect(http_client).to have_received(:put).once
+      expect(event_logger).to have_received(:handle_event)
+        .with(ContextEventLogger::EVENT_TYPE::ERROR, "Internal Server Error").once
+      expect(event_logger).not_to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::PUBLISH, anything)
+      expect(context.pending_count).to eq(1)
     end
 
     it "failed context clears pending events on publish" do

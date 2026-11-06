@@ -10,11 +10,7 @@ class DefaultContextDataDeserializer < ContextDataDeserializer
   def deserialize(bytes, offset, length)
     parse = JSON.parse(bytes[offset, length], symbolize_names: true)
     @reader = ContextData.new(parse[:experiments])
-  rescue JSON::ParserError => e
-    warn("Failed to deserialize context data: #{e.message}")
-    nil
-  rescue StandardError => e
-    warn("Unexpected error deserializing context data: #{e.class} - #{e.message}")
+  rescue StandardError
     nil
   end
 end

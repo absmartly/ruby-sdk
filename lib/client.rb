@@ -65,9 +65,7 @@ class Client
     response = @http_client.put(@url, nil, @headers, content)
 
     unless response.success?
-      error = Exception.new(response.body)
-      warn("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})")
-      return error
+      return Exception.new(response.body)
     end
 
     response
@@ -90,12 +88,10 @@ class Client
       begin
         promise = @http_client.get(@url, @query, @headers)
       rescue StandardError => e
-        warn("Failed to fetch context data: #{e.class} - #{e.message}")
         return ContextDataResult.failure(e)
       end
 
       unless promise.success?
-        warn("Failed to fetch context data (status=#{promise.respond_to?(:status) ? promise.status : 'unknown'})")
         return ContextDataResult.failure(Exception.new(promise.body), promise)
       end
 

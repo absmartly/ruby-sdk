@@ -473,14 +473,12 @@ class Context
         end
 
         if response.is_a?(Exception)
-          warn("Publish failed: #{response.message}")
           log_error(response)
           response
         elsif response.respond_to?(:exception) && response.exception
           log_error(response.exception)
           response
         elsif response.respond_to?(:success?) && !response.success?
-          warn("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})")
           log_error(StandardError.new("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})"))
           response
         else
@@ -709,7 +707,7 @@ class Context
           experiment.variants.each do |variant|
             if !variant.config.nil? && !variant.config.empty?
               variables = @variable_parser.parse(self, experiment.name, variant.name,
-                                                 variant.config)
+                                                 variant.config) || {}
               variables.keys.each do |key|
                 index_variables[key] ||= []
                 index_variables[key] << experiment_variables unless index_variables[key].include?(experiment_variables)
@@ -767,16 +765,16 @@ class Context
       unless @event_logger.nil?
         @event_logger.handle_event(event, data)
       end
-    rescue StandardError => e
-      warn("Context event logger raised: #{e.class} - #{e.message}")
+    rescue StandardError
+      nil
     end
 
     def log_error(error)
       unless @event_logger.nil?
         @event_logger.handle_event(ContextEventLogger::EVENT_TYPE::ERROR, error.message)
       end
-    rescue StandardError => e
-      warn("Context event logger raised: #{e.class} - #{e.message}")
+    rescue StandardError
+      nil
     end
 
     def init_common(clock, config, data_provider, event_handler, event_logger,

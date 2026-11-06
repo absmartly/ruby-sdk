@@ -32,11 +32,7 @@ class AudienceMatcher
         Result.new(@json_expr.evaluate_boolean_expr(filter, attributes))
       end
     end
-  rescue JSON::ParserError => e
-    warn("Failed to parse audience JSON: #{e.message}")
-    nil
-  rescue StandardError => e
-    warn("Audience evaluation failed: #{e.class} - #{e.message}")
+  rescue StandardError
     nil
   end
 end
