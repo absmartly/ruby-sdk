@@ -285,13 +285,7 @@ class Context
   def variable_value(key, default_value)
     check_ready?(true)
 
-    assignment = variable_assignment(key)
-    unless assignment.nil? || assignment.variables.nil?
-      queue_exposure(assignment)
-      return assignment.variables[key.to_s.to_sym] if assignment.variables.key?(key.to_s.to_sym)
-    end
-
-    default_value
+    resolve_variable_value(key, default_value, true)
   end
 
   def custom_field_keys
@@ -326,12 +320,7 @@ class Context
   def peek_variable_value(key, default_value)
     check_ready?(true)
 
-    assignment = variable_assignment(key)
-    return assignment.variables[key.to_s.to_sym] if !assignment.nil? &&
-      !assignment.variables.nil? &&
-      assignment.variables.key?(key.to_s.to_sym)
-
-    default_value
+    resolve_variable_value(key, default_value, false)
   end
 
   def track(goal_name, properties = nil)
@@ -668,20 +657,27 @@ class Context
       assignment
     end
 
-    def variable_assignment(key)
+    # Like the JavaScript SDK, a key shared by several experiments reads from
+    # the first one, in payload order, that the unit is assigned to or
+    # overridden in; each experiment visited on the way is exposed.
+    def resolve_variable_value(key, default_value, expose)
       state = @state
-      experiment = variable_experiment(key, state)
+      key = key.to_s.to_sym
+      (state.index_variables[key] || []).each do |experiment|
+        assignment = assignment(experiment.data.name, state)
+        next if assignment.variables.nil?
 
-      assignment(experiment.data.name, state) unless experiment.nil?
+        queue_exposure(assignment) if expose
+        if assignment.variables.key?(key) && (assignment.assigned || assignment.overridden)
+          return assignment.variables[key]
+        end
+      end
+
+      default_value
     end
 
     def experiment(experiment, state = @state)
       state.index[experiment.to_s.to_sym]
-    end
-
-    def variable_experiment(key, state = @state)
-      experiments = state.index_variables[key.to_s.to_sym]
-      experiments&.first
     end
 
     def unit_hash(unit_type, unit_uid)

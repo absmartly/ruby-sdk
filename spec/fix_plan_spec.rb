@@ -265,9 +265,10 @@ RSpec.describe "Fix Plan Validations" do
       expect(experiment_method).not_to include("transform_keys")
     end
 
-    it "looks up variable_experiment without transform_keys on every call" do
+    it "looks up variable experiments without transform_keys on every call" do
       source = File.read(File.join("lib", "context.rb"))
-      variable_method = source[/def variable_experiment\(key.*?end/m]
+      variable_method = source[/def resolve_variable_value\(key.*?\n    end/m]
+      expect(variable_method).to include("index_variables")
       expect(variable_method).not_to include("transform_keys")
     end
   end
@@ -422,6 +423,61 @@ RSpec.describe "Fix Plan Validations" do
       keys = context.variable_keys_list
       expect(keys[:"shared.key"]).to eq(%w[exp_a exp_b])
       expect(context.variable_keys[:"shared.key"]).to eq("exp_a")
+    end
+  end
+
+  describe "shared variable keys resolve like the JavaScript SDK" do
+    def shared_experiment(id, name, unit_type, full_on_variant)
+      {
+        "id" => id, "name" => name, "unitType" => unit_type,
+        "iteration" => 1, "seedHi" => 0, "seedLo" => 0,
+        "split" => [0.5, 0.5], "trafficSeedHi" => 0, "trafficSeedLo" => 0,
+        "trafficSplit" => [0.0, 1.0], "fullOnVariant" => full_on_variant,
+        "variants" => [{ "name" => "A", "config" => nil },
+                       { "name" => "B", "config" => %({"shared.key":"from_#{name}"}) }],
+        "audienceStrict" => false, "audience" => ""
+      }
+    end
+
+    # exp_a's unit type is user_id, which the context doesn't set, so the unit
+    # isn't assigned in exp_a unless it is full-on.
+    def shared_context(published, exp_a_full_on: 0)
+      json = JSON.generate({ "experiments" => [shared_experiment(1, "exp_a", "user_id", exp_a_full_on),
+                                               shared_experiment(2, "exp_b", "session_id", 1)] })
+      handler = instance_double(ContextPublisher)
+      allow(handler).to receive(:publish) { |_ctx, event| published.concat(event.exposures || []); publish_future }
+      config = ContextConfig.create
+      config.set_unit(:session_id, "test-unit")
+      provider = DefaultContextDataProvider.new(client_mock(descr.deserialize(json, 0, json.length)))
+      Context.create(clock, config, provider.context_data, provider, handler, nil,
+                     variable_parser, audience_matcher)
+    end
+
+    it "reads from the first experiment the unit is assigned in and exposes only that one" do
+      published = []
+      context = shared_context(published, exp_a_full_on: 1)
+
+      expect(context.variable_value("shared.key", "default")).to eq("from_exp_a")
+      context.publish
+      expect(published.map(&:name)).to eq(%w[exp_a])
+    end
+
+    it "falls through to the next experiment when the unit isn't assigned in the first" do
+      published = []
+      context = shared_context(published)
+
+      expect(context.peek_variable_value("shared.key", "default")).to eq("from_exp_b")
+      expect(context.pending_count).to eq(0)
+      expect(context.variable_value("shared.key", "default")).to eq("from_exp_b")
+      context.publish
+      expect(published.map { |e| [e.name, e.assigned] }).to eq([["exp_a", false], ["exp_b", true]])
+    end
+
+    it "reads from an experiment the unit is overridden in" do
+      context = shared_context([])
+      context.set_override("exp_a", 1)
+
+      expect(context.peek_variable_value("shared.key", "default")).to eq("from_exp_a")
     end
   end
 end
