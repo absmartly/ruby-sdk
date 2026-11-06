@@ -14,13 +14,7 @@ class Hashing
   # as JavaScript's toFixed(0). Floats are formatted like toFixed(0); other
   # numbers (BigDecimal, Rational) hash from to_s, as in v1.3.0.
   def self.hash_unit(value)
-    unit = if value.is_a?(Float)
-      number_to_fixed0(value)
-    elsif value.is_a?(Numeric)
-      value.to_s
-    else
-      value
-    end
+    unit = value.is_a?(Float) ? number_to_fixed0(value) : value
     base64_url_no_padding(Digest::MD5.digest(to_utf8(unit).b))
   end
 
