@@ -480,10 +480,8 @@ RSpec.describe "Fix Plan Validations" do
     end
 
     it "falls through when the assigned variant's config lacks the key" do
-      # exp_a's variant A defines other.key but not shared.key, while variant B
-      # defines shared.key, so exp_a is indexed for shared.key. Overriding exp_a
-      # to variant A means the unit is assigned/overridden there yet that variant
-      # doesn't carry shared.key: resolution falls through to exp_b.
+      # exp_a is indexed for shared.key via variant B, but the unit is overridden
+      # to variant A, which lacks it, so resolution falls through to exp_b.
       exp_a = shared_experiment(1, "exp_a", "session_id", 1)
       exp_a["variants"] = [{ "name" => "A", "config" => %({"other.key":"from_exp_a"}) },
                            { "name" => "B", "config" => %({"shared.key":"from_exp_a"}) }]

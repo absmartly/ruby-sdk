@@ -347,7 +347,7 @@ context.publish
 
 The `close` method will ensure all events have been published to the ABsmartly collector, like `publish`, and will also "seal" the context, throwing an error if any method that could generate an event is called.
 
-If the final publish fails, `close` returns the failure, the context stays open and the events stay queued, so `close` can be called again to retry.
+If the final publish fails, `close` raises the failure, the context stays open and the events stay queued, so `close` can be called again to retry. The raised error is a `StandardError`, so it can be caught with an ordinary `rescue`.
 
 ```ruby
 context.close
