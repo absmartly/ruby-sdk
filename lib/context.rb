@@ -512,9 +512,6 @@ class Context
         (result.respond_to?(:success?) && !result.success?)
     end
 
-    # Raises the error behind a failed final publish so a caller that ignores
-    # the return value still finds out. The context is left open with its
-    # events queued; a later close retries.
     def raise_publish_failure(result)
       if result.is_a?(Exception)
         raise result

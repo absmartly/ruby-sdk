@@ -168,7 +168,6 @@ RSpec.describe "Local server integration (real HTTP)" do
     expect(context.finalizing?).to be(false)
     expect(context.pending_count).to eq(1)
 
-    # A later close retries and succeeds once the collector recovers.
     server.put_status = 200
     expect(context.close).to be_nil
     expect(context.closed?).to be(true)

@@ -480,8 +480,6 @@ RSpec.describe "Fix Plan Validations" do
     end
 
     it "falls through when the assigned variant's config lacks the key" do
-      # exp_a is indexed for shared.key via variant B, but the unit is overridden
-      # to variant A, which lacks it, so resolution falls through to exp_b.
       exp_a = shared_experiment(1, "exp_a", "session_id", 1)
       exp_a["variants"] = [{ "name" => "A", "config" => %({"other.key":"from_exp_a"}) },
                            { "name" => "B", "config" => %({"shared.key":"from_exp_a"}) }]
