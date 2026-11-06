@@ -13,6 +13,8 @@ gem "connection_pool", "< 3"
 
 group :test do
   gem "rspec", "~> 3.5"
+  # Specs use OpenStruct doubles; ostruct is no longer a default gem from Ruby 3.5/4.0.
+  gem "ostruct"
 end
 
 group :develop do
