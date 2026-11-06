@@ -23,18 +23,23 @@ class ABSmartly
     ABSmartly.new(config)
   end
 
+  OPTIONS = %i[api_key application environment timeout retries context_event_logger].freeze
+
   # Accepts either a config object (ABSmartlyConfig or anything that responds
-  # like it) or an endpoint String with keyword options.
-  def initialize(config_or_endpoint = nil,
-                 api_key: nil,
-                 application: nil,
-                 environment: nil,
-                 timeout: nil,
-                 retries: nil,
-                 context_event_logger: nil)
+  # like it) or an endpoint String with keyword options. Options are read from
+  # *args rather than keyword parameters so that Ruby 2.7 doesn't splat a
+  # config that responds to to_hash into keywords.
+  def initialize(*args)
+    options = args.size > 1 && args.last.is_a?(Hash) ? args.pop : {}
+    options = args.pop if args.size == 1 && args.first.instance_of?(Hash)
+    raise ArgumentError.new("wrong number of arguments (given #{args.size}, expected 0..1)") if args.size > 1
+
+    config_or_endpoint = args.first
     if config_or_endpoint.nil? || config_or_endpoint.is_a?(String)
-      initialize_from_params(config_or_endpoint, api_key, application, environment, timeout, retries,
-                             context_event_logger)
+      unknown = options.keys - OPTIONS
+      raise ArgumentError.new("unknown keyword#{'s' if unknown.size > 1}: #{unknown.map(&:inspect).join(', ')}") unless unknown.empty?
+
+      initialize_from_params(config_or_endpoint, *options.values_at(*OPTIONS))
     else
       initialize_from_config(config_or_endpoint)
     end

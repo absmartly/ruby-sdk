@@ -114,6 +114,24 @@ RSpec.describe "Backwards Compatibility" do
       expect(sdk.context_data_provider).to be_a(DefaultContextDataProvider)
     end
 
+    it "accepts a duck-typed config that responds to to_hash" do
+      client = instance_double(Client)
+      config = Struct.new(:context_data_provider, :context_event_handler, :context_event_logger,
+                          :variable_parser, :audience_deserializer, :scheduler, :client) do
+        def to_hash
+          to_h
+        end
+      end.new(nil, nil, nil, nil, nil, nil, client)
+
+      expect(ABSmartly.new(config).client).to be(client)
+    end
+
+    it "rejects unknown and extra arguments like keyword parameters would" do
+      expect { ABSmartly.new("https://x", api_key: "k", bogus: 1) }
+        .to raise_error(ArgumentError, "unknown keyword: :bogus")
+      expect { ABSmartly.new("https://x", "y") }.to raise_error(ArgumentError, /wrong number of arguments/)
+    end
+
     it "accepts an rspec instance_double of the config" do
       client = instance_double(Client)
       config = instance_double(ABSmartlyConfig, context_data_provider: nil, context_event_handler: nil,
