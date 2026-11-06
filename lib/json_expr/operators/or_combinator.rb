@@ -7,7 +7,7 @@ class OrCombinator
   include BooleanCombinator
 
   def combine(evaluator, exprs)
-    wrapped = TypeUtils.wrap_array(exprs)
+    wrapped = Absmartly::TypeUtils.wrap_array(exprs)
     wrapped.each do |expr|
       return true if evaluator.boolean_convert(evaluator.evaluate(expr))
     end

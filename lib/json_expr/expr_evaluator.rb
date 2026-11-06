@@ -98,7 +98,7 @@ class ExprEvaluator < Evaluator
       return lhs.to_f <=> rvalue.to_f
     elsif lhs.is_a?(String)
       rvalue = string_convert(rhs)
-      return TypeUtils.compare_strings(lhs, rvalue) unless rvalue.nil?
+      return Absmartly::TypeUtils.compare_strings(lhs, rvalue) unless rvalue.nil?
     elsif lhs.is_a?(TrueClass) || lhs.is_a?(FalseClass)
       rvalue = boolean_convert(rhs)
       return lhs.to_s.casecmp(rvalue.to_s) unless rvalue.nil?

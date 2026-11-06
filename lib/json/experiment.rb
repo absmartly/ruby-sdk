@@ -20,7 +20,7 @@ class Experiment
   def initialize(args = {})
     args.each do |name, value|
       key_sym = name.to_sym
-      key_str = TypeUtils.underscore(name.to_s)
+      key_str = Absmartly::TypeUtils.underscore(name.to_s)
 
       next unless ALLOWED_KEYS.include?(key_sym) || ALLOWED_KEYS.include?(key_str.to_sym)
 

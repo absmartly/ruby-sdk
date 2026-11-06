@@ -5,6 +5,7 @@ require_relative "context"
 require_relative "audience_matcher"
 require_relative "default_context_data_provider"
 require_relative "default_context_publisher"
+require_relative "context_event_handler"
 require_relative "default_context_event_handler"
 require_relative "default_variable_parser"
 require_relative "default_audience_deserializer"
@@ -161,5 +162,3 @@ class ABSmartly
       raise ArgumentError.new("#{name} must be a number")
     end
 end
-
-SDK = ABSmartly

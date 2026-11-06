@@ -183,7 +183,7 @@ class Context
       if trimmed.empty?
         raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
       end
-    elsif TypeUtils.numeric?(uid)
+    elsif Absmartly::TypeUtils.numeric?(uid)
       trimmed = uid
     else
       raise IllegalStateException.new("Unit '#{unit_type}' must be a string or a number.")
@@ -338,7 +338,7 @@ class Context
 
   def track(goal_name, properties = nil)
     check_not_closed?
-    unless properties.nil? || TypeUtils.object?(properties)
+    unless properties.nil? || Absmartly::TypeUtils.object?(properties)
       raise ArgumentError, "Goal '#{goal_name}' properties must be of type object."
     end
 

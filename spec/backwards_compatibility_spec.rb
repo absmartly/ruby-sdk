@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "open3"
+require "rbconfig"
 require "a_b_smartly"
 require "a_b_smartly_config"
 require "context_event_handler"
@@ -10,19 +12,33 @@ require "client_config"
 require "context_data_result"
 
 RSpec.describe "Backwards Compatibility" do
-  it "SDK is an alias for ABSmartly" do
-    expect(SDK).to eq(ABSmartly)
+  # Run in a fresh process so constants loaded by other specs can't hide a
+  # missing require.
+  def run_ruby(script)
+    lib = File.expand_path("../lib", __dir__)
+    Open3.capture3(RbConfig.ruby, "-W:no-deprecated", "-I", lib, "-e", script)
   end
 
-  it "SDKConfig is an alias for ABSmartlyConfig" do
-    expect(SDKConfig).to eq(ABSmartlyConfig)
+  it "defines the public v1.3.0 classes after only require \"absmartly\"" do
+    out, err, status = run_ruby(<<~RUBY)
+      require "absmartly"
+      class MyPublisher < ContextEventHandler
+        def publish(context, event); end
+      end
+      p [MyPublisher.ancestors.include?(ContextPublisher), DefaultContextEventHandler == DefaultContextPublisher]
+    RUBY
+    expect([out, status.success?]).to eq(["[true, true]\n", true]), err
   end
 
-  it "can create SDK instance using the alias" do
-    config = SDKConfig.create
-    config.client = instance_double(Client)
-    sdk = SDK.create(config)
-    expect(sdk).to be_instance_of(ABSmartly)
+  it "defines no top-level SDK, SDKConfig or TypeUtils that could clash with application constants" do
+    out, err, status = run_ruby(<<~RUBY)
+      module SDK; end
+      class SDKConfig; end
+      module TypeUtils; end
+      require "absmartly"
+      p [SDK.class, SDKConfig.superclass, TypeUtils.methods(false), Absmartly::TypeUtils.numeric?(1)]
+    RUBY
+    expect([out, status.success?]).to eq(["[Module, Object, [], true]\n", true]), err
   end
 
   it "ContextEventHandler is a deprecated alias for ContextPublisher" do

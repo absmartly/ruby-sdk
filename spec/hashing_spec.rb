@@ -73,16 +73,16 @@ RSpec.describe Hashing do
   end
 end
 
-RSpec.describe TypeUtils do
+RSpec.describe Absmartly::TypeUtils do
   require "type_utils"
   it "object? is true only for hashes" do
-    expect(TypeUtils.object?({})).to be true
-    expect([[], 1, "s", nil].map { |v| TypeUtils.object?(v) }).to all(be false)
+    expect(Absmartly::TypeUtils.object?({})).to be true
+    expect([[], 1, "s", nil].map { |v| Absmartly::TypeUtils.object?(v) }).to all(be false)
   end
 
   it "numeric? is true only for numbers" do
-    expect([1, 1.5].map { |v| TypeUtils.numeric?(v) }).to all(be true)
-    expect(["1", true, {}, nil].map { |v| TypeUtils.numeric?(v) }).to all(be false)
+    expect([1, 1.5].map { |v| Absmartly::TypeUtils.numeric?(v) }).to all(be true)
+    expect(["1", true, {}, nil].map { |v| Absmartly::TypeUtils.numeric?(v) }).to all(be false)
   end
 end
 

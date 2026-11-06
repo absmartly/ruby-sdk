@@ -7,7 +7,7 @@ class AndCombinator
   include BooleanCombinator
 
   def combine(evaluator, exprs)
-    TypeUtils.wrap_array(exprs).each do |expr|
+    Absmartly::TypeUtils.wrap_array(exprs).each do |expr|
       return false unless evaluator.boolean_convert(evaluator.evaluate(expr))
     end
     true
