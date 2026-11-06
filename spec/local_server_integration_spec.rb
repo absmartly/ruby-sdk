@@ -13,12 +13,14 @@ require "uri"
 # PUT /context (track -> publish). Asserts the wire contract.
 class LocalTestServer
   attr_reader :port, :requests
+  attr_accessor :put_status
 
   def initialize
     @server = TCPServer.new("127.0.0.1", 0)
     @port = @server.addr[1]
     @requests = []
     @mutex = Mutex.new
+    @put_status = 200
     @thread = Thread.new { serve }
   end
 
@@ -51,8 +53,15 @@ class LocalTestServer
       @requests << { method: method, path: path, headers: headers, body: body }
     end
 
-    response_body = method == "GET" ? '{"experiments":[]}' : "{}"
-    client.write("HTTP/1.1 200 OK\r\n")
+    if method == "GET"
+      status_line = "200 OK"
+      response_body = '{"experiments":[]}'
+    else
+      status = @mutex.synchronize { @put_status }
+      status_line = status == 200 ? "200 OK" : "#{status} Service Unavailable"
+      response_body = status == 200 ? "{}" : "collector rejected"
+    end
+    client.write("HTTP/1.1 #{status_line}\r\n")
     client.write("Content-Type: application/json\r\n")
     client.write("Content-Length: #{response_body.bytesize}\r\n")
     client.write("Connection: close\r\n")
@@ -126,5 +135,75 @@ RSpec.describe "Local server integration (real HTTP)" do
     expect(body["goals"]).to be_an(Array)
     expect(body["goals"]).not_to be_empty
     expect(body["goals"].first["name"]).to eq("payment")
+  end
+
+  it "raises a StandardError-catchable publish failure on a real 503, stays open, and retries" do
+    server.put_status = 503
+
+    sdk = ABSmartly.new(
+      server.base_url,
+      api_key: "test-api-key",
+      application: "website",
+      environment: "dev"
+    )
+
+    context_config = ContextConfig.create
+    context_config.set_unit("user_id", "123456789")
+
+    context = sdk.create_context(context_config)
+    context.wait_until_ready
+    context.track("payment", { value: 99 })
+
+    # A routine collector outage must be catchable with an ordinary
+    # `rescue StandardError`, not Ruby's base Exception.
+    raised = nil
+    begin
+      context.close
+    rescue StandardError => e
+      raised = e
+    end
+
+    expect(raised).to be_a(StandardError)
+    expect(context.closed?).to be(false)
+    expect(context.finalizing?).to be(false)
+    expect(context.pending_count).to eq(1)
+
+    # A later close retries and succeeds once the collector recovers.
+    server.put_status = 200
+    expect(context.close).to be_nil
+    expect(context.closed?).to be(true)
+    expect(context.pending_count).to eq(0)
+
+    puts = server.requests.count { |r| r[:method] == "PUT" }
+    expect(puts).to eq(2)
+  end
+
+  it "finalize raises a StandardError-catchable publish failure on a real 503" do
+    server.put_status = 503
+
+    sdk = ABSmartly.new(
+      server.base_url,
+      api_key: "test-api-key",
+      application: "website",
+      environment: "dev"
+    )
+
+    context_config = ContextConfig.create
+    context_config.set_unit("user_id", "123456789")
+
+    context = sdk.create_context(context_config)
+    context.wait_until_ready
+    context.track("payment", { value: 99 })
+
+    raised = nil
+    begin
+      context.finalize
+    rescue StandardError => e
+      raised = e
+    end
+
+    expect(raised).to be_a(StandardError)
+    expect(context.closed?).to be(false)
+    expect(context.pending_count).to eq(1)
   end
 end
