@@ -14,6 +14,11 @@ require "context_event_logger"
 require "audience_matcher"
 require "json/unit"
 require "logger"
+require "a_b_smartly"
+require "a_b_smartly_config"
+require "client"
+require "client_config"
+require "default_http_client"
 
 RSpec.describe "Concurrent Operations" do
   let(:units) {
@@ -351,6 +356,50 @@ RSpec.describe "Concurrent Operations" do
       contexts.each do |ctx|
         expect(ctx.ready?).to be_truthy
       end
+    end
+
+    it "keeps each create_context_async fetch's result when two overlap on a shared Client" do
+      client_config = ClientConfig.create.tap do |c|
+        c.endpoint = "https://localhost/v1"
+        c.api_key = "k"
+        c.application = "a"
+        c.environment = "e"
+      end
+      ok = DefaultHttpClient.default_response(200, "OK", "application/json", json)
+      failed = DefaultHttpClient.default_response(503, "Service Unavailable", nil, nil)
+      first_entered = Queue.new
+      release_first = Queue.new
+      calls = 0
+      calls_mutex = Mutex.new
+      http_client = instance_double(HttpClient)
+      # The first fetch is held inside the HTTP call until the second one has
+      # fully completed (with a failure) on the same Client.
+      allow(http_client).to receive(:get) do
+        call = calls_mutex.synchronize { calls += 1 }
+        if call == 1
+          first_entered << true
+          release_first.pop
+          ok
+        else
+          failed
+        end
+      end
+      sdk_config = ABSmartlyConfig.create
+      sdk_config.client = Client.new(client_config, http_client)
+      sdk = ABSmartly.create(sdk_config)
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+
+      held = sdk.create_context_async(context_config)
+      first_entered.pop
+      second = sdk.create_context_async(context_config)
+      second.wait_until_ready(5)
+      release_first << true
+      held.wait_until_ready(5)
+
+      expect([second.ready?, second.failed?]).to eq([true, true])
+      expect([held.ready?, held.failed?]).to eq([true, false])
+      expect(held.treatment("exp_test_ab")).to eq(create_context.treatment("exp_test_ab"))
     end
   end
 end

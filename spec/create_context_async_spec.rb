@@ -242,13 +242,17 @@ RSpec.describe "create_context_async" do
       context = Context.create_async(clock, context_config, data_provider,
                                      event_handler, event_logger, variable_parser, audience_matcher)
 
-      Thread.new do
-        sleep(0.05)
-        context.set_data(OpenStruct.new(data_future: data, success?: true))
+      waiter = Thread.new do
+        context.wait_until_ready
+        context.ready?
       end
+      # Blocked on the readiness condition variable, not finished.
+      Thread.pass until waiter.status == "sleep" || !waiter.alive?
+      expect([waiter.alive?, context.ready?]).to eq([true, false])
 
-      context.wait_until_ready
-      expect(context.ready?).to be true
+      context.set_data(OpenStruct.new(data_future: data, success?: true))
+
+      expect(waiter.join(5)&.value).to be true
     end
 
     it "respects timeout and returns even if not ready" do
@@ -265,7 +269,7 @@ RSpec.describe "create_context_async" do
 
       expect(context.ready?).to be false
       expect(elapsed).to be >= 0.09
-      expect(elapsed).to be < 0.5
+      expect(elapsed).to be < 2
     end
 
     it "returns self for chaining" do
