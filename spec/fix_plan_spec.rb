@@ -478,5 +478,24 @@ RSpec.describe "Fix Plan Validations" do
 
       expect(context.peek_variable_value("shared.key", "default")).to eq("from_exp_a")
     end
+
+    it "orders experiments by id, not payload order" do
+      json = JSON.generate({ "experiments" => [shared_experiment(2, "exp_b", "session_id", 1),
+                                               shared_experiment(1, "exp_a", "session_id", 1)] })
+      published = []
+      handler = instance_double(ContextPublisher)
+      allow(handler).to receive(:publish) { |_ctx, event| published.concat(event.exposures || []); publish_future }
+      config = ContextConfig.create
+      config.set_unit(:session_id, "test-unit")
+      provider = DefaultContextDataProvider.new(client_mock(descr.deserialize(json, 0, json.length)))
+      context = Context.create(clock, config, provider.context_data, provider, handler, nil,
+                               variable_parser, audience_matcher)
+
+      expect(context.variable_keys_list[:"shared.key"]).to eq(%w[exp_a exp_b])
+      expect(context.variable_keys[:"shared.key"]).to eq("exp_a")
+      expect(context.variable_value("shared.key", "default")).to eq("from_exp_a")
+      context.publish
+      expect(published.map(&:name)).to eq(%w[exp_a])
+    end
   end
 end

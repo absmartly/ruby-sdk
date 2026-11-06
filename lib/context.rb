@@ -662,7 +662,7 @@ class Context
     end
 
     # Like the JavaScript SDK, a key shared by several experiments reads from
-    # the first one, in payload order, that the unit is assigned to or
+    # the first one, in experiment id order, that the unit is assigned to or
     # overridden in; each experiment visited on the way is exposed.
     def resolve_variable_value(key, default_value, expose)
       state = @state
@@ -709,8 +709,10 @@ class Context
               variables = @variable_parser.parse(self, experiment.name, variant.name,
                                                  variant.config) || {}
               variables.keys.each do |key|
-                index_variables[key] ||= []
-                index_variables[key] << experiment_variables unless index_variables[key].include?(experiment_variables)
+                # Kept sorted and unique by experiment id, as the JavaScript SDK does.
+                list = (index_variables[key] ||= [])
+                at = list.bsearch_index { |other| other.data.id >= experiment.id } || list.length
+                list.insert(at, experiment_variables) unless list[at]&.data&.id == experiment.id
               end
               experiment_variables.variables.push(variables)
             else
