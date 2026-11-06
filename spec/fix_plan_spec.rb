@@ -256,16 +256,19 @@ RSpec.describe "Fix Plan Validations" do
 
   describe "Fix #16: transform_keys hot path removed" do
     it "looks up experiments without transform_keys on every call" do
-      source = File.read(File.join("lib", "context.rb"))
-      experiment_method = source[/def experiment\(experiment.*?end/m]
-      expect(experiment_method).not_to include("transform_keys")
+      context = create_ready_context
+      expect_any_instance_of(Hash).not_to receive(:transform_keys)
+
+      expect(context.peek_treatment("exp_test_ab")).to eq(1)
+      expect(context.peek_treatment(:exp_test_ab)).to eq(1)
     end
 
     it "looks up variable experiments without transform_keys on every call" do
-      source = File.read(File.join("lib", "context.rb"))
-      variable_method = source[/def resolve_variable_value\(key.*?\n    end/m]
-      expect(variable_method).to include("index_variables")
-      expect(variable_method).not_to include("transform_keys")
+      context = create_ready_context
+      expect_any_instance_of(Hash).not_to receive(:transform_keys)
+
+      expect(context.peek_variable_value("banner.size", "small")).to eq("large")
+      expect(context.peek_variable_value(:"banner.size", "small")).to eq("large")
     end
   end
 
