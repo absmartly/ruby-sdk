@@ -90,6 +90,9 @@ client_config.max_retries = 5
 # Opt in to retrying HTTP statuses (none by default). Retrying a publish after
 # a 5xx may duplicate events the collector already stored.
 client_config.retry_statuses = [502, 503, 504]
+# Opt in to retrying a refused connection on the context fetch (off by default).
+# Each retry waits retry_interval, doubling each time.
+client_config.retry_connection_failures = true
 
 sdk_config = ABSmartlyConfig.create
 sdk_config.client = Client.create(client_config)

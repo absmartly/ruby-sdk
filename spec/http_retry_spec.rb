@@ -2,6 +2,8 @@
 
 require "default_http_client"
 require "default_http_client_config"
+require "client"
+require "client_config"
 
 RSpec.describe "HTTP Retry Logic" do
   describe "configuration" do
@@ -212,7 +214,46 @@ RSpec.describe "HTTP Retry Logic" do
       expect(calls[:get]).to eq(3)
     end
 
-    it "retries a refused connection on GET only" do
+    it "does not retry a refused connection with the default config, like v1.3.0" do
+      config = DefaultHttpClientConfig.create
+      conn, calls = session(config) do |stub, c|
+        stub.get("/context") { c[:get] += 1; raise Faraday::ConnectionFailed, "refused" }
+        stub.put("/context") { c[:put] += 1; raise Faraday::ConnectionFailed, "refused" }
+      end
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      expect { conn.get("/context") }.to raise_error(Faraday::ConnectionFailed)
+      expect { conn.put("/context", "{}") }.to raise_error(Faraday::ConnectionFailed)
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 0.25
+      expect(calls).to eq(get: 1, put: 1)
+    end
+
+    it "fails a context fetch on a refused connection without delay by default" do
+      client_config = ClientConfig.create.tap do |c|
+        c.endpoint = "http://localhost/v1"
+        c.api_key = "k"
+        c.application = "a"
+        c.environment = "e"
+      end
+      http_client = DefaultHttpClient.create(client_config.http_client_config)
+      gets = 0
+      stubs = Faraday::Adapter::Test::Stubs.new do |stub|
+        stub.get("/v1/context") { gets += 1; raise Faraday::ConnectionFailed, "refused" }
+      end
+      http_client.session = Faraday.new("") do |f|
+        f.request :retry, **DefaultHttpClient.retry_options(http_client.config)
+        f.adapter :test, stubs
+      end
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      result = Client.new(client_config, http_client).context_data
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 0.25
+      expect([result.success?, result.exception]).to match([false, be_a(Faraday::ConnectionFailed)])
+      expect(gets).to eq(1)
+    end
+
+    it "retries a refused connection on GET only when opted in" do
+      config.retry_connection_failures = true
       conn, calls = session(config) do |stub, c|
         stub.get("/context") { c[:get] += 1; raise Faraday::ConnectionFailed, "refused" }
         stub.put("/context") { c[:put] += 1; raise Faraday::ConnectionFailed, "refused" }

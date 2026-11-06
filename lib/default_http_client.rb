@@ -31,16 +31,19 @@ class DefaultHttpClient < HttpClient
     end
   end
 
-  # Timeouts are retried on GET and PUT, as in v1.3.0; a refused connection
-  # only on the context fetch (GET). Status retries are opt-in through
-  # retry_statuses, since a retried publish may duplicate events.
+  # Timeouts are retried on GET and PUT, as in v1.3.0. Refused connections
+  # (GET only) and status codes are opt-in: with the default backoff a refused
+  # connection would otherwise block for ~15 s, and a retried publish may
+  # duplicate events.
   def self.retry_options(config)
+    exceptions = Faraday::Retry::Middleware::DEFAULT_EXCEPTIONS
+    exceptions += [Faraday::ConnectionFailed] if config.retry_connection_failures
     {
       max: config.max_retries,
       interval: config.retry_interval,
       interval_randomness: 0.5,
       backoff_factor: 2,
-      exceptions: Faraday::Retry::Middleware::DEFAULT_EXCEPTIONS + [Faraday::ConnectionFailed],
+      exceptions: exceptions,
       retry_statuses: Array(config.retry_statuses),
       methods: [],
       retry_if: RETRY_IF

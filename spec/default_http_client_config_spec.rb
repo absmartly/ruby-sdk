@@ -44,6 +44,15 @@ RSpec.describe DefaultHttpClientConfig do
     expect(client_config.http_client_config.retry_statuses).to eq([503])
   end
 
+  it "does not retry refused connections unless ClientConfig opts in" do
+    require "client_config"
+    client_config = ClientConfig.create
+    expect(described_class.new.retry_connection_failures).to be(false)
+    expect(client_config.http_client_config.retry_connection_failures).to be(false)
+    client_config.retry_connection_failures = true
+    expect(client_config.http_client_config.retry_connection_failures).to be(true)
+  end
+
   it ".pool_idle_timeout" do
     config = described_class.new
     expect(config.pool_idle_timeout).to eq(5)

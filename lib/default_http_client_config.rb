@@ -7,7 +7,8 @@ class DefaultHttpClientConfig
                 :max_retries,
                 :pool_size,
                 :pool_idle_timeout,
-                :retry_statuses
+                :retry_statuses,
+                :retry_connection_failures
 
   def self.create
     DefaultHttpClientConfig.new
@@ -22,5 +23,6 @@ class DefaultHttpClientConfig
     @pool_idle_timeout = 5
     # e.g. [502, 503, 504]
     @retry_statuses = []
+    @retry_connection_failures = false
   end
 end
