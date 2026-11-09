@@ -32,7 +32,7 @@ class AudienceMatcher
         Result.new(@json_expr.evaluate_boolean_expr(filter, attributes))
       end
     end
-  rescue
+  rescue StandardError
     nil
   end
 end

@@ -8,7 +8,10 @@ class ContextEventLogger
     PUBLISH = "publish"
     EXPOSURE = "exposure"
     GOAL = "goal"
+    # Logged by Context#close, as in v1.3.0.
     CLOSE = "close"
+    # Logged by Context#finalize, the name the other ABsmartly SDKs use.
+    FINALIZE = "finalize"
   end
 
   def handle_event(event, data)

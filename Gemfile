@@ -10,9 +10,13 @@ gem "murmurhash3"
 gem "faraday"
 gem "faraday-net_http_persistent"
 gem "connection_pool", "< 3"
+# faraday 2.8 requires logger, which is no longer a default gem from Ruby 3.5/4.0.
+gem "logger"
 
 group :test do
   gem "rspec", "~> 3.5"
+  # Specs use OpenStruct doubles; ostruct is no longer a default gem from Ruby 3.5/4.0.
+  gem "ostruct"
 end
 
 group :develop do

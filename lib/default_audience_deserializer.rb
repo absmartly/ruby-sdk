@@ -6,8 +6,8 @@ class DefaultAudienceDeserializer < AudienceDeserializer
   attr_accessor :log, :reader
 
   def deserialize(bytes, offset, length)
-    JSON.parse(bytes[offset..length], symbolize_names: true)
-  rescue JSON::ParserError
+    JSON.parse(bytes[offset, length], symbolize_names: true)
+  rescue StandardError
     nil
   end
 end

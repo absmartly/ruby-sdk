@@ -4,10 +4,10 @@ require_relative "../lib/absmartly"
 
 # config file
 Absmartly.configure_client do |config|
-  config.endpoint = "https://demo.absmartly.io/v1"
-  config.api_key = "x3ZyxmeKmb6n3VilTGs5I6-tBdaS9gYyr3i4YQXmUZcpPhH8nd8ev44NoEL_3yvA"
-  config.application = "www"
-  config.environment = "prod"
+  config.endpoint = ENV.fetch("ABSMARTLY_ENDPOINT", "https://demo.absmartly.io/v1")
+  config.api_key = ENV.fetch("ABSMARTLY_API_KEY") { raise "Set ABSMARTLY_API_KEY environment variable" }
+  config.application = ENV.fetch("ABSMARTLY_APPLICATION", "www")
+  config.environment = ENV.fetch("ABSMARTLY_ENVIRONMENT", "prod")
 end
 
 # define a new context request

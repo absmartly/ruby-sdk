@@ -181,6 +181,21 @@ RSpec.describe Client do
     expect(deser).to have_received(:deserialize).exactly(0).time
   end
 
+  it "fails the context data when the body can't be deserialized" do
+    http_client = instance_double(HttpClient)
+    config = ClientConfig.create
+    config.endpoint = "https://localhost/v1"
+    config.api_key = "test-api-key"
+    config.application = "website"
+    config.environment = "dev"
+    allow(http_client).to receive(:get)
+      .and_return(DefaultHttpClient.default_response(200, "OK", "application/json", "not json"))
+
+    result = Client.create(config, http_client).context_data
+    expect([result.success?, result.data_future]).to eq([false, nil])
+    expect(result.exception.message).to eq("Failed to deserialize context data")
+  end
+
   it "context data exceptionally connection" do
     http_client = instance_double(HttpClient)
     deser = instance_double(ContextDataDeserializer)
@@ -307,7 +322,9 @@ RSpec.describe Client do
                                        .and_return(response_future)
     publish_future = client.publish(event)
     actual = publish_future
-    expect(actual).to eq(Exception.new("FAILED"))
+    expect(actual).to be_a(PublishError)
+    expect(actual).to be_a(StandardError)
+    expect(actual.message).to eq("FAILED")
 
     expect(ser).to have_received(:serialize).with(event).once
     expect(http_client).to have_received(:put).with("https://localhost/v1/context", nil, expected_headers, bytes).once

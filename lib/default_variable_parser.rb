@@ -7,7 +7,7 @@ class DefaultVariableParser < VariableParser
 
   def parse(context, experiment_name, variant_name, config)
     JSON.parse(config, symbolize_names: true)
-  rescue JSON::ParserError
+  rescue StandardError
     nil
   end
 end

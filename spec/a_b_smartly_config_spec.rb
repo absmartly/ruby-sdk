@@ -2,7 +2,7 @@
 
 require "context_data_provider"
 require "a_b_smartly_config"
-require "context_event_handler"
+require "context_publisher"
 require "variable_parser"
 require "context_event_logger"
 require "scheduled_executor_service"
@@ -17,7 +17,7 @@ RSpec.describe ABSmartlyConfig do
   end
 
   it ".context_event_handler" do
-    handler = ContextEventHandler.new
+    handler = ContextPublisher.new
     config = described_class.create
     config.context_event_handler = handler
     expect(handler).to eq(config.context_event_handler)
@@ -45,7 +45,7 @@ RSpec.describe ABSmartlyConfig do
   end
 
   it "set all" do
-    handler = ContextEventHandler.new
+    handler = ContextPublisher.new
     provider = ContextDataProvider.new
     parser = VariableParser.new
     scheduler = ScheduledExecutorService.new

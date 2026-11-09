@@ -7,11 +7,15 @@ class MatchOperator
 
   def binary(evaluator, lhs, rhs)
     text = evaluator.string_convert(lhs)
-    unless text.nil?
-      pattern = evaluator.string_convert(rhs)
-      unless pattern.nil?
-        text.match(pattern)
-      end
+    return nil if text.nil?
+
+    pattern = evaluator.string_convert(rhs)
+    return nil if pattern.nil?
+
+    begin
+      Regexp.new(pattern).match?(text)
+    rescue RegexpError
+      nil
     end
   end
 end
