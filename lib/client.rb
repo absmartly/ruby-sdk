@@ -8,7 +8,7 @@ require_relative "publish_error"
 
 class Client
   attr_accessor :url, :query, :headers, :http_client, :executor, :deserializer, :serializer
-  attr_reader :data_future, :promise, :exception
+  attr_reader :data_future, :promise, :exception, :application, :environment
 
   def self.create(config, http_client = nil)
     Client.new(config, http_client || DefaultHttpClient.create(config.http_client_config))
@@ -29,6 +29,8 @@ class Client
 
     @url = "#{endpoint}/context"
     @http_client = http_client
+    @application = application
+    @environment = environment
     @deserializer = config.context_data_deserializer
     @serializer = config.context_event_serializer
     @executor = config.executor

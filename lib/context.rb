@@ -18,23 +18,28 @@ class Context
   attr_reader :pending_count
 
   def self.create(clock, config, data_future, data_provider,
-                  event_handler, event_logger, variable_parser, audience_matcher)
+                  event_handler, event_logger, variable_parser, audience_matcher,
+                  application: nil, environment: nil)
     Context.new(clock, config, data_future, data_provider,
-                event_handler, event_logger, variable_parser, audience_matcher)
+                event_handler, event_logger, variable_parser, audience_matcher,
+                application: application, environment: environment)
   end
 
   def self.create_async(clock, config, data_provider,
-                        event_handler, event_logger, variable_parser, audience_matcher)
+                        event_handler, event_logger, variable_parser, audience_matcher,
+                        application: nil, environment: nil)
     context = Context.allocate
     context.send(:initialize_async, clock, config, data_provider,
-                 event_handler, event_logger, variable_parser, audience_matcher)
+                 event_handler, event_logger, variable_parser, audience_matcher,
+                 application: application, environment: environment)
     context
   end
 
   def initialize(clock, config, data_future, data_provider,
-                 event_handler, event_logger, variable_parser, audience_matcher)
+                 event_handler, event_logger, variable_parser, audience_matcher,
+                 application: nil, environment: nil)
     init_common(clock, config, data_provider, event_handler, event_logger,
-                variable_parser, audience_matcher)
+                variable_parser, audience_matcher, application, environment)
 
     if data_future.success?
       assign_data(data_future.data_future)
@@ -550,13 +555,21 @@ class Context
         experiment.traffic_split == assignment.traffic_split
     end
 
+    # System values go in first, then user-set attributes overlay them, so a
+    # user attribute always wins over the system value for the same name, even
+    # when set after the context was created (the @attrs_seq bump re-evaluates
+    # the cached assignment). Empty system values were skipped at init, so a
+    # missing config leaves the key out rather than matching on "".
+    def attributes_map
+      attrs = @system_attributes.dup
+      @attributes.each { |attr| attrs[attr.name.to_s] = attr.value }
+      attrs
+    end
+
     def audience_matches(experiment, assignment)
       if !experiment.audience.nil? && experiment.audience.size > 0
         if @attrs_seq > (assignment.attrs_seq || 0)
-          attrs = @attributes.inject({}) do |hash, attr|
-            hash[attr.name] = attr.value
-            hash
-          end
+          attrs = attributes_map
           match = @audience_matcher.evaluate(experiment.audience, attrs)
           # An indeterminate result (no filter, bad JSON) keeps the cached flag.
           new_audience_mismatch = match.nil? ? assignment.audience_mismatch : !match.result
@@ -619,10 +632,7 @@ class Context
           unit_type = experiment.data.unit_type
 
           if !experiment.data.audience.nil? && experiment.data.audience.size > 0
-            attrs = @attributes.inject({}) do |hash, attr|
-              hash[attr.name] = attr.value
-              hash
-            end
+            attrs = attributes_map
             match = @audience_matcher.evaluate(experiment.data.audience, attrs)
             if match && !match.result
               assignment.audience_mismatch = true
@@ -795,7 +805,7 @@ class Context
     end
 
     def init_common(clock, config, data_provider, event_handler, event_logger,
-                    variable_parser, audience_matcher)
+                    variable_parser, audience_matcher, application = nil, environment = nil)
       @state = State.new(nil, {}, {}, {})
       @achievements = []
       @assignment_cache = {}
@@ -813,6 +823,14 @@ class Context
       @closing = false
       @failed = false
       @ready_error = nil
+
+      # System attributes (application/environment names from the client
+      # config) seed the audience evaluation map. The collector already
+      # attaches both server-side, so they are never added to the publish
+      # payload; empty values are skipped so a missing key stays absent.
+      @system_attributes = {}
+      @system_attributes["application"] = application if application.is_a?(String) && !application.empty?
+      @system_attributes["environment"] = environment if environment.is_a?(String) && !environment.empty?
 
       @units = {}
       @attributes = []
@@ -836,9 +854,9 @@ class Context
     end
 
     def initialize_async(clock, config, data_provider, event_handler, event_logger,
-                         variable_parser, audience_matcher)
+                         variable_parser, audience_matcher, application: nil, environment: nil)
       init_common(clock, config, data_provider, event_handler, event_logger,
-                  variable_parser, audience_matcher)
+                  variable_parser, audience_matcher, application, environment)
     end
 
     attr_accessor :clock,
