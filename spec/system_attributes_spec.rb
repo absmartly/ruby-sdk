@@ -162,6 +162,14 @@ RSpec.describe "Context system attributes" do
     context = create_context(application: nil)
 
     expect(context.peek_treatment("exp_app")).to eq(0)
+    expect(context.peek_treatment("exp_app_empty")).to eq(0)
+  end
+
+  it "leaves the application key out when the application is empty" do
+    context = create_context(application: "")
+
+    expect(context.peek_treatment("exp_app")).to eq(0)
+    expect(context.peek_treatment("exp_app_empty")).to eq(0)
   end
 
   it "does not inject an empty environment even when the application is set" do
