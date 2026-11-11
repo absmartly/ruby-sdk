@@ -54,8 +54,11 @@ class ABSmartly
       @audience_deserializer = config.audience_deserializer
       @scheduler = config.scheduler
 
+      # Keep the configured client even when both custom providers are supplied,
+      # so audience evaluation can still seed the application/environment names.
+      @client = config.client
+
       if @context_data_provider.nil? || @context_event_handler.nil?
-        @client = config.client
         raise ArgumentError.new("Missing Client instance configuration") if @client.nil?
 
         if @context_data_provider.nil?

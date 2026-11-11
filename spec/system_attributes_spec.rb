@@ -2,6 +2,8 @@
 
 require "context"
 require "context_config"
+require "a_b_smartly"
+require "a_b_smartly_config"
 require "default_context_data_deserializer"
 require "default_variable_parser"
 require "default_audience_deserializer"
@@ -216,5 +218,49 @@ RSpec.describe "Context system attributes" do
     context.set_attribute("app_version", "0")
 
     expect(context.peek_treatment("exp_app_version")).to eq(1)
+  end
+end
+
+# The application/environment seeded into the evaluation map come from the
+# configured client. Custom data provider and event handler must not drop them.
+RSpec.describe "ABSmartly system attributes wiring" do
+  let(:clock) { Time.at(1620000000000 / 1000) }
+  let(:descr) { DefaultContextDataDeserializer.new }
+  let(:json) { resource("system_attributes_context.json") }
+  let(:data) { descr.deserialize(json, 0, json.length) }
+  let(:data_result) { OpenStruct.new(data_future: data, success?: true) }
+
+  def configured_client
+    instance_double(Client,
+                    application: "website",
+                    environment: "production",
+                    context_data: nil)
+  end
+
+  def build_sdk(provider:, handler:)
+    config = ABSmartlyConfig.create
+    config.client = configured_client
+    config.context_data_provider = provider if provider
+    config.context_event_handler = handler if handler
+    ABSmartly.create(config)
+  end
+
+  it "uses the configured client's application/environment even with both custom providers" do
+    provider = DefaultContextDataProvider.new(
+      instance_double(Client, context_data: data_result)
+    )
+    handler = double("ContextEventHandler")
+    allow(handler).to receive(:publish).and_return(OpenStruct.new(success?: true))
+
+    sdk = build_sdk(provider: provider, handler: handler)
+
+    context_config = ContextConfig.create
+    context_config.set_unit(:session_id, "e791e240fcd3df7d238cfc285f475e8152fcc0ec")
+    context = sdk.create_context_with(context_config, data_result)
+
+    # The strict environment=production audience matches only because the
+    # configured client's environment seeds the evaluation map.
+    expect(context.peek_treatment("exp_env")).to eq(1)
+    expect(context.peek_treatment("exp_app")).to eq(1)
   end
 end
