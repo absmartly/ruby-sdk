@@ -63,7 +63,6 @@ RSpec.describe "Context system attributes" do
                    application: application, environment: environment)
   end
 
-  # Test 1: strict audience on environment matches -> randomised (variant 1).
   it "matches a strict audience filtering on the configured environment" do
     context = create_context(environment: "production")
 
@@ -84,14 +83,12 @@ RSpec.describe "Context system attributes" do
     context.publish
   end
 
-  # Test 2: strict audience on application matches.
   it "matches a strict audience filtering on the configured application" do
     context = create_context(application: "website")
 
     expect(context.peek_treatment("exp_app")).to eq(1)
   end
 
-  # Test 3: no match -> control (variant 0), audienceMismatch true.
   it "serves control when the environment filter does not match" do
     context = create_context(environment: "staging")
 
@@ -111,16 +108,13 @@ RSpec.describe "Context system attributes" do
     context.publish
   end
 
-  # Test 4: user value overrides the system value, set after creation, and
-  # invalidates a cached assignment.
+  # A user attribute set after creation must override the system value and
+  # invalidate the assignment cached while the system value still applied.
   it "lets a user attribute set after creation override the system environment" do
     context = create_context(environment: "production")
 
-    # Cache an assignment that matches the production system value.
     expect(context.peek_treatment("exp_env")).to eq(1)
 
-    # Overriding environment to staging flips the strict audience to a mismatch
-    # and invalidates the cached assignment.
     context.set_attribute("environment", "staging")
     expect(context.peek_treatment("exp_env")).to eq(0)
   end
@@ -134,9 +128,9 @@ RSpec.describe "Context system attributes" do
     expect(context.peek_treatment("exp_env")).to eq(1)
   end
 
-  # Test 5: Ruby's data model has only `audience`; assignment-rule conditions
-  # map to the same audience-filter path, so a condition on environment is
-  # evaluated against the system attributes too.
+  # Ruby's data model has only `audience`; an assignment-rule condition on
+  # application/environment is evaluated through the same audience-filter path,
+  # so it sees the system attributes too.
   it "evaluates audience conditions on application against the system value" do
     context = create_context(application: "website")
 
@@ -146,19 +140,22 @@ RSpec.describe "Context system attributes" do
     expect(context.peek_treatment("exp_app")).to eq(0)
   end
 
-  # Test 6: missing config means no key in the map; a filter on environment
-  # doesn't match and nothing crashes.
+  # An unconfigured name must leave the key absent, not set it to "". The
+  # `exp_env_empty` experiment filters on `environment == ""`, so it matches
+  # only if an empty string is wrongly injected; it must stay control.
   it "leaves the environment key out when no environment is configured" do
     context = create_context(environment: nil)
 
     expect { context.peek_treatment("exp_env") }.not_to raise_error
     expect(context.peek_treatment("exp_env")).to eq(0)
+    expect(context.peek_treatment("exp_env_empty")).to eq(0)
   end
 
   it "leaves the environment key out when the environment is empty" do
     context = create_context(environment: "")
 
     expect(context.peek_treatment("exp_env")).to eq(0)
+    expect(context.peek_treatment("exp_env_empty")).to eq(0)
   end
 
   it "leaves the application key out when no application is configured" do
@@ -167,8 +164,12 @@ RSpec.describe "Context system attributes" do
     expect(context.peek_treatment("exp_app")).to eq(0)
   end
 
-  # Test 7: nothing extra published. The serialized payload carries only the
-  # user-set attributes, never application/environment/app_version.
+  it "does not inject an empty environment even when the application is set" do
+    context = create_context(application: "website", environment: nil)
+
+    expect(context.peek_treatment("exp_env_empty")).to eq(0)
+  end
+
   it "does not publish application, environment or app_version attributes" do
     context = create_context(environment: "production", application: "website")
     context.treatment("exp_env")
@@ -205,8 +206,8 @@ RSpec.describe "Context system attributes" do
     expect(names).not_to include("application", "environment", "app_version")
   end
 
-  # Test 8: app_version is gone. A filter on app_version doesn't match even
-  # though the client sends X-Application-Version: 0.
+  # The client sends X-Application-Version: 0, but the SDK must not surface it
+  # as an `app_version` attribute, so a strict filter on it stays unmatched.
   it "does not inject app_version into the audience map" do
     context = create_context(application: "website", environment: "production")
 
