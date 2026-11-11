@@ -108,8 +108,6 @@ RSpec.describe "Context system attributes" do
     context.publish
   end
 
-  # A user attribute set after creation must override the system value and
-  # invalidate the assignment cached while the system value still applied.
   it "lets a user attribute set after creation override the system environment" do
     context = create_context(environment: "production")
 
@@ -140,9 +138,6 @@ RSpec.describe "Context system attributes" do
     expect(context.peek_treatment("exp_app")).to eq(0)
   end
 
-  # An unconfigured name must leave the key absent, not set it to "". The
-  # `exp_env_empty` experiment filters on `environment == ""`, so it matches
-  # only if an empty string is wrongly injected; it must stay control.
   it "leaves the environment key out when no environment is configured" do
     context = create_context(environment: nil)
 
@@ -230,8 +225,6 @@ RSpec.describe "Context system attributes" do
   end
 end
 
-# The application/environment seeded into the evaluation map come from the
-# configured client. Custom data provider and event handler must not drop them.
 RSpec.describe "ABSmartly system attributes wiring" do
   let(:clock) { Time.at(1620000000000 / 1000) }
   let(:descr) { DefaultContextDataDeserializer.new }
@@ -267,8 +260,6 @@ RSpec.describe "ABSmartly system attributes wiring" do
     context_config.set_unit(:session_id, "e791e240fcd3df7d238cfc285f475e8152fcc0ec")
     context = sdk.create_context_with(context_config, data_result)
 
-    # The strict environment=production audience matches only because the
-    # configured client's environment seeds the evaluation map.
     expect(context.peek_treatment("exp_env")).to eq(1)
     expect(context.peek_treatment("exp_app")).to eq(1)
   end
