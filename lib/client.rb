@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require_relative "absmartly/version"
 require_relative "default_http_client"
 require_relative "default_context_data_deserializer"
 require_relative "default_context_event_serializer"
@@ -44,7 +45,7 @@ class Client
       "X-Application": application,
       "X-Environment": environment,
       "X-Application-Version": "0",
-      "X-Agent": "absmartly-ruby-sdk"
+      "X-Agent": "absmartly-ruby-sdk/#{Absmartly::VERSION}"
     }
 
     @query = {
