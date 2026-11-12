@@ -303,6 +303,17 @@ context.set_attributes(
 )
 ```
 
+The application and environment configured on the client are always available to audience filters and assignment rule conditions as `application` and `environment`. An attribute you set with the same name takes precedence. They are not added to published attributes, since the collector attaches them itself.
+
+### Assignment Rules
+
+Experiments can define assignment rules on the Web Console. They are evaluated in order and the first matching rule decides the variant, taking precedence over audience targeting, traffic allocation and custom assignments; only `set_override` beats a rule. Rule-assigned exposures are flagged `ruleOverride` so they are excluded from analysis.
+
+- An `assign` rule gives a fixed variant.
+- A `split` rule randomizes the unit over its own percentages, e.g. `20/30/50`. While the experiment's unit is missing, it gives the full-on variant (0 for an experiment that is not full-on); once the unit is set, the rule is re-resolved unless that variant was already exposed.
+
+Rule conditions are audience expressions, so they can use your attributes, `application`, `environment` and the `semver_eq`, `semver_gt`, `semver_gte`, `semver_lt` and `semver_lte` operators, e.g. `{"semver_gte": [{"var": "app_version"}, {"value": "2.4.0"}]}`.
+
 ### Custom Assignments
 
 Sometimes it may be necessary to override the automatic selection of a variant. For example, if you wish to have your variant chosen based on data from an API call. This can be accomplished using the `set_custom_assignment` method.
