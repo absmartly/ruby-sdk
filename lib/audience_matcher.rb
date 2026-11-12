@@ -10,8 +10,6 @@ class AudienceMatcher
   # The longest decimal prefix JavaScript's parseFloat accepts.
   FLOAT_PREFIX = /\A\s*([+-]?(?:Infinity|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?))/.freeze
 
-  # The action of the first matching assignment rule: a fixed variant, or a
-  # split (one fraction per variant) to randomize the unit over.
   RuleAction = Struct.new(:variant, :split) do
     def split?
       !split.nil?
@@ -48,8 +46,6 @@ class AudienceMatcher
     nil
   end
 
-  # Returns the rules array of an assignmentRules JSON string, or nil when it
-  # is not valid JSON or has no rules array.
   def parse_rules(assignment_rules)
     return nil unless assignment_rules.is_a?(String)
 
@@ -65,9 +61,6 @@ class AudienceMatcher
     rules.nil? ? nil : evaluate_parsed_rules(rules, environment, attributes)
   end
 
-  # The first rule whose action is valid, whose environments include the
-  # environment (none or an empty list match all) and whose conditions
-  # evaluate to true wins. Any other rule is skipped.
   def evaluate_parsed_rules(rules, environment, attributes)
     rules.each do |rule|
       next unless rule.is_a?(Hash)

@@ -69,6 +69,14 @@ RSpec.describe SemverComparator do
     expect(compare(true, "true")).to eq(0)
   end
 
+  # Cross-SDK parity: the JavaScript and Java comparators read a trailing
+  # hyphen as an empty pre-release, i.e. a release. Change all SDKs together.
+  it "treats a trailing hyphen as a release, like the JavaScript and Java SDKs" do
+    expect(compare("1.0.0-", "1.0.0")).to eq(0)
+    expect(compare("1.0.0-", "1.0.0-alpha")).to eq(1)
+    expect(json_expr.evaluate_expr({ "semver_eq" => [{ value: "1.0.0-" }, { value: "1.0.0" }] }, {})).to eq(true)
+  end
+
   it "returns nil when either side is not a version" do
     expect(compare("", "1.0.0")).to be_nil
     expect(compare("1.0.0", "")).to be_nil

@@ -1,9 +1,6 @@
 # frozen_string_literal: true
 
-# Compares versions like the JavaScript SDK's versionCompare: a leading v/V
-# and +build metadata are ignored, missing core parts count as "0", numeric
-# identifiers compare by value and rank below alphanumeric ones, and a release
-# ranks above its pre-releases. Returns nil when either side is not a version.
+# A port of the JavaScript SDK's versionCompare; keep the two in step.
 module SemverComparator
   NUMERIC_IDENTIFIER = /\A\d+\z/.freeze
 

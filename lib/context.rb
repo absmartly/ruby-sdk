@@ -584,8 +584,6 @@ class Context
       rules.is_a?(String) && !rules.empty? ? "#{rules}:#{@environment}" : ""
     end
 
-    # Re-resolves the rules and audience when the rules, the environment or an
-    # attribute changed since the assignment was built.
     def audience_matches(entry, assignment)
       experiment = entry.data
       key = rule_key(experiment)
@@ -618,11 +616,9 @@ class Context
       true
     end
 
-    # Returns [variant, missing_unit] for the first matching assignment rule,
-    # or nil when no rule applies. An assign variant out of range or a split
-    # without one percentage per variant falls back to normal assignment. A
-    # split is hashed with the experiment's own seed; without the unit it
-    # gives the experiment's no-unit variant (the full-on variant, else 0).
+    # Returns [variant, missing_unit], or nil to fall back to normal
+    # assignment (as JS and Java do for an out-of-range variant or a split
+    # without one percentage per variant).
     def resolve_rule(entry, attrs, unit_pinned_missing)
       experiment = entry.data
       return nil if entry.rules.nil?
@@ -665,10 +661,8 @@ class Context
         elsif (assignment.rule_override || custom.nil? ||
                (custom == assignment.variant && (assignment.custom || assignment.exposed))) &&
               experiment_matches(experiment.data, assignment) && audience_matches(experiment, assignment)
-          # A matching rule wins over a custom assignment, so a custom
-          # mismatch is not staleness. An unexposed assignment that happens to
-          # equal a new custom variant is rebuilt so its exposure says custom;
-          # an exposed one is kept so it is never exposed twice.
+          # A rule wins over a custom assignment. An unexposed assignment that
+          # merely equals a new custom variant is rebuilt to flag it custom.
           return assignment
         end
       end
@@ -696,9 +690,6 @@ class Context
         assignment.rule_variant = rule&.first
         assignment.rule_missing_unit = rule ? rule.last : false
 
-        # A matching rule is an explicit assignment like an override: it wins
-        # over the audience, traffic, full-on and custom assignments, and the
-        # exposure is flagged so the backend can exclude it from analysis.
         if rule
           assignment.rule_override = true
           assignment.variant = rule.first
