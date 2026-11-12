@@ -17,6 +17,7 @@ require "json_expr/operators/or_combinator"
 require "json_expr/operators/unary_operator"
 require "json_expr/operators/value_operator"
 require "json_expr/operators/var_operator"
+require "json_expr/operators/semver_operators"
 
 class JsonExpr
   attr_accessor :operators
@@ -36,7 +37,12 @@ class JsonExpr
       "gt": GreaterThanOperator.new,
       "gte": GreaterThanOrEqualOperator.new,
       "lt": LessThanOperator.new,
-      "lte": LessThanOrEqualOperator.new
+      "lte": LessThanOrEqualOperator.new,
+      "semver_eq": SemverEqualsOperator.new,
+      "semver_gt": SemverGreaterThanOperator.new,
+      "semver_gte": SemverGreaterThanOrEqualOperator.new,
+      "semver_lt": SemverLessThanOperator.new,
+      "semver_lte": SemverLessThanOrEqualOperator.new
     }
   end
 

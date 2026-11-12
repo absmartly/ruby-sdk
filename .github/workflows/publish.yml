@@ -2,21 +2,39 @@ name: Publish Gem
 
 on:
   push:
-    branches:
-      - "main"
     tags:
       - v*
+
+permissions:
+  contents: read
+
 jobs:
-  build:
+  publish:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Release Gem
-        if: contains(github.ref, 'refs/tags/v')
-        uses: cadwallion/publish-rubygems-action@master
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Check the tag matches the gem version
+        run: |
+          version=$(ruby -Ilib -e 'require "absmartly/version"; print Absmartly::VERSION')
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match gem version v${version}" >&2
+            exit 1
+          fi
+
+      - name: Run RSpec
+        run: bundle exec rspec
+
+      - name: Build gem
+        run: gem build absmartly.gemspec
+
+      - name: Publish to RubyGems
         env:
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
-          RUBYGEMS_API_KEY: ${{secrets.RUBYGEMS_API_KEY}}
-          RELEASE_COMMAND: rake release
+          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
+        run: gem push "absmartly-sdk-${GITHUB_REF_NAME#v}.gem"

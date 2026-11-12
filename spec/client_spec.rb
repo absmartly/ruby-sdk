@@ -46,6 +46,20 @@ RSpec.describe Client do
     }.to raise_error(ArgumentError, "Missing Environment configuration")
   end
 
+  it "sends X-Agent as absmartly-ruby-sdk/<version>" do
+    config = ClientConfig.create
+    config.endpoint = "https://localhost/v1"
+    config.api_key = "test-api-key"
+    config.application = "website"
+    config.environment = "dev"
+
+    client = Client.create(config, instance_double(DefaultHttpClient))
+
+    expect(client.headers[:"X-Agent"]).to eq("absmartly-ruby-sdk/#{Absmartly::VERSION}")
+    expect(client.headers[:"X-Agent"]).to match(%r{\Aabsmartly-ruby-sdk/\d+\.\d+\.\d+})
+    expect(client.headers[:"X-Application-Version"]).to eq("0")
+  end
+
   it "create with defaults" do
     config = ClientConfig.create
     config.endpoint = "https://localhost/v1"
@@ -78,7 +92,7 @@ RSpec.describe Client do
     expected_headers = {
       "Content-Type": "application/json",
       "X-API-Key": "test-api-key",
-      "X-Agent": "absmartly-ruby-sdk",
+      "X-Agent": "absmartly-ruby-sdk/#{Absmartly::VERSION}",
       "X-Application": "website",
       "X-Application-Version": "0",
       "X-Environment": "dev",
@@ -129,7 +143,7 @@ RSpec.describe Client do
     expected_headers = {
       "Content-Type": "application/json",
       "X-API-Key": "test-api-key",
-      "X-Agent": "absmartly-ruby-sdk",
+      "X-Agent": "absmartly-ruby-sdk/#{Absmartly::VERSION}",
       "X-Application": "website",
       "X-Application-Version": "0",
       "X-Environment": "dev",
@@ -164,7 +178,7 @@ RSpec.describe Client do
     expected_headers = {
       "Content-Type": "application/json",
       "X-API-Key": "test-api-key",
-      "X-Agent": "absmartly-ruby-sdk",
+      "X-Agent": "absmartly-ruby-sdk/#{Absmartly::VERSION}",
       "X-Application": "website",
       "X-Application-Version": "0",
       "X-Environment": "dev",
@@ -216,7 +230,7 @@ RSpec.describe Client do
     expected_headers = {
       "Content-Type": "application/json",
       "X-API-Key": "test-api-key",
-      "X-Agent": "absmartly-ruby-sdk",
+      "X-Agent": "absmartly-ruby-sdk/#{Absmartly::VERSION}",
       "X-Application": "website",
       "X-Application-Version": "0",
       "X-Environment": "dev",
@@ -250,7 +264,7 @@ RSpec.describe Client do
       "X-Application": "website",
       "X-Environment": "dev",
       "X-Application-Version": "0",
-      "X-Agent": "absmartly-ruby-sdk"
+      "X-Agent": "absmartly-ruby-sdk/#{Absmartly::VERSION}"
     }
     bytes = "0"
     event = PublishEvent.new
@@ -281,7 +295,7 @@ RSpec.describe Client do
       "X-Application": "website",
       "X-Environment": "dev",
       "X-Application-Version": "0",
-      "X-Agent": "absmartly-ruby-sdk"
+      "X-Agent": "absmartly-ruby-sdk/#{Absmartly::VERSION}"
     }
     event = PublishEvent.new
     bytes = "0"
@@ -311,7 +325,7 @@ RSpec.describe Client do
       "X-Application": "website",
       "X-Environment": "dev",
       "X-Application-Version": "0",
-      "X-Agent": "absmartly-ruby-sdk"
+      "X-Agent": "absmartly-ruby-sdk/#{Absmartly::VERSION}"
     }
     event = PublishEvent.new
     bytes = "0"

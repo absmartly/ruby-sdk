@@ -39,3 +39,23 @@ jobs:
 
       - name: Run RuboCop
         run: bundle exec rubocop
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Build gem
+        run: gem build absmartly.gemspec
+
+      - name: Install and load the built gem
+        run: |
+          version=$(ruby -Ilib -e 'require "absmartly/version"; print Absmartly::VERSION')
+          gem install "./absmartly-sdk-${version}.gem"
+          cd "$(mktemp -d)"
+          ruby -e 'gem "absmartly-sdk"; require "absmartly"; require "json_expr/semver_comparator"; print Absmartly::VERSION, "\n"'

@@ -125,4 +125,20 @@ RSpec.describe DefaultContextDataDeserializer do
     deser = described_class.new
     expect(deser.deserialize(string, 0, 14)).to be_nil
   end
+
+  it ".deserialize reads assignmentRules as a JSON string" do
+    rules = JSON.generate(rules: [{ type: "assign", variant: 1 }])
+    json = JSON.generate(experiments: [{ id: 1, name: "exp", unitType: "session_id", assignmentRules: rules,
+                                         variants: [{ name: "A", config: nil }] }])
+    data = DefaultContextDataDeserializer.new.deserialize(json, 0, json.length)
+
+    expect(data.experiments.first.assignment_rules).to eq(rules)
+  end
+
+  it ".deserialize leaves assignmentRules nil when absent" do
+    json = JSON.generate(experiments: [{ id: 1, name: "exp", unitType: "session_id", variants: [] }])
+    data = DefaultContextDataDeserializer.new.deserialize(json, 0, json.length)
+
+    expect(data.experiments.first.assignment_rules).to be_nil
+  end
 end

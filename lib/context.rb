@@ -18,23 +18,28 @@ class Context
   attr_reader :pending_count
 
   def self.create(clock, config, data_future, data_provider,
-                  event_handler, event_logger, variable_parser, audience_matcher)
+                  event_handler, event_logger, variable_parser, audience_matcher,
+                  application: nil, environment: nil)
     Context.new(clock, config, data_future, data_provider,
-                event_handler, event_logger, variable_parser, audience_matcher)
+                event_handler, event_logger, variable_parser, audience_matcher,
+                application: application, environment: environment)
   end
 
   def self.create_async(clock, config, data_provider,
-                        event_handler, event_logger, variable_parser, audience_matcher)
+                        event_handler, event_logger, variable_parser, audience_matcher,
+                        application: nil, environment: nil)
     context = Context.allocate
     context.send(:initialize_async, clock, config, data_provider,
-                 event_handler, event_logger, variable_parser, audience_matcher)
+                 event_handler, event_logger, variable_parser, audience_matcher,
+                 application: application, environment: environment)
     context
   end
 
   def initialize(clock, config, data_future, data_provider,
-                 event_handler, event_logger, variable_parser, audience_matcher)
+                 event_handler, event_logger, variable_parser, audience_matcher,
+                 application: nil, environment: nil)
     init_common(clock, config, data_provider, event_handler, event_logger,
-                variable_parser, audience_matcher)
+                variable_parser, audience_matcher, application, environment)
 
     if data_future.success?
       assign_data(data_future.data_future)
@@ -193,6 +198,7 @@ class Context
     end
 
     @units[unit_type.to_sym] = trimmed
+    invalidate_assignments_missing_unit(unit_type.to_s)
   end
 
   def set_units(units)
@@ -244,6 +250,7 @@ class Context
         exposure.full_on = assignment.full_on
         exposure.custom = assignment.custom
         exposure.audience_mismatch = assignment.audience_mismatch
+        exposure.rule_override = assignment.rule_override
 
         @pending_count += 1
         @exposures.push(exposure)
@@ -550,25 +557,87 @@ class Context
         experiment.traffic_split == assignment.traffic_split
     end
 
-    def audience_matches(experiment, assignment)
-      if !experiment.audience.nil? && experiment.audience.size > 0
-        if @attrs_seq > (assignment.attrs_seq || 0)
-          attrs = @attributes.inject({}) do |hash, attr|
-            hash[attr.name] = attr.value
-            hash
-          end
+    # System values go in first, then user-set attributes overlay them, so a
+    # user attribute always wins over the system value for the same name, even
+    # when set after the context was created (the @attrs_seq bump re-evaluates
+    # the cached assignment). Empty system values were skipped at init, so a
+    # missing config leaves the key out rather than matching on "".
+    def attributes_map
+      attrs = @system_attributes.dup
+      @attributes.each { |attr| attrs[attr.name.to_s] = attr.value }
+      attrs
+    end
+
+    # A split rule resolved while its unit was missing gave the no-unit
+    # variant; once the unit is set, unexposed ones are rebuilt. Exposed ones
+    # stay, so the user never switches variant or gets a second exposure.
+    def invalidate_assignments_missing_unit(unit_type)
+      @assignment_mutex.synchronize do
+        @assignment_cache.delete_if do |_name, assignment|
+          assignment.unit_type.to_s == unit_type && !assignment.exposed && assignment.rule_missing_unit
+        end
+      end
+    end
+
+    def rule_key(experiment)
+      rules = experiment.assignment_rules
+      rules.is_a?(String) && !rules.empty? ? "#{rules}:#{@environment}" : ""
+    end
+
+    def audience_matches(entry, assignment)
+      experiment = entry.data
+      key = rule_key(experiment)
+      key_changed = key != (assignment.rule_key || "")
+
+      return false if key_changed && key.empty? && assignment.rule_override
+
+      if @attrs_seq > (assignment.attrs_seq || 0) || key_changed
+        attrs = attributes_map
+
+        unless key.empty?
+          pinned_missing = assignment.exposed && assignment.rule_missing_unit
+          rule = resolve_rule(entry, attrs, pinned_missing)
+          return false if rule&.first != assignment.rule_variant
+
+          assignment.rule_missing_unit = rule ? rule.last : false
+        end
+
+        if !assignment.rule_override && !experiment.audience.nil? && experiment.audience.size > 0
           match = @audience_matcher.evaluate(experiment.audience, attrs)
           # An indeterminate result (no filter, bad JSON) keeps the cached flag.
           new_audience_mismatch = match.nil? ? assignment.audience_mismatch : !match.result
 
-          if new_audience_mismatch != assignment.audience_mismatch
-            return false
-          end
-
-          assignment.attrs_seq = @attrs_seq
+          return false if new_audience_mismatch != assignment.audience_mismatch
         end
+
+        assignment.rule_key = key
+        assignment.attrs_seq = @attrs_seq
       end
       true
+    end
+
+    # Returns [variant, missing_unit], or nil to fall back to normal
+    # assignment (as JS and Java do for an out-of-range variant or a split
+    # without one percentage per variant).
+    def resolve_rule(entry, attrs, unit_pinned_missing)
+      experiment = entry.data
+      return nil if entry.rules.nil?
+
+      action = @audience_matcher.evaluate_parsed_rules(entry.rules, @environment, attrs)
+      return nil if action.nil?
+
+      variant_count = experiment.variants.length
+      unless action.split?
+        return action.variant >= 0 && action.variant < variant_count ? [action.variant, false] : nil
+      end
+      return nil if action.split.length != variant_count
+
+      unit_type = experiment.unit_type
+      uid = unit_type.nil? || unit_pinned_missing ? nil : @units[unit_type.to_sym]
+      return [experiment.full_on_variant || 0, true] if uid.nil?
+
+      assigner = variant_assigner(unit_type, uid)
+      [assigner.assign(action.split, experiment.seed_hi, experiment.seed_lo), false]
     end
 
     def assignment(experiment_name, state = @state)
@@ -578,29 +647,25 @@ class Context
     def cached_or_new_assignment(experiment_name, state)
       assignment = @assignment_cache[experiment_name.to_s]
       exp_key = experiment_name.to_s.to_sym
-
-      if !assignment.nil?
-        custom = @cassignments[exp_key]
-        override = @overrides[exp_key]
-        experiment = experiment(experiment_name.to_s, state)
-        if !override.nil?
-          if assignment.overridden && assignment.variant == override
-            return assignment
-          end
-        elsif experiment.nil?
-          if !assignment.assigned
-            return assignment
-          end
-        elsif custom.nil? || custom == assignment.variant
-          if experiment_matches(experiment.data, assignment) && audience_matches(experiment.data, assignment)
-            return assignment
-          end
-        end
-      end
-
       custom = @cassignments[exp_key]
       override = @overrides[exp_key]
       experiment = experiment(experiment_name.to_s, state)
+
+      if !assignment.nil?
+        if !override.nil?
+          return assignment if assignment.overridden && assignment.variant == override
+        elsif experiment.nil?
+          # A rule-won assignment came from the experiment's rules, so it is
+          # rebuilt once the experiment is gone.
+          return assignment if !assignment.assigned && !assignment.rule_override
+        elsif (assignment.rule_override || custom.nil? ||
+               (custom == assignment.variant && (assignment.custom || assignment.exposed))) &&
+              experiment_matches(experiment.data, assignment) && audience_matches(experiment, assignment)
+          # A rule wins over a custom assignment. An unexposed assignment that
+          # merely equals a new custom variant is rebuilt to flag it custom.
+          return assignment
+        end
+      end
 
       assignment = Assignment.new
       assignment.name = experiment_name
@@ -611,41 +676,42 @@ class Context
           assignment.id = experiment.data.id
           assignment.unit_type = experiment.data.unit_type
         end
-
         assignment.overridden = true
         assignment.variant = override
-      else
-        unless experiment.nil?
-          unit_type = experiment.data.unit_type
+      elsif !experiment.nil?
+        data = experiment.data
+        assignment.unit_type = data.unit_type
+        assignment.id = data.id
+        assignment.iteration = data.iteration
+        assignment.traffic_split = data.traffic_split
+        assignment.full_on_variant = data.full_on_variant
+        assignment.rule_key = rule_key(data)
+        rule = assignment.rule_key.empty? ? nil : resolve_rule(experiment, attributes_map, false)
+        assignment.rule_variant = rule&.first
+        assignment.rule_missing_unit = rule ? rule.last : false
 
-          if !experiment.data.audience.nil? && experiment.data.audience.size > 0
-            attrs = @attributes.inject({}) do |hash, attr|
-              hash[attr.name] = attr.value
-              hash
-            end
-            match = @audience_matcher.evaluate(experiment.data.audience, attrs)
-            if match && !match.result
-              assignment.audience_mismatch = true
-            end
+        if rule
+          assignment.rule_override = true
+          assignment.variant = rule.first
+        else
+          if !data.audience.nil? && data.audience.size > 0
+            match = @audience_matcher.evaluate(data.audience, attributes_map)
+            assignment.audience_mismatch = true if match && !match.result
           end
 
-          if experiment.data.audience_strict && assignment.audience_mismatch
+          if data.audience_strict && assignment.audience_mismatch
             assignment.variant = 0
-          elsif experiment.data.full_on_variant == 0
-            uid = @units[experiment.data.unit_type.to_sym]
+          elsif data.full_on_variant == 0
+            uid = @units[data.unit_type.to_sym]
             unless uid.nil?
               assigner = VariantAssigner.new(uid)
-              eligible = assigner.assign(experiment.data.traffic_split,
-                                         experiment.data.traffic_seed_hi,
-                                         experiment.data.traffic_seed_lo) == 1
+              eligible = assigner.assign(data.traffic_split, data.traffic_seed_hi, data.traffic_seed_lo) == 1
               if eligible
                 if !custom.nil?
                   assignment.variant = custom
                   assignment.custom = true
                 else
-                  assignment.variant = assigner.assign(experiment.data.split,
-                                                       experiment.data.seed_hi,
-                                                       experiment.data.seed_lo)
+                  assignment.variant = assigner.assign(data.split, data.seed_hi, data.seed_lo)
                 end
               else
                 assignment.eligible = false
@@ -655,17 +721,11 @@ class Context
             end
           else
             assignment.assigned = true
-            assignment.variant = experiment.data.full_on_variant
+            assignment.variant = data.full_on_variant
             assignment.full_on = true
           end
-
-          assignment.unit_type = unit_type
-          assignment.id = experiment.data.id
-          assignment.iteration = experiment.data.iteration
-          assignment.traffic_split = experiment.data.traffic_split
-          assignment.full_on_variant = experiment.data.full_on_variant
-          assignment.attrs_seq = @attrs_seq
         end
+        assignment.attrs_seq = @attrs_seq
       end
 
       if !experiment.nil? && assignment.variant >= 0 && assignment.variant < experiment.data.variants.length
@@ -687,7 +747,7 @@ class Context
         next if assignment.variables.nil?
 
         queue_exposure(assignment) if expose
-        if assignment.variables.key?(key) && (assignment.assigned || assignment.overridden)
+        if assignment.variables.key?(key) && (assignment.assigned || assignment.overridden || assignment.rule_override)
           return assignment.variables[key]
         end
       end
@@ -718,6 +778,7 @@ class Context
 
           experiment_variables = ExperimentVariables.new
           experiment_variables.data = experiment
+          experiment_variables.rules = @audience_matcher.parse_rules(experiment.assignment_rules)
           experiment_variables.variables ||= []
           experiment.variants.each do |variant|
             if !variant.config.nil? && !variant.config.empty?
@@ -795,7 +856,7 @@ class Context
     end
 
     def init_common(clock, config, data_provider, event_handler, event_logger,
-                    variable_parser, audience_matcher)
+                    variable_parser, audience_matcher, application = nil, environment = nil)
       @state = State.new(nil, {}, {}, {})
       @achievements = []
       @assignment_cache = {}
@@ -809,10 +870,19 @@ class Context
       @data_provider = data_provider
       @variable_parser = variable_parser
       @audience_matcher = audience_matcher
+      @environment = environment
       @closed = false
       @closing = false
       @failed = false
       @ready_error = nil
+
+      # System attributes (application/environment names from the client
+      # config) seed the audience evaluation map. The collector already
+      # attaches both server-side, so they are never added to the publish
+      # payload; empty values are skipped so a missing key stays absent.
+      @system_attributes = {}
+      @system_attributes["application"] = application if application.is_a?(String) && !application.empty?
+      @system_attributes["environment"] = environment if environment.is_a?(String) && !environment.empty?
 
       @units = {}
       @attributes = []
@@ -836,9 +906,9 @@ class Context
     end
 
     def initialize_async(clock, config, data_provider, event_handler, event_logger,
-                         variable_parser, audience_matcher)
+                         variable_parser, audience_matcher, application: nil, environment: nil)
       init_common(clock, config, data_provider, event_handler, event_logger,
-                  variable_parser, audience_matcher)
+                  variable_parser, audience_matcher, application, environment)
     end
 
     attr_accessor :clock,
@@ -873,7 +943,8 @@ end
 class Assignment
   attr_accessor :id, :iteration, :full_on_variant, :name, :unit_type,
                 :traffic_split, :variant, :assigned, :overridden, :eligible,
-                :full_on, :custom, :audience_mismatch, :variables, :exposed, :attrs_seq
+                :full_on, :custom, :audience_mismatch, :variables, :exposed, :attrs_seq,
+                :rule_override, :rule_variant, :rule_missing_unit, :rule_key
 
   def initialize
     @variant = 0
@@ -886,12 +957,14 @@ class Assignment
     @full_on = false
     @custom = false
     @audience_mismatch = false
+    @rule_override = false
+    @rule_missing_unit = false
     @attrs_seq = 0
   end
 end
 
 class ExperimentVariables
-  attr_accessor :data, :variables
+  attr_accessor :data, :variables, :rules
 end
 
 class ContextCustomFieldValues
