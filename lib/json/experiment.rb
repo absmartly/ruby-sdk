@@ -8,13 +8,14 @@ require_relative "custom_field_value"
 class Experiment
   attr_accessor :id, :name, :unit_type, :iteration, :seed_hi, :seed_lo, :split,
                 :traffic_seed_hi, :traffic_seed_lo, :traffic_split, :full_on_variant,
-                :applications, :variants, :audience_strict, :audience, :custom_field_values
+                :applications, :variants, :audience_strict, :audience, :custom_field_values,
+                :assignment_rules
 
   ALLOWED_KEYS = %i[
     id name unitType unit_type iteration seedHi seed_hi seedLo seed_lo split
     trafficSeedHi traffic_seed_hi trafficSeedLo traffic_seed_lo trafficSplit traffic_split
     fullOnVariant full_on_variant applications variants audienceStrict audience_strict
-    audience customFieldValues custom_field_values
+    audience customFieldValues custom_field_values assignmentRules assignment_rules
   ].freeze
 
   def initialize(args = {})
@@ -60,7 +61,8 @@ class Experiment
       @unit_type == that.unit_type && @split == that.split &&
       @traffic_split == that.traffic_split && @applications == that.applications &&
       @variants == that.variants && @audience_strict == that.audience_strict &&
-      @audience == that.audience && @custom_field_values == that.custom_field_values
+      @audience == that.audience && @custom_field_values == that.custom_field_values &&
+      @assignment_rules == that.assignment_rules
   end
 
   def hash_code
@@ -76,7 +78,8 @@ class Experiment
       full_on_variant: @full_on_variant,
       audience_strict: @audience_strict,
       audience: @audience,
-      custom_field_values: @custom_field_values
+      custom_field_values: @custom_field_values,
+      assignment_rules: @assignment_rules
     }
   end
 
@@ -98,6 +101,7 @@ class Experiment
       ", audienceStrict=#{@audience_strict}" +
       ", audience='#{@audience}'" +
       ", custom_field_values='#{@custom_field_values}'" +
+      ", assignment_rules='#{@assignment_rules}'" +
       "}"
   end
 end
