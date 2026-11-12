@@ -638,7 +638,7 @@ class Context
 
       unit_type = experiment.unit_type
       uid = unit_type.nil? || unit_pinned_missing ? nil : @units[unit_type.to_sym]
-      return [experiment.full_on_variant, true] if uid.nil?
+      return [experiment.full_on_variant || 0, true] if uid.nil?
 
       assigner = variant_assigner(unit_type, uid)
       [assigner.assign(action.split, experiment.seed_hi, experiment.seed_lo), false]
@@ -662,10 +662,13 @@ class Context
           # A rule-won assignment came from the experiment's rules, so it is
           # rebuilt once the experiment is gone.
           return assignment if !assignment.assigned && !assignment.rule_override
-        elsif (assignment.rule_override || custom.nil? || custom == assignment.variant) &&
+        elsif (assignment.rule_override || custom.nil? ||
+               (custom == assignment.variant && (assignment.custom || assignment.exposed))) &&
               experiment_matches(experiment.data, assignment) && audience_matches(experiment, assignment)
           # A matching rule wins over a custom assignment, so a custom
-          # mismatch is not staleness.
+          # mismatch is not staleness. An unexposed assignment that happens to
+          # equal a new custom variant is rebuilt so its exposure says custom;
+          # an exposed one is kept so it is never exposed twice.
           return assignment
         end
       end

@@ -265,6 +265,21 @@ RSpec.describe "Context assignment rules" do
       expect(context.treatment("exp_test_fullon")).to eq(2)
     end
 
+    it "gives variant 0 without the unit when the experiment has no fullOnVariant" do
+      raw = JSON.parse(resource("context.json"))
+      raw["experiments"].each do |experiment|
+        next unless experiment["name"] == "exp_test_abc"
+
+        experiment.delete("fullOnVariant")
+        experiment["assignmentRules"] = JSON.generate(rules: [split_rule("0/100/0")])
+      end
+      json = JSON.generate(raw)
+      data = DefaultContextDataDeserializer.new.deserialize(json, 0, json.length)
+
+      context = create_context(data, units: {}, attributes: { country: "US" })
+      expect(context.treatment("exp_test_abc")).to eq(0)
+    end
+
     it "keeps an exposed no-unit split on its variant after the unit is set" do
       context = create_context(context_data([split_rule("0/100/0")]), units: {}, attributes: { country: "US" })
       expect(context.treatment("exp_test_abc")).to eq(0)

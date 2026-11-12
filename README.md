@@ -303,7 +303,7 @@ context.set_attributes(
 )
 ```
 
-The application and environment configured on the client are always available to audience filters and assignment rule conditions as `application` and `environment`. An attribute you set with the same name takes precedence. They are not added to published attributes, since the collector attaches them itself.
+The application and environment configured on the client are available to audience filters and assignment rule conditions as `application` and `environment`. A name that is unset or empty is left out, so a filter on it sees no value. An attribute you set with the same name takes precedence. They are not added to published attributes, since the collector attaches them itself.
 
 ### Assignment Rules
 
