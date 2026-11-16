@@ -22,6 +22,8 @@ Behavior now matches the JavaScript SDK (the reference implementation). Each Bre
 
 ### Changed
 - The `X-Agent` header is now `absmartly-ruby-sdk/<version>` instead of `absmartly-ruby-sdk`, as the JavaScript SDK sends its versioned agent. Collectors and proxies that match the exact old value need updating.
+- Every exposure in the publish payload now carries `ruleOverride` (`false` unless an assignment rule chose the variant), as the JavaScript SDK sends it. Consumers that compare the exact publish body (snapshots, proxies) see the extra field.
+- Audience filters on `application` or `environment` now see the configured names (see Added), so a non-strict audience with such a condition stops flagging `audienceMismatch` on matching units, and a strict one stops serving them control.
 
 ### Fixed
 - Nested `variants`, `applications` and `customFieldValues` in the context payload are read by key: an unknown key no longer fails the whole context and a reordered object no longer swaps fields (the bug dates back to v1.3.0). A missing key leaves that field `nil`.
