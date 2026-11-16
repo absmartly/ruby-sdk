@@ -69,6 +69,33 @@ RSpec.describe SemverComparator do
     expect(compare(true, "true")).to eq(0)
   end
 
+  # Vectors from the JavaScript SDK's stringConvert (toFixed(15), trailing
+  # zeros trimmed), which versionCompare applies to numeric operands.
+  it "converts numbers to text like the JavaScript SDK" do
+    {
+      1.0000000000000002 => "1", 1e-16 => "0", -1e-16 => "-0", -0.0 => "0",
+      1.0000000000000007 => "1.000000000000001", 0.9007199254740991 => "0.900719925474099",
+      123.456 => "123.456000000000003", 1e-7 => "0.0000001", 100 => "100", 2**60 => "1152921504606846976",
+      9_007_199_254_740_993 => "9007199254740992", 1e21 => "1e+21", 1.5e21 => "1.5e+21", 1e100 => "1e+1",
+      Float::NAN => "NaN", Float::INFINITY => "Infinity", -Float::INFINITY => "-Infinity"
+    }.each do |number, text|
+      expect(described_class.to_version_string(evaluator, number)).to eq(text), "#{number} -> #{text}"
+    end
+  end
+
+  it "compares numeric operands at the JavaScript SDK's precision" do
+    expect(compare(1.0000000000000002, "1")).to eq(0)
+    expect(compare(1e-16, "0")).to eq(0)
+    expect(compare("1", 1.0000000000000002)).to eq(0)
+    expect(compare(1.000000000000001, "1")).to eq(1)
+    filter = { semver_eq: [{ var: "build" }, { value: "1" }] }
+    expect(json_expr.evaluate_boolean_expr(filter, { "build" => 1.0000000000000002 })).to eq(true)
+  end
+
+  it "leaves the general string conversion unchanged" do
+    expect(evaluator.string_convert(1.0000000000000002)).to eq("1.0000000000000002")
+  end
+
   # Cross-SDK parity: the JavaScript and Java comparators read a trailing
   # hyphen as an empty pre-release, i.e. a release. Change all SDKs together.
   it "treats a trailing hyphen as a release, like the JavaScript and Java SDKs" do

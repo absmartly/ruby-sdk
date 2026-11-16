@@ -3,12 +3,15 @@
 # A port of the JavaScript SDK's versionCompare; keep the two in step.
 module SemverComparator
   NUMERIC_IDENTIFIER = /\A\d+\z/.freeze
+  FIXED_DIGITS = 15
+  FIXED_SCALE = 10**FIXED_DIGITS
+  TRAILING_FIXED_ZEROS = /\.?0{0,15}\z/.freeze
 
   module_function
 
   def compare(evaluator, lhs, rhs)
-    lhs_str = evaluator.string_convert(lhs)
-    rhs_str = evaluator.string_convert(rhs)
+    lhs_str = to_version_string(evaluator, lhs)
+    rhs_str = to_version_string(evaluator, rhs)
     return nil if lhs_str.nil? || rhs_str.nil? || lhs_str.empty? || rhs_str.empty?
 
     l = parse(lhs_str)
@@ -34,6 +37,26 @@ module SemverComparator
       return result unless result.zero?
     end
     0
+  end
+
+  # Numbers are converted as JavaScript's stringConvert does,
+  # x.toFixed(15) with trailing zeros trimmed, so 1.0000000000000002 is "1".
+  # The general string_convert is left alone for the other operators.
+  def to_version_string(evaluator, value)
+    return evaluator.string_convert(value) unless value.is_a?(Numeric)
+
+    to_fixed(value.to_f).sub(TRAILING_FIXED_ZEROS, "")
+  end
+
+  # Number.prototype.toFixed(15): the exact binary value rounded half up,
+  # or the shortest round-trip text in exponent form from 1e21 up.
+  def to_fixed(x)
+    return x.to_s if x.nan? || x.infinite?
+    return x.to_s.sub(/\.0(?=e)/, "") if x.abs >= 1e21
+
+    scaled = (x.abs.to_r * FIXED_SCALE).round(half: :up)
+    int, frac = scaled.divmod(FIXED_SCALE)
+    "#{x.negative? ? '-' : ''}#{int}.#{frac.to_s.rjust(FIXED_DIGITS, '0')}"
   end
 
   def parse(version)
