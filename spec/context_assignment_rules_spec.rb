@@ -215,6 +215,26 @@ RSpec.describe "Context assignment rules" do
       context.refresh
       expect(context.treatment("exp_test_abc")).to eq(2)
     end
+    it "applies rules a refresh adds to a rule-free, audience-free experiment" do
+      context = create_context(context_data(nil), attributes: { country: "US" })
+      expect(context.treatment("exp_test_abc")).to eq(2)
+
+      allow(data_provider).to receive(:context_data)
+        .and_return(OpenStruct.new(data_future: context_data([assign_rule(1)]), success?: true))
+      context.refresh
+      expect(context.treatment("exp_test_abc")).to eq(1)
+    end
+
+    it "drops a rule-won assignment once a refresh removes the experiment" do
+      context = create_context(context_data([assign_rule(1)]), attributes: { country: "US" })
+      expect(context.treatment("exp_test_abc")).to eq(1)
+
+      data = context_data(nil)
+      data.experiments.reject! { |e| e.name == "exp_test_abc" }
+      allow(data_provider).to receive(:context_data).and_return(OpenStruct.new(data_future: data, success?: true))
+      context.refresh
+      expect(context.treatment("exp_test_abc")).to eq(0)
+    end
   end
 
   describe "split rules" do
