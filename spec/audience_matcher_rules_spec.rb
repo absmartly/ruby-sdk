@@ -81,6 +81,12 @@ RSpec.describe AudienceMatcher, "assignment rules" do
     expect(evaluate([assign(1)])).to be_nil
   end
 
+  it "tries the next rule after one whose conditions raise" do
+    allow(matcher.json_expr).to receive(:evaluate_boolean_expr).and_call_original
+    allow(matcher.json_expr).to receive(:evaluate_boolean_expr).with(JSON.parse(JSON.generate(gb)), anything).and_raise(StandardError, "boom")
+    expect(evaluate([assign(1, conditions: gb), assign(2)])).to eq(assigned(2))
+  end
+
   it "scopes rules to environments" do
     expect(evaluate([assign(1, environments: ["staging"])])).to be_nil
     expect(evaluate([assign(2, environments: %w[production staging])])).to eq(assigned(2))

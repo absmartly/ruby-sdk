@@ -300,4 +300,174 @@ RSpec.describe "Context assignment rules" do
       expect(context.pending_count).to eq(1)
     end
   end
+
+  # A matcher written against the v1.3.0 contract: only evaluate(audience, attrs).
+  class LegacyAudienceMatcher
+    attr_reader :calls
+
+    def initialize
+      @inner = AudienceMatcher.new(DefaultAudienceDeserializer.new)
+      @calls = 0
+    end
+
+    def evaluate(audience, attributes)
+      @calls += 1
+      @inner.evaluate(audience, attributes)
+    end
+  end
+
+  describe "custom audience matchers" do
+    def create_with(matcher, data, attributes: {})
+      config = ContextConfig.create
+      config.set_units(session_id: session_id)
+      config.set_attributes(attributes)
+      Context.create(clock, config, OpenStruct.new(data_future: data, success?: true), data_provider,
+                     event_handler, nil, variable_parser, matcher,
+                     application: "website", environment: "production")
+    end
+
+    it "works with a matcher that only implements evaluate when there are no rules" do
+      matcher = LegacyAudienceMatcher.new
+      context = create_with(matcher, context_data(nil))
+
+      expect(context.ready?).to eq(true)
+      expect(context.treatment("exp_test_abc")).to eq(2)
+      expect(context.treatment("exp_test_ab")).to eq(1)
+    end
+
+    it "still dispatches audiences to the custom matcher" do
+      matcher = LegacyAudienceMatcher.new
+      audience = JSON.generate(filter: [{ eq: [{ var: "country" }, { value: "US" }] }])
+      data = context_data(nil, name: "exp_test_ab", audience: audience, audienceStrict: true)
+      context = create_with(matcher, data, attributes: { country: "GB" })
+      expect(context.treatment("exp_test_ab")).to eq(0)
+      expect(matcher.calls).to eq(1)
+    end
+
+    it "evaluates rules with the default rule engine when the matcher lacks it" do
+      matcher = LegacyAudienceMatcher.new
+      context = create_with(matcher, context_data([assign_rule(1)]), attributes: { country: "US" })
+
+      expect(context.treatment("exp_test_abc")).to eq(1)
+      expect(published_exposures(context).first.rule_override).to eq(true)
+    end
+  end
+
+  describe "cached reads" do
+    def count_rule_evaluations
+      calls = 0
+      allow(audience_matcher).to receive(:evaluate_parsed_rules).and_wrap_original do |original, *args|
+        calls += 1
+        original.call(*args)
+      end
+      -> { calls }
+    end
+
+    it "does not re-resolve the rule on every read after a same-outcome refresh" do
+      context = create_context(context_data([assign_rule(1)]), attributes: { country: "US" })
+      expect(context.treatment("exp_test_abc")).to eq(1)
+
+      calls = count_rule_evaluations
+      allow(data_provider).to receive(:context_data)
+        .and_return(OpenStruct.new(data_future: context_data([assign_rule(1), assign_rule(0)]), success?: true))
+      context.refresh
+
+      100.times { expect(context.treatment("exp_test_abc")).to eq(1) }
+      expect(calls.call).to eq(1)
+      expect(context.pending_count).to eq(1)
+    end
+
+    it "compares refreshed rules by identity once their text is acknowledged" do
+      context = create_context(context_data([assign_rule(1)]), attributes: { country: "US" })
+      expect(context.treatment("exp_test_abc")).to eq(1)
+
+      refreshed = context_data([assign_rule(1)])
+      rules = refreshed.experiments.find { |e| e.name == "exp_test_abc" }.assignment_rules
+      comparisons = 0
+      rules.define_singleton_method(:==) do |other|
+        comparisons += 1
+        super(other)
+      end
+      allow(data_provider).to receive(:context_data)
+        .and_return(OpenStruct.new(data_future: refreshed, success?: true))
+      context.refresh
+
+      100.times { expect(context.treatment("exp_test_abc")).to eq(1) }
+      expect(comparisons).to eq(1)
+    end
+
+    it "does not re-resolve the rule on every read after an attribute change" do
+      context = create_context(context_data([assign_rule(1)]), attributes: { country: "US" })
+      expect(context.treatment("exp_test_abc")).to eq(1)
+
+      calls = count_rule_evaluations
+      context.set_attribute("age", 30)
+      100.times { expect(context.treatment("exp_test_abc")).to eq(1) }
+      expect(calls.call).to eq(1)
+      expect(context.pending_count).to eq(1)
+    end
+
+    it "does not re-evaluate the audience on every read after an attribute change" do
+      audience = JSON.generate(filter: [{ value: true }])
+      context = create_context(context_data(nil, name: "exp_test_ab", audience: audience))
+      expect(context.treatment("exp_test_ab")).to eq(1)
+
+      calls = 0
+      allow(audience_matcher).to receive(:evaluate).and_wrap_original do |original, *args|
+        calls += 1
+        original.call(*args)
+      end
+      context.set_attribute("age", 30)
+      100.times { expect(context.treatment("exp_test_ab")).to eq(1) }
+      expect(calls).to eq(1)
+      expect(context.pending_count).to eq(1)
+    end
+
+    it "rebuilds a rule-won assignment once a refresh removes the rules, even with no audience" do
+      context = create_context(context_data([assign_rule(1)]), attributes: { country: "US" })
+      expect(context.treatment("exp_test_abc")).to eq(1)
+
+      allow(data_provider).to receive(:context_data)
+        .and_return(OpenStruct.new(data_future: context_data(nil, audience: nil), success?: true))
+      context.refresh
+      expect(context.treatment("exp_test_abc")).to eq(2)
+      expect(context.treatment("exp_test_abc")).to eq(2)
+      expect(context.pending_count).to eq(2)
+    end
+
+    it "does not copy the rules on a cached read" do
+      rules = [assign_rule(1, conditions: { value: true })] + Array.new(50) { assign_rule(0) }
+      context = create_context(context_data(rules), attributes: { country: "US" })
+      context.peek_treatment("exp_test_abc")
+
+      before = GC.stat(:total_allocated_objects)
+      1000.times { context.peek_treatment("exp_test_abc") }
+      expect(GC.stat(:total_allocated_objects) - before).to be < 100
+    end
+  end
+
+  describe "environment scope" do
+    it "scopes rules to the configured environment, not an environment attribute" do
+      staging = [assign_rule(1, conditions: nil, environments: ["staging"])]
+      context = create_context(context_data(staging), attributes: { environment: "staging" })
+      expect(context.treatment("exp_test_abc")).to eq(2)
+
+      production = [assign_rule(1, conditions: nil, environments: ["production"])]
+      context = create_context(context_data(production), attributes: { environment: "staging" })
+      expect(context.treatment("exp_test_abc")).to eq(1)
+    end
+
+    it "lets an environment attribute override the system value in conditions" do
+      condition = { eq: [{ var: "environment" }, { value: "staging" }] }
+      context = create_context(context_data([assign_rule(1, conditions: condition)]),
+                               attributes: { environment: "staging" })
+      expect(context.treatment("exp_test_abc")).to eq(1)
+    end
+
+    it "does not inject any app_version into rule conditions" do
+      absent = { null: { var: "app_version" } }
+      context = create_context(context_data([assign_rule(1, conditions: absent)]))
+      expect(context.treatment("exp_test_abc")).to eq(1)
+    end
+  end
 end

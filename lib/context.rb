@@ -3,6 +3,8 @@
 require_relative "hashing"
 require_relative "type_utils"
 require_relative "variant_assigner"
+require_relative "audience_matcher"
+require_relative "default_audience_deserializer"
 require_relative "context_event_logger"
 require_relative "json/unit"
 require_relative "json/attribute"
@@ -14,6 +16,7 @@ class Context
   # Immutable-by-convention snapshot swapped in with a single assignment so
   # readers see either the complete old or the complete new state.
   State = Struct.new(:data, :index, :index_variables, :custom_fields)
+  NO_RULES = ""
 
   attr_reader :pending_count
 
@@ -579,15 +582,18 @@ class Context
       end
     end
 
-    def rule_key(experiment)
-      rules = experiment.assignment_rules
-      rules.is_a?(String) && !rules.empty? ? "#{rules}:#{@environment}" : ""
-    end
-
     def audience_matches(entry, assignment)
       experiment = entry.data
-      key = rule_key(experiment)
-      key_changed = key != (assignment.rule_key || "")
+      key = entry.rule_key
+      cached_key = assignment.rule_key || NO_RULES
+      # The environment is fixed per context, so the rules text alone
+      # identifies them. Equal text from a refresh is acknowledged by
+      # adopting the new object, so later reads compare by identity.
+      key_changed = !key.equal?(cached_key)
+      if key_changed && key == cached_key
+        assignment.rule_key = key
+        key_changed = false
+      end
 
       return false if key_changed && key.empty? && assignment.rule_override
 
@@ -616,6 +622,16 @@ class Context
       true
     end
 
+    # A custom audience matcher written for v1.3.0 only implements
+    # evaluate(audience, attributes); rules then use the default engine.
+    def rule_matcher
+      @rule_matcher ||= begin
+        rule_capable = @audience_matcher.respond_to?(:parse_rules) &&
+                       @audience_matcher.respond_to?(:evaluate_parsed_rules)
+        rule_capable ? @audience_matcher : AudienceMatcher.new(DefaultAudienceDeserializer.new)
+      end
+    end
+
     # Returns [variant, missing_unit], or nil to fall back to normal
     # assignment (as JS and Java do for an out-of-range variant or a split
     # without one percentage per variant).
@@ -623,7 +639,7 @@ class Context
       experiment = entry.data
       return nil if entry.rules.nil?
 
-      action = @audience_matcher.evaluate_parsed_rules(entry.rules, @environment, attrs)
+      action = rule_matcher.evaluate_parsed_rules(entry.rules, @environment, attrs)
       return nil if action.nil?
 
       variant_count = experiment.variants.length
@@ -658,9 +674,12 @@ class Context
           # A rule-won assignment came from the experiment's rules, so it is
           # rebuilt once the experiment is gone.
           return assignment if !assignment.assigned && !assignment.rule_override
-        elsif (assignment.rule_override || custom.nil? ||
+        elsif (custom.nil? || assignment.rule_override ||
                (custom == assignment.variant && (assignment.custom || assignment.exposed))) &&
-              experiment_matches(experiment.data, assignment) && audience_matches(experiment, assignment)
+              experiment_matches(experiment.data, assignment) &&
+              # Rule-free, audience-free and built without rules: nothing to revalidate.
+              ((experiment.unconditional && assignment.rule_key.equal?(NO_RULES)) ||
+               audience_matches(experiment, assignment))
           # A rule wins over a custom assignment. An unexposed assignment that
           # merely equals a new custom variant is rebuilt to flag it custom.
           return assignment
@@ -685,7 +704,7 @@ class Context
         assignment.iteration = data.iteration
         assignment.traffic_split = data.traffic_split
         assignment.full_on_variant = data.full_on_variant
-        assignment.rule_key = rule_key(data)
+        assignment.rule_key = experiment.rule_key
         rule = assignment.rule_key.empty? ? nil : resolve_rule(experiment, attributes_map, false)
         assignment.rule_variant = rule&.first
         assignment.rule_missing_unit = rule ? rule.last : false
@@ -778,7 +797,15 @@ class Context
 
           experiment_variables = ExperimentVariables.new
           experiment_variables.data = experiment
-          experiment_variables.rules = @audience_matcher.parse_rules(experiment.assignment_rules)
+          rules = experiment.assignment_rules
+          if rules.is_a?(String) && !rules.empty?
+            experiment_variables.rule_key = rules
+            experiment_variables.rules = rule_matcher.parse_rules(rules)
+          else
+            experiment_variables.rule_key = NO_RULES
+          end
+          experiment_variables.unconditional = experiment_variables.rule_key.equal?(NO_RULES) &&
+                                               (experiment.audience.nil? || experiment.audience.empty?)
           experiment_variables.variables ||= []
           experiment.variants.each do |variant|
             if !variant.config.nil? && !variant.config.empty?
@@ -964,7 +991,7 @@ class Assignment
 end
 
 class ExperimentVariables
-  attr_accessor :data, :variables, :rules
+  attr_accessor :data, :variables, :rules, :rule_key, :unconditional
 end
 
 class ContextCustomFieldValues

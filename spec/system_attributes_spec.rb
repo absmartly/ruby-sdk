@@ -263,4 +263,26 @@ RSpec.describe "ABSmartly system attributes wiring" do
     expect(context.peek_treatment("exp_env")).to eq(1)
     expect(context.peek_treatment("exp_app")).to eq(1)
   end
+
+  it "reads the application and environment from a real Client" do
+    client_config = ClientConfig.new
+    client_config.endpoint = "https://localhost/v1"
+    client_config.api_key = "key"
+    client_config.application = "website"
+    client_config.environment = "production"
+    http_client = instance_double(HttpClient)
+    allow(http_client).to receive(:get)
+      .and_return(DefaultHttpClient.default_response(200, "OK", "application/json", json))
+
+    config = ABSmartlyConfig.create
+    config.client = Client.new(client_config, http_client)
+    sdk = ABSmartly.create(config)
+
+    context_config = ContextConfig.create
+    context_config.set_unit(:session_id, "e791e240fcd3df7d238cfc285f475e8152fcc0ec")
+    context = sdk.create_context(context_config)
+
+    expect(context.peek_treatment("exp_env")).to eq(1)
+    expect(context.peek_treatment("exp_app")).to eq(1)
+  end
 end
