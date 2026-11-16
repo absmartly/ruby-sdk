@@ -41,12 +41,20 @@ class Experiment
     self
   end
 
+  # Nested objects are read by key, so unknown keys are ignored and key order
+  # does not matter; a missing key leaves that field nil.
+  NESTED_FIELDS = {
+    ExperimentApplication => %w[name],
+    ExperimentVariant => %w[name config],
+    CustomFieldValue => %w[name value type]
+  }.freeze
+
   def assign_to_klass(klass, arr)
     arr.map do |item|
       next if item.nil?
       next item if item.is_a?(klass)
 
-      klass.new(*item.values)
+      klass.new(*NESTED_FIELDS.fetch(klass).map { |field| item.key?(field.to_sym) ? item[field.to_sym] : item[field] })
     end.compact
   end
 

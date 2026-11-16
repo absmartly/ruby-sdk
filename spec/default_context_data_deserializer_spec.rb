@@ -141,4 +141,78 @@ RSpec.describe DefaultContextDataDeserializer do
 
     expect(data.experiments.first.assignment_rules).to be_nil
   end
+
+  describe "forward compatibility" do
+    def decode(raw)
+      json = JSON.generate(raw)
+      described_class.new.deserialize(json, 0, json.length)
+    end
+
+    def experiment(**overrides)
+      { id: 1, name: "exp", unitType: "session_id", iteration: 1, seedHi: 1, seedLo: 2, split: [0.5, 0.5],
+        trafficSeedHi: 3, trafficSeedLo: 4, trafficSplit: [0.0, 1.0], fullOnVariant: 0,
+        applications: [{ name: "website" }],
+        variants: [{ name: "A", config: nil }, { name: "B", config: "{\"a\":1}" }],
+        audienceStrict: false, audience: "",
+        customFieldValues: [{ name: "f", value: "v", type: "string" }] }.merge(overrides)
+    end
+
+    it "ignores unknown keys at the root and experiment level" do
+      data = decode(experiments: [experiment(newField: 1)], newRoot: { x: 1 })
+      expect(data.experiments.first.name).to eq("exp")
+    end
+
+    it "ignores unknown keys in variants, applications and custom field values" do
+      data = decode(experiments: [
+        experiment(variants: [{ name: "A", config: nil, extra: 1 }, { name: "B", config: "{}", id: 7 }],
+                   applications: [{ name: "website", id: 3 }],
+                   customFieldValues: [{ name: "f", value: "v", type: "string", sortOrder: 1 }]),
+        experiment(id: 2, name: "other")
+      ])
+
+      expect(data).not_to be_nil
+      expect(data.experiments.map(&:name)).to eq(%w[exp other])
+      first = data.experiments.first
+      expect(first.variants).to eq([ExperimentVariant.new("A", nil), ExperimentVariant.new("B", "{}")])
+      expect(first.applications).to eq([ExperimentApplication.new("website")])
+      expect(first.custom_field_values).to eq([CustomFieldValue.new("f", "v", "string")])
+    end
+
+    it "reads nested objects by key, whatever the property order" do
+      data = decode(experiments: [
+        experiment(variants: [{ config: "{\"a\":1}", name: "A" }],
+                   customFieldValues: [{ type: "json", value: "{}", name: "f" }])
+      ])
+
+      first = data.experiments.first
+      expect(first.variants.first.name).to eq("A")
+      expect(first.variants.first.config).to eq("{\"a\":1}")
+      expect([first.custom_field_values.first.name, first.custom_field_values.first.type])
+        .to eq(%w[f json])
+    end
+
+    it "leaves missing optional nested fields nil" do
+      data = decode(experiments: [experiment(variants: [{ name: "A" }], applications: [{}],
+                                             customFieldValues: [{ name: "f" }])])
+
+      first = data.experiments.first
+      expect(first.variants.first.config).to be_nil
+      expect(first.applications.first.name).to be_nil
+      expect(first.custom_field_values.first.value).to be_nil
+    end
+
+    it "keeps the context usable with unknown nested keys" do
+      raw = JSON.parse(resource("context.json"))
+      raw["experiments"].each do |e|
+        e["variants"].each { |v| v["futureField"] = { "nested" => true } }
+        e["applications"].each { |a| a["futureField"] = 1 }
+        (e["customFieldValues"] || []).each { |c| c["futureField"] = 1 }
+      end
+      data = decode(raw)
+      plain = described_class.new.deserialize(resource("context.json"), 0, resource("context.json").length)
+
+      expect(data).to eq(plain)
+    end
+  end
 end
+
