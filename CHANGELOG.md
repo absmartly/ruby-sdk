@@ -27,6 +27,7 @@ Behavior now matches the JavaScript SDK (the reference implementation). Each Bre
 
 ### Fixed
 - Nested `variants`, `applications` and `customFieldValues` in the context payload are read by key: an unknown key no longer fails the whole context and a reordered object no longer swaps fields (the bug dates back to v1.3.0). A missing key leaves that field `nil`.
+- A `customFieldValues` entry with no `type` (or `type: null`) no longer makes `create_context` or `refresh` raise `NoMethodError`; its value is read as plain text and `custom_field_type` returns `nil` (the bug dates back to v1.3.0).
 - `set_unit` stores the `to_s` text of any non-numeric UID (Symbols, `Rack::Session::SessionId`, UUID value objects), as in v1.3.0; `nil` or blank text raises "UID must not be blank."
 - Integer unit UIDs are hashed from their exact decimal text, as in v1.3.0, so IDs beyond 2**53 keep distinct buckets.
 - `Client#context_data` returns a new immutable `ContextDataResult` per call, so concurrent `create_context_async` calls and refreshes sharing a client can't read each other's in-flight state. The client's `data_future`, `exception` and `promise` readers still reflect the latest fetch.
