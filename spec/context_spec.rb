@@ -533,6 +533,29 @@ RSpec.describe Context do
     expect(context.treatment("exp_test_fullon")).to eq 2
   end
 
+  it "flags custom on the exposure when a peeked variant equals the new custom assignment" do
+    context = create_ready_context
+    expect(context.peek_treatment("exp_test_abc")).to eq(2)
+
+    context.set_custom_assignment("exp_test_abc", 2)
+    expect(context.treatment("exp_test_abc")).to eq(2)
+
+    expect(event_handler).to receive(:publish) do |_ctx, event|
+      expect(event.exposures.map(&:custom)).to eq([true])
+      publish_future
+    end
+    context.publish
+  end
+
+  it "keeps an exposed assignment when the custom assignment equals its variant" do
+    context = create_ready_context
+    expect(context.treatment("exp_test_abc")).to eq(2)
+
+    context.set_custom_assignment("exp_test_abc", 2)
+    expect(context.treatment("exp_test_abc")).to eq(2)
+    expect(context.pending_count).to eq(1)
+  end
+
   it "set custom assignment clears assignment cache" do
     context = create_ready_context
 

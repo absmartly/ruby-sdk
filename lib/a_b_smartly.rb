@@ -54,8 +54,9 @@ class ABSmartly
       @audience_deserializer = config.audience_deserializer
       @scheduler = config.scheduler
 
+      @client = config.client
+
       if @context_data_provider.nil? || @context_event_handler.nil?
-        @client = config.client
         raise ArgumentError.new("Missing Client instance configuration") if @client.nil?
 
         if @context_data_provider.nil?
@@ -115,14 +116,16 @@ class ABSmartly
     validate_params(config)
     Context.create(get_utc_format, config, @context_data_provider.context_data,
                    @context_data_provider, @context_event_handler, @context_event_logger, @variable_parser,
-                   AudienceMatcher.new(@audience_deserializer))
+                   AudienceMatcher.new(@audience_deserializer),
+                   application: client_application, environment: client_environment)
   end
 
   def create_context_async(config)
     validate_params(config)
     context = Context.create_async(get_utc_format, config, @context_data_provider,
                                    @context_event_handler, @context_event_logger, @variable_parser,
-                                   AudienceMatcher.new(@audience_deserializer))
+                                   AudienceMatcher.new(@audience_deserializer),
+                                   application: client_application, environment: client_environment)
     data_provider = @context_data_provider
     Thread.new do
       data_future = data_provider.context_data
@@ -137,7 +140,8 @@ class ABSmartly
     validate_params(config)
     Context.create(get_utc_format, config, data,
                    @context_data_provider, @context_event_handler, @context_event_logger, @variable_parser,
-                   AudienceMatcher.new(@audience_deserializer))
+                   AudienceMatcher.new(@audience_deserializer),
+                   application: client_application, environment: client_environment)
   end
 
   def context_data
@@ -147,6 +151,17 @@ class ABSmartly
   private
     def get_utc_format
       Time.now.utc.iso8601(3)
+    end
+
+    # The application and environment names configured on the client seed the
+    # audience evaluation map (the collector adds them server-side for publish).
+    # Custom data providers may leave @client nil, so guard the reads.
+    def client_application
+      @client.application if @client.respond_to?(:application)
+    end
+
+    def client_environment
+      @client.environment if @client.respond_to?(:environment)
     end
 
     def validate_params(params)

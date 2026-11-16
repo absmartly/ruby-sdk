@@ -2,12 +2,12 @@
 
 class Exposure
   attr_accessor :id, :name, :unit, :variant, :exposed_at, :assigned, :eligible,
-                :overridden, :full_on, :custom, :audience_mismatch
+                :overridden, :full_on, :custom, :audience_mismatch, :rule_override
 
   def initialize(id = nil, name = nil, unit = nil, variant = nil,
                  exposed_at = nil, assigned = nil, eligible = nil,
                  overridden = nil, full_on = nil, custom = nil,
-                 audience_mismatch = nil)
+                 audience_mismatch = nil, rule_override = false)
     @id = id || 0
     @name = name
     @unit = unit
@@ -19,6 +19,7 @@ class Exposure
     @full_on = full_on
     @custom = custom
     @audience_mismatch = audience_mismatch
+    @rule_override = rule_override
   end
 
   def ==(o)
@@ -29,7 +30,8 @@ class Exposure
       @variant == o.variant && @exposed_at == o.exposed_at &&
       @assigned == o.assigned && @eligible == o.eligible &&
       @overridden == o.overridden && @full_on == o.full_on &&
-      @custom == o.custom && @audience_mismatch == o.audience_mismatch
+      @custom == o.custom && @audience_mismatch == o.audience_mismatch &&
+      @rule_override == o.rule_override
   end
 
   def hash_code
@@ -38,7 +40,8 @@ class Exposure
       variant: @variant, exposed_at: @exposed_at,
       assigned: @assigned, eligible: @eligible,
       overridden: @overridden, full_on: @full_on,
-      custom: @custom, audience_mismatch: @audience_mismatch
+      custom: @custom, audience_mismatch: @audience_mismatch,
+      rule_override: @rule_override
     }
   end
 
@@ -55,6 +58,7 @@ class Exposure
       ", full_on=#{@full_on}" +
       ", custom=#{@custom}" +
       ", audience_mismatch=#{@audience_mismatch}" +
+      ", rule_override=#{@rule_override}" +
       "}"
   end
 end

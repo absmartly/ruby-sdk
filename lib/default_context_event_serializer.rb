@@ -39,7 +39,8 @@ class DefaultContextEventSerializer < ContextEventSerializer
         overridden: x.overridden,
         fullOn: x.full_on,
         custom: x.custom,
-        audienceMismatch: x.audience_mismatch
+        audienceMismatch: x.audience_mismatch,
+        ruleOverride: x.rule_override
       }
     end unless event.exposures.nil?
 
