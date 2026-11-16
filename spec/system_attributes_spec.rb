@@ -209,6 +209,24 @@ RSpec.describe "Context system attributes" do
     expect(names).not_to include("application", "environment", "app_version")
   end
 
+  it "publishes user-set application, environment and app_version attributes" do
+    context = create_context(environment: "production", application: "website")
+    context.set_attribute("app_version", "2.4.0")
+    context.set_attribute("environment", "staging")
+    context.treatment("exp_env")
+
+    serializer = DefaultContextEventSerializer.new
+    published = nil
+    allow(event_handler).to receive(:publish) do |_ctx, event|
+      published = serializer.serialize(event)
+      publish_future
+    end
+    context.publish
+
+    attributes = JSON.parse(published).fetch("attributes").map { |a| [a["name"], a["value"]] }
+    expect(attributes).to eq([%w[app_version 2.4.0], %w[environment staging]])
+  end
+
   # The client sends X-Application-Version: 0, but the SDK must not surface it
   # as an `app_version` attribute, so a strict filter on it stays unmatched.
   it "does not inject app_version into the audience map" do
