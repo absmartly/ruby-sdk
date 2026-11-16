@@ -225,6 +225,22 @@ RSpec.describe "Context assignment rules" do
       expect(context.treatment("exp_test_abc")).to eq(1)
     end
 
+    # Pins current behaviour: the cached read of an audience-free experiment
+    # does not record the attribute change, so an audience a later refresh
+    # adds is evaluated against it. The JavaScript SDK keeps the variant here.
+    it "evaluates an audience a refresh adds against attributes set since the last read" do
+      context = create_context(context_data(nil), attributes: { country: "US" })
+      expect(context.treatment("exp_test_abc")).to eq(2)
+      context.set_attribute("age", 10)
+      expect(context.treatment("exp_test_abc")).to eq(2)
+
+      strict = context_data(nil, audienceStrict: true,
+                                 audience: JSON.generate(filter: [{ gte: [{ var: "age" }, { value: 20 }] }]))
+      allow(data_provider).to receive(:context_data).and_return(OpenStruct.new(data_future: strict, success?: true))
+      context.refresh
+      expect(context.treatment("exp_test_abc")).to eq(0)
+    end
+
     it "drops a rule-won assignment once a refresh removes the experiment" do
       context = create_context(context_data([assign_rule(1)]), attributes: { country: "US" })
       expect(context.treatment("exp_test_abc")).to eq(1)
