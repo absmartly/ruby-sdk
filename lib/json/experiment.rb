@@ -41,8 +41,6 @@ class Experiment
     self
   end
 
-  # Nested objects are read by key, so unknown keys are ignored and key order
-  # does not matter; a missing key leaves that field nil.
   NESTED_FIELDS = {
     ExperimentApplication => %w[name],
     ExperimentVariant => %w[name config],

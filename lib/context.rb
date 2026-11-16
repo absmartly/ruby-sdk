@@ -677,7 +677,6 @@ class Context
         elsif (custom.nil? || assignment.rule_override ||
                (custom == assignment.variant && (assignment.custom || assignment.exposed))) &&
               experiment_matches(experiment.data, assignment) &&
-              # Rule-free, audience-free and built without rules: nothing to revalidate.
               ((experiment.unconditional && assignment.rule_key.equal?(NO_RULES)) ||
                audience_matches(experiment, assignment))
           # A rule wins over a custom assignment. An unexposed assignment that
