@@ -314,6 +314,17 @@ Experiments can define assignment rules on the Web Console. They are evaluated i
 
 Rule conditions are audience expressions, so they can use your attributes, `application`, `environment` and the `semver_eq`, `semver_gt`, `semver_gte`, `semver_lt` and `semver_lte` operators, e.g. `{"semver_gte": [{"var": "app_version"}, {"value": "2.4.0"}]}`.
 
+### Holdouts
+
+Experiments can be covered by holdouts set up on the Web Console. A holdout keeps a share of units out of every experiment it covers, so you can measure the combined effect of those experiments. The SDK handles this for you: no code changes are needed.
+
+- A held-out unit gets control (variant 0, and control variable values) for each covered experiment, and no exposure is sent for that experiment.
+- The holdout sends its own exposure, once per unit type, the first time the unit sees a covered experiment, whether it is held out or not.
+- A unit held out by any of the holdouts covering an experiment is held out of it.
+- A holdout with three arms holds full-on experiments out only in its first arm, and other experiments in its first two arms.
+- `set_override` and a matching assignment rule still win over a holdout; the holdout's exposure is still sent.
+- Peeking (`peek_treatment`, `peek_variable_value`) never sends exposures.
+
 ### Custom Assignments
 
 Sometimes it may be necessary to override the automatic selection of a variant. For example, if you wish to have your variant chosen based on data from an API call. This can be accomplished using the `set_custom_assignment` method.
