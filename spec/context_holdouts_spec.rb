@@ -16,7 +16,6 @@ require "json/context_data"
 # holdoutIds. Arm 0 holds the unit out; in a 3-arm holdout arm 1 also holds out
 # experiments that are not full-on. A held-out unit gets control and no
 # exposure for the covered experiment; the holdout exposes once per unit type.
-# Wrapped in a module so the fixture constants do not leak to the top level.
 module ContextHoldoutsSpec
   RSpec.describe "Context holdouts" do
     UNIT_TYPE = "session_id"
@@ -717,6 +716,7 @@ module ContextHoldoutsSpec
       it "does not let a thread that waited on the assignment lock across a refresh expose the arm again" do
         context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
                                          [holdout(11, "holdout_h", HOLDOUT_B)]))
+        context.peek_treatment("exp")
         lock = context.instance_variable_get(:@assignment_mutex)
         waiting = nil
         lock.synchronize do
@@ -725,6 +725,7 @@ module ContextHoldoutsSpec
           Thread.pass until waiting.status == "sleep" || !waiting.alive? ||
                             Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
           expect(waiting.status).to eq("sleep")
+          expect(waiting.backtrace.join("\n")).to include("synchronize")
 
           refresh(context, data_of([experiment(1, "exp", holdout_ids: [11])],
                                    [holdout(11, "holdout_h", HOLDOUT_A, iteration: 2)]))
