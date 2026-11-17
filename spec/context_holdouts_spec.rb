@@ -272,6 +272,14 @@ module ContextHoldoutsSpec
                                              own_exposure(2, "fullon", 2, full_on: true)])
       end
 
+      it "treats arm 1 of a 4-arm holdout as not held out" do
+        four = holdout(21, "holdout_four_arm", [0, 1], split: [0.25, 0.25, 0.25, 0.25])
+        context = create_context(data_of([experiment(1, "non_fullon", holdout_ids: [21])], [four]))
+
+        expect(context.treatment("non_fullon")).to eq(NORMAL_VARIANT)
+        expect(exposures_of(context).last).to eq(holdout_exposure(21, "holdout_four_arm", 1))
+      end
+
       it "takes the arity from the split, not holdoutType" do
         mislabelled = three_arm_holdout(21, "holdout_three_arm", THREE_ARM_1).merge(holdoutType: "full")
         context = create_context(data_of([experiment(1, "non_fullon", holdout_ids: [21])], [mislabelled]))
@@ -375,6 +383,15 @@ module ContextHoldoutsSpec
         expect(context.data.holdouts.map(&:id)).to eq([12])
         expect(context.treatment("exp")).to eq(0)
         expect(exposures_of(context)).to eq([holdout_exposure(12, "holdout_broken", 0)])
+      end
+
+      it "hashes a holdout without seeds with seeds 0/0" do
+        seedless = holdout(11, "holdout_seedless", HOLDOUT_A).tap { |h| h.delete(:seedHi); h.delete(:seedLo) }
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])], [seedless]))
+        arm = VariantAssigner.new(UID).assign([0.1, 0.9], 0, 0)
+
+        context.treatment("exp")
+        expect(exposures_of(context).last).to eq(holdout_exposure(11, "holdout_seedless", arm))
       end
 
       it "keeps a holdout with null variants" do
@@ -1132,10 +1149,26 @@ module ContextHoldoutsSpec
       end
 
       it "allocates no holdout state for a context without holdouts" do
-        context = create_context(data_of([experiment(1, "exp")]))
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11]), experiment(2, "exp_b")]))
+        other = create_context(data_of([experiment(1, "exp")], []))
         context.treatment("exp")
+
+        state = context.instance_variable_get(:@state)
+        expect(state.holdouts_by_id).to be_frozen.and be_empty
+        expect(state.holdouts_by_id).to be(other.instance_variable_get(:@state).holdouts_by_id)
+        expect(state.index.values.map(&:holdouts)).to eq([nil, nil])
         expect(context.instance_variable_get(:@holdout_assignments)).to be_nil
-        expect(context.instance_variable_get(:@state).holdouts_by_id).to be_frozen
+      end
+
+      it "does not read holdoutIds when the payload has no holdouts" do
+        data = data_of([experiment(1, "exp", holdout_ids: [11])])
+        expect(data.experiments.first).not_to receive(:holdout_ids)
+        create_context(data)
+      end
+
+      it "gives a covered experiment with only dangling ids no holdout list" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [99])], [holdout(11, "holdout_a", HOLDOUT_A)]))
+        expect(context.instance_variable_get(:@state).index[:exp].holdouts).to be_nil
       end
 
       it "builds the same data as before without holdouts" do
