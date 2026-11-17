@@ -721,7 +721,10 @@ module ContextHoldoutsSpec
         waiting = nil
         lock.synchronize do
           waiting = Thread.new { context.treatment("exp") }
-          Thread.pass until waiting.status == "sleep"
+          deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+          Thread.pass until waiting.status == "sleep" || !waiting.alive? ||
+                            Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+          expect(waiting.status).to eq("sleep")
 
           refresh(context, data_of([experiment(1, "exp", holdout_ids: [11])],
                                    [holdout(11, "holdout_h", HOLDOUT_A, iteration: 2)]))
