@@ -42,11 +42,11 @@ RSpec.describe "Backwards Compatibility" do
     expect([out, status.success?]).to eq(["[Module, Object, [], true]\n", true]), err
   end
 
-  it "ContextEventHandler is a deprecated alias for ContextPublisher" do
+  it "ContextEventHandler is still the v1.3.0 class, aliased as ContextPublisher without a warning" do
     original = Warning[:deprecated]
     Warning[:deprecated] = true
-    expect { expect(Object.const_get(:ContextEventHandler)).to eq(ContextPublisher) }
-      .to output(/ContextEventHandler is deprecated/).to_stderr
+    expect { expect(ContextPublisher).to eq(ContextEventHandler) }.not_to output.to_stderr
+    expect(ContextEventHandler.name).to eq("ContextEventHandler")
   ensure
     Warning[:deprecated] = original
   end
@@ -66,11 +66,12 @@ RSpec.describe "Backwards Compatibility" do
     end
   end
 
-  it "DefaultContextEventHandler is a deprecated alias for DefaultContextPublisher" do
+  it "DefaultContextEventHandler is still the v1.3.0 class, aliased as DefaultContextPublisher without a warning" do
     original = Warning[:deprecated]
     Warning[:deprecated] = true
-    expect { expect(Object.const_get(:DefaultContextEventHandler)).to eq(DefaultContextPublisher) }
-      .to output(/DefaultContextEventHandler is deprecated/).to_stderr
+    expect { expect(DefaultContextPublisher).to eq(DefaultContextEventHandler) }.not_to output.to_stderr
+    expect(DefaultContextEventHandler.name).to eq("DefaultContextEventHandler")
+    expect(DefaultContextEventHandler.superclass).to eq(ContextEventHandler)
   ensure
     Warning[:deprecated] = original
   end

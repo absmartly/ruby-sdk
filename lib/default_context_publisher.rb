@@ -1,15 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "context_publisher"
+require_relative "default_context_event_handler"
 
-class DefaultContextPublisher < ContextPublisher
-  attr_accessor :client
-
-  def initialize(client)
-    @client = client
-  end
-
-  def publish(context, event)
-    @client.publish(event)
-  end
-end
+# The name the other ABsmartly SDKs use for DefaultContextEventHandler.
+DefaultContextPublisher = DefaultContextEventHandler

@@ -137,7 +137,7 @@ RSpec.describe "Local server integration (real HTTP)" do
     expect(body["goals"].first["name"]).to eq("payment")
   end
 
-  it "raises a StandardError-catchable publish failure on a real 503, stays open, and retries" do
+  it "finalize raises a StandardError-catchable publish failure on a real 503, stays open, and retries" do
     server.put_status = 503
 
     sdk = ABSmartly.new(
@@ -158,19 +158,19 @@ RSpec.describe "Local server integration (real HTTP)" do
     # `rescue StandardError`, not Ruby's base Exception.
     raised = nil
     begin
-      context.close
+      context.finalize
     rescue StandardError => e
       raised = e
     end
 
     expect(raised).to be_a(StandardError)
-    expect(context.closed?).to be(false)
+    expect(context.finalized?).to be(false)
     expect(context.finalizing?).to be(false)
     expect(context.pending_count).to eq(1)
 
     server.put_status = 200
-    expect(context.close).to be_nil
-    expect(context.closed?).to be(true)
+    expect(context.finalize).to be_nil
+    expect(context.finalized?).to be(true)
     expect(context.pending_count).to eq(0)
 
     puts = server.requests.count { |r| r[:method] == "PUT" }

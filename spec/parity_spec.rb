@@ -37,23 +37,27 @@ RSpec.describe "JavaScript SDK parity" do
         expect(Hashing.hash_unit(value)).to eq(hash)
       end
 
-      it "hashes #{value.inspect} the same from UTF-16 and from CESU-8 bytes" do
-        expect(Hashing.hash_unit(value.encode("UTF-16LE"))).to eq(hash)
+      it "normalizes #{value.inspect} to the same UTF-8 from UTF-16 and from CESU-8 bytes" do
+        expect(Hashing.to_utf8(value.encode("UTF-16LE")).bytes).to eq(bytes)
         cesu = value.encode("UTF-16BE").unpack("n*").map { |u| [u].pack("U") }.join.b
-        expect(Hashing.hash_unit(cesu.force_encoding("UTF-8"))).to eq(hash)
+        expect(Hashing.to_utf8(cesu.force_encoding("UTF-8")).bytes).to eq(bytes)
+      end
+
+      it "hashes #{value.inspect} in another encoding from its own bytes, as in v1.3.0" do
+        utf16 = value.encode("UTF-16LE")
+        expect(Hashing.hash_unit(utf16)).to eq(Hashing.base64_url_no_padding(Digest::MD5.digest(utf16.b)))
       end
     end
 
     it "replaces a lone surrogate in a UTF-16 string with U+FFFD" do
       utf16 = "ab".encode("UTF-16LE") + [0xD83D].pack("v").force_encoding("UTF-16LE") + "cd".encode("UTF-16LE")
       expect(Hashing.to_utf8(utf16).bytes).to eq(lone_surrogate_bytes)
-      expect(Hashing.hash_unit(utf16)).to eq(lone_surrogate_hash)
     end
 
     it "replaces a lone surrogate encoded as UTF-8 bytes with a single U+FFFD" do
       wtf8 = "ab\xED\xA0\xBDcd".dup.force_encoding("UTF-8")
       expect(Hashing.to_utf8(wtf8).bytes).to eq(lone_surrogate_bytes)
-      expect(Hashing.hash_unit(wtf8)).to eq(lone_surrogate_hash)
+      expect(Hashing.base64_url_no_padding(Digest::MD5.digest(Hashing.to_utf8(wtf8).b))).to eq(lone_surrogate_hash)
     end
 
     it "replaces other invalid bytes with U+FFFD" do
@@ -126,24 +130,24 @@ RSpec.describe "JavaScript SDK parity" do
                      DefaultVariableParser.new, AudienceMatcher.new(DefaultAudienceDeserializer.new))
     end
 
-    it "keeps the context open and the events queued when the final publish fails" do
+    it "finalize keeps the context open and the events queued when the final publish fails" do
       allow(handler).to receive(:publish).and_return(failure_future)
       context = make_context
       context.track("goal1", nil)
 
-      expect { context.close }.to raise_error(failure)
+      expect { context.finalize }.to raise_error(failure)
 
       expect(context.closed?).to be(false)
       expect(context.finalizing?).to be(false)
       expect(context.pending_count).to eq(1)
-      expect(events.map(&:first)).not_to include(ContextEventLogger::EVENT_TYPE::CLOSE)
+      expect(events.map(&:first)).not_to include(ContextEventLogger::EVENT_TYPE::FINALIZE)
 
       allow(handler).to receive(:publish).and_return(ok_future)
-      expect(context.close).to be_nil
+      expect(context.finalize).to be_nil
       expect(context.closed?).to be(true)
       expect(context.pending_count).to eq(0)
       expect(handler).to have_received(:publish).twice
-      expect(events.map(&:first)).to include(ContextEventLogger::EVENT_TYPE::CLOSE)
+      expect(events.map(&:first)).to include(ContextEventLogger::EVENT_TYPE::FINALIZE)
     end
 
     it "emits the finalize event under the name \"finalize\" from finalize" do
@@ -179,7 +183,7 @@ RSpec.describe "JavaScript SDK parity" do
     it "keeps a ready context usable after a failed refresh" do
       context = make_context
       allow(data_provider).to receive(:context_data).and_return(failure_future)
-      expect(context.refresh).to eq(failure)
+      context.refresh
       expect(context.failed?).to be(false)
       expect(context.experiments).to eq(data.experiments.map(&:name))
     end
@@ -211,13 +215,12 @@ RSpec.describe "JavaScript SDK parity" do
       expect(context.pending_count).to eq(1)
     end
 
-    it "normalizes a unit to UTF-8 before comparing and hashing it" do
+    it "keeps a unit in its own encoding, as in v1.3.0" do
       config = ContextConfig.create
       context = Context.create(clock, config, ready_future, data_provider, handler, logger,
                                DefaultVariableParser.new, AudienceMatcher.new(DefaultAudienceDeserializer.new))
       context.set_unit(:user_id, "user\u{1F600}id".encode("UTF-16LE"))
-      expect(context.get_unit(:user_id).encoding).to eq(Encoding::UTF_8)
-      expect { context.set_unit(:user_id, "user\u{1F600}id") }.not_to raise_error
+      expect(context.get_unit(:user_id).encoding).to eq(Encoding::UTF_16LE)
     end
   end
 

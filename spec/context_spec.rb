@@ -235,8 +235,6 @@ RSpec.describe Context do
     expect { context.variable_keys }.to raise_error(IllegalStateException, not_ready_message)
     expect { context.custom_field_keys }.to raise_error(IllegalStateException, not_ready_message)
     expect { context.custom_field_value("exp_test_ab", "country") }.to raise_error(IllegalStateException, not_ready_message)
-    expect { context.publish }.to raise_error(IllegalStateException, not_ready_message)
-    expect { context.refresh }.to raise_error(IllegalStateException, not_ready_message)
 
     expect {
       context.data
@@ -294,8 +292,47 @@ RSpec.describe Context do
     expect { context.variable_keys }.to raise_error(IllegalStateException, closed_message)
     expect { context.custom_field_keys }.to raise_error(IllegalStateException, closed_message)
     expect { context.refresh }.to raise_error(IllegalStateException, closed_message)
-    # experiments only requires readiness, like the JavaScript SDK.
+    # As in v1.3.0, close also seals experiments and overrides.
+    expect { context.experiments }.to raise_error(IllegalStateException, closed_message)
+    expect { context.set_override("exp_test_ab", 2) }.to raise_error(IllegalStateException, closed_message)
+    expect { context.set_overrides("exp_test_ab": 2) }.to raise_error(IllegalStateException, closed_message)
+  end
+
+  it "keeps experiments and overrides usable after finalize, like the JavaScript SDK" do
+    context = create_ready_context
+    allow(event_handler).to receive(:publish).and_return(nil)
+    context.finalize
+
+    closed_message = "ABSmartly Context is closed"
     expect(context.experiments).to eq(data.experiments.map(&:name))
+    expect { context.set_override("exp_test_ab", 2) }.not_to raise_error
+    expect { context.set_overrides("exp_test_ab": 2) }.not_to raise_error
+    expect { context.treatment("exp_test_ab") }.to raise_error(IllegalStateException, closed_message)
+  end
+
+  it "returns the event logger's result from close and a successful refresh, as in v1.3.0" do
+    logger = Class.new(ContextEventLogger) do
+      def handle_event(event, _data)
+        "logged #{event}"
+      end
+    end.new
+    config = ContextConfig.create
+    config.set_units(units)
+    allow(data_provider).to receive(:context_data).and_return(data_future_ready)
+    context = Context.create(clock, config, data_future_ready, data_provider, event_handler, logger,
+                             variable_parser, audience_matcher)
+
+    expect(context.refresh).to eq("logged refresh")
+    expect(context.close).to eq("logged close")
+    expect(context.close).to be_nil
+  end
+
+  it "publishes and refreshes before the context is ready, as in v1.3.0" do
+    context = create_context(data_future)
+    expect(context.ready?).to be_falsey
+    expect { context.publish }.not_to raise_error
+    allow(data_provider).to receive(:context_data).and_return(data_future_ready)
+    expect { context.refresh }.not_to raise_error
   end
 
   it "experiments" do
@@ -323,19 +360,20 @@ RSpec.describe Context do
     expect(context.get_units[:db_user_id]).to eq(125)
   end
 
-  it "numeric uid assigns and publishes like its canonical string" do
+  it "numeric uid assigns and publishes like its to_s text, as in v1.3.0" do
     make = lambda do |uid|
       config = ContextConfig.create
       config.set_units(units.merge(session_id: uid))
       create_context(data_future_ready, config: config)
     end
     numeric = make.call(125.75)
-    string = make.call("126")
+    string = make.call("125.75")
     %w[exp_test_ab exp_test_abc exp_test_fullon].each do |name|
       expect(numeric.treatment(name)).to eq(string.treatment(name))
     end
-    expect(VariantAssigner.new(125.0).key).to eq(VariantAssigner.new("125").key)
-    expect(VariantAssigner.new(125.75).key).to eq(VariantAssigner.new("126").key)
+    expect(VariantAssigner.new(125.0).key).to eq(VariantAssigner.new("125.0").key)
+    expect(VariantAssigner.new(125.75).key).to eq(VariantAssigner.new("125.75").key)
+    expect(VariantAssigner.new(125).key).to eq(VariantAssigner.new("125").key)
   end
 
   it "set unit converts symbols and string-like uids to strings, as in v1.3.0" do
@@ -1463,7 +1501,7 @@ RSpec.describe Context do
 
       allow(data_provider).to receive(:context_data).and_return(failure_future)
 
-      expect(context.refresh).to eq(failure)
+      context.refresh
 
       # A failed refresh keeps the current data; only the initial fetch fails a context.
       expect(context.failed?).to be_falsey
@@ -2098,19 +2136,49 @@ RSpec.describe Context do
       expect { context.publish }.to raise_error(IllegalStateException)
     end
 
-    it "raises the publish failure, stays open with events queued, and a second close seals" do
+    it "close logs a rejected final publish and seals, as in v1.3.0" do
       ev = instance_double(ContextPublisher)
       allow(ev).to receive(:publish).and_return(failure_future)
       context = create_ready_context(evt_handler: ev)
       context.track("goal1", nil)
       expect(context.pending_count).to eq(1)
 
-      expect { context.close }.to raise_error(Exception, "FAILED")
+      expect { context.close }.not_to raise_error
+      expect(context.closed?).to be true
+      expect(context.pending_count).to eq(0)
+      expect(ev).to have_received(:publish).once
+      expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::ERROR, "FAILED").once
+      expect(event_logger).to have_received(:handle_event).with(ContextEventLogger::EVENT_TYPE::CLOSE, nil).once
+    end
+
+    it "close re-raises a publisher that raises and stays open with the events queued" do
+      ev = instance_double(ContextPublisher)
+      allow(ev).to receive(:publish).and_raise(StandardError, "boom")
+      context = create_ready_context(evt_handler: ev)
+      context.track("goal1", nil)
+
+      expect { context.close }.to raise_error(StandardError, "boom")
       expect(context.closed?).to be false
       expect(context.pending_count).to eq(1)
 
       allow(ev).to receive(:publish).and_return(nil)
-      expect(context.close).to be_nil
+      expect { context.close }.not_to raise_error
+      expect(context.closed?).to be true
+      expect(context.pending_count).to eq(0)
+    end
+
+    it "finalize raises a rejected final publish, stays open with events queued, and a second finalize seals" do
+      ev = instance_double(ContextPublisher)
+      allow(ev).to receive(:publish).and_return(failure_future)
+      context = create_ready_context(evt_handler: ev)
+      context.track("goal1", nil)
+
+      expect { context.finalize }.to raise_error(Exception, "FAILED")
+      expect(context.closed?).to be false
+      expect(context.pending_count).to eq(1)
+
+      allow(ev).to receive(:publish).and_return(nil)
+      expect(context.finalize).to be_nil
       expect(context.closed?).to be true
       expect(context.pending_count).to eq(0)
       expect(ev).to have_received(:publish).twice
@@ -2269,7 +2337,7 @@ RSpec.describe Context do
       event_logger.clear
 
       context.track("goal1", nil)
-      expect { context.close }.to raise_error(Exception, "FAILED")
+      expect { context.close }.not_to raise_error
 
       expect(event_logger).to have_received(:handle_event).with(
         ContextEventLogger::EVENT_TYPE::ERROR, "FAILED"
@@ -2277,7 +2345,7 @@ RSpec.describe Context do
       expect(event_logger).not_to have_received(:handle_event).with(
         ContextEventLogger::EVENT_TYPE::PUBLISH, anything
       )
-      expect(context.closed?).to be false
+      expect(context.closed?).to be true
     end
   end
 
@@ -2287,6 +2355,22 @@ RSpec.describe Context do
 
       expect(context.custom_field_type("exp_test_ab", "country")).to eq("string")
       expect(context.custom_field_type("exp_test_ab", "overrides")).to eq("json")
+    end
+
+    it "reads a custom field with a missing or null type as text instead of failing the context" do
+      raw = { experiments: [{ id: 1, name: "exp_types", unitType: "session_id", iteration: 1, seedHi: 1, seedLo: 2,
+                              split: [0.5, 0.5], trafficSeedHi: 3, trafficSeedLo: 4, trafficSplit: [0, 1],
+                              fullOnVariant: 0, variants: [{ name: "A", config: nil }, { name: "B", config: nil }],
+                              customFieldValues: [{ name: "missing", value: "x" }, { name: "null", value: "1", type: nil },
+                                                  { name: "number", value: "7", type: "number" }] }] }.to_json
+      parsed = DefaultContextDataDeserializer.new.deserialize(raw, 0, raw.size)
+      context = create_context(OpenStruct.new(data_future: parsed, success?: true))
+
+      expect(context.ready?).to be true
+      expect(context.custom_field_value("exp_types", "missing")).to eq("x")
+      expect(context.custom_field_type("exp_types", "missing")).to be_nil
+      expect(context.custom_field_value("exp_types", "null")).to eq("1")
+      expect(context.custom_field_value("exp_types", "number")).to eq(7)
     end
   end
 

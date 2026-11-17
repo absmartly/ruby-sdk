@@ -1,8 +1,6 @@
 # frozen_string_literal: true
 
-class ContextPublisher
-  # @interface method
-  def publish(context, event)
-    raise NotImplementedError.new("You must implement publish method.")
-  end
-end
+require_relative "context_event_handler"
+
+# The name the other ABsmartly SDKs use for ContextEventHandler.
+ContextPublisher = ContextEventHandler

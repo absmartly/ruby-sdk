@@ -353,17 +353,17 @@ RSpec.describe "Fix Plan Validations" do
     end
   end
 
-  describe "Fix 4.1: set_override works after context is closed" do
-    it "allows set_override after close without raising" do
+  describe "Fix 4.1: set_override works after context is finalized" do
+    it "allows set_override after finalize without raising" do
       context = create_ready_context
-      context.close
+      context.finalize
 
       expect { context.set_override("exp_test_ab", 2) }.not_to raise_error
     end
 
-    it "allows set_overrides after close without raising" do
+    it "allows set_overrides after finalize without raising" do
       context = create_ready_context
-      context.close
+      context.finalize
 
       expect { context.set_overrides("exp_test_ab": 2) }.not_to raise_error
     end

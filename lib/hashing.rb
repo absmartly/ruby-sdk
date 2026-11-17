@@ -9,17 +9,15 @@ class Hashing
   # A lone surrogate written as a 3-byte sequence.
   ENCODED_SURROGATE = /\xED[\xA0-\xBF][\x80-\xBF]/n.freeze
 
-  # Integers hash as their exact decimal text (as in v1.3.0), so 64-bit IDs
-  # beyond 2**53 keep distinct buckets; for |n| <= 2**53 this is the same text
-  # as JavaScript's toFixed(0). Floats are formatted like toFixed(0); other
-  # numbers (BigDecimal, Rational) hash from to_s, as in v1.3.0.
+  # Hashes the unit's to_s bytes as v1.3.0 does, so every unit keeps its
+  # bucket: integers from their exact decimal text, floats from Float#to_s and
+  # strings from their own bytes, whatever their encoding.
   def self.hash_unit(value)
-    unit = value.is_a?(Float) ? number_to_fixed0(value) : value
-    base64_url_no_padding(Digest::MD5.digest(to_utf8(unit).b))
+    base64_url_no_padding(Digest::MD5.digest(value.to_s.b))
   end
 
   # The text JavaScript's Number#toFixed(0) produces, which the JS SDK hashes
-  # for numeric units: rounded half away from zero, "-0" for small negative
+  # for numeric units (hash_unit keeps v1.3.0's Float#to_s text): rounded half away from zero, "-0" for small negative
   # fractions, and exponent notation from 1e21 on.
   def self.number_to_fixed0(value)
     x = value.to_f
@@ -40,7 +38,8 @@ class Hashing
     [bytes.to_s.b].pack("m0").delete("=").tr("+/", "-_")
   end
 
-  # Returns the UTF-8 form of the unit's Unicode text. Characters outside the
+  # Returns the UTF-8 form of the unit's Unicode text (hash_unit keeps v1.3.0's
+  # raw bytes). Characters outside the
   # BMP become the standard 4-byte sequence and each lone surrogate becomes
   # U+FFFD, matching the JavaScript SDK's TextEncoder-based encoding. Strings in
   # another encoding (e.g. UTF-16) are transcoded; binary strings are read as

@@ -142,15 +142,20 @@ class Context
 
   def experiments
     check_ready?(false)
+    check_not_closed_by_close?
 
     @state.data.experiments.map(&:name)
   end
 
   def set_override(experiment_name, variant)
+    check_not_closed_by_close?
+
     @overrides[experiment_name.to_s.to_sym] = variant
   end
 
   def set_overrides(overrides)
+    check_not_closed_by_close?
+
     @overrides.merge!(overrides.transform_keys(&:to_sym))
   end
 
@@ -181,23 +186,22 @@ class Context
   def set_unit(unit_type, uid)
     check_not_closed?
 
-    if uid.nil?
-      raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
-    elsif Absmartly::TypeUtils.numeric?(uid)
+    if Absmartly::TypeUtils.numeric?(uid)
       trimmed = uid
     else
       # Like v1.3.0, any other value (Symbol, session id, UUID object) is
       # stored as its to_s text.
       uid = uid.respond_to?(:to_str) ? uid.to_str : uid.to_s
-      trimmed = Hashing.to_utf8(uid).strip
-      if trimmed.empty?
-        raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
-      end
+      trimmed = uid.strip
     end
 
     previous = @units[unit_type.to_sym]
     if !previous.nil? && previous != trimmed
       raise IllegalStateException.new("Unit '#{unit_type}' already set.")
+    end
+
+    if trimmed.is_a?(String) && trimmed.empty?
+      raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
     end
 
     @units[unit_type.to_sym] = trimmed
@@ -364,34 +368,39 @@ class Context
   end
 
   def publish
-    check_ready?(true)
+    check_not_closed?
 
     flush
   end
 
   def refresh
-    check_ready?(true)
+    check_not_closed?
     return nil if @failed
 
     data_future = @data_provider.context_data
     if data_future.success?
       assign_data(data_future.data_future)
+      # Like v1.3.0, a successful refresh returns what the event logger returned.
       log_event(ContextEventLogger::EVENT_TYPE::REFRESH, data_future.data_future)
-      nil
     else
+      # A failed refresh keeps the current data; like v1.3.0 it returns what
+      # the event logger returned for the error.
       log_error(data_future.exception)
-      data_future.exception
     end
   end
 
-  # Publishes pending events, then seals the context. If the final publish
-  # fails the context stays open with the events queued and the failure is
-  # raised, so close can be retried. Logs the "close" event only once the
-  # context is sealed; finalize does the same but logs "finalize".
+  # Publishes pending events, then seals the context and logs "close", as in
+  # v1.3.0: a publish the collector rejects is logged as an error and the
+  # context is still sealed. A publisher that raises propagates the error and
+  # leaves the context open with the events queued.
   def close
     seal(ContextEventLogger::EVENT_TYPE::CLOSE)
   end
 
+  # Like close, but as the JavaScript SDK does: if the final publish fails, the
+  # failure is raised and the context stays open with the events queued, so
+  # finalize can be retried. Logs "finalize" once sealed, and set_override,
+  # set_overrides and experiments keep working afterwards.
   def finalize
     seal(ContextEventLogger::EVENT_TYPE::FINALIZE)
   end
@@ -421,20 +430,33 @@ class Context
       begin
         loop do
           result = flush
-          raise_publish_failure(result) if !@failed && publish_failed?(result)
+          drop_queued = false
+          if !@failed && publish_failed?(result)
+            raise_publish_failure(result) unless event_type == ContextEventLogger::EVENT_TYPE::CLOSE
+
+            drop_queued = true
+          end
 
           sealed = @queue_mutex.synchronize do
             next :done if @closed
+
+            if drop_queued
+              @exposures = []
+              @achievements = []
+              @pending_count = 0
+            end
             next :retry unless @exposures.empty? && @achievements.empty?
 
             @closed = true
+            @sealed_by = event_type
             :sealed
           end
           return nil if sealed == :done
           next if sealed == :retry
 
-          log_event(event_type, nil)
-          return nil
+          logged = log_event(event_type, nil)
+          # Like v1.3.0, close returns what the event logger returned.
+          return event_type == ContextEventLogger::EVENT_TYPE::CLOSE ? logged : nil
         end
       ensure
         @closing = false
@@ -537,6 +559,11 @@ class Context
       if @closed
         raise IllegalStateException.new("ABSmartly Context is closed")
       end
+    end
+
+    # v1.3.0's close made these raise; finalize, like the JavaScript SDK, does not.
+    def check_not_closed_by_close?
+      check_not_closed? if @sealed_by == ContextEventLogger::EVENT_TYPE::CLOSE
     end
 
     def check_ready?(expect_not_closed)
@@ -829,14 +856,16 @@ class Context
 
               if !custom_field_value.value.nil?
                 custom_value = custom_field_value.value
+                # A missing or non-string type reads the value as plain text.
+                type = custom_field_value.type.is_a?(String) ? custom_field_value.type : ""
 
-                if custom_field_value.type.start_with?("json")
+                if type.start_with?("json")
                   value.value = @variable_parser.parse(self, experiment.name, custom_field_value.name, custom_value)
 
-                elsif custom_field_value.type.start_with?("boolean")
+                elsif type.start_with?("boolean")
                   value.value = custom_value == "true"
 
-                elsif custom_field_value.type.start_with?("number")
+                elsif type.start_with?("number")
                   value.value = custom_value.to_i
 
                 else
