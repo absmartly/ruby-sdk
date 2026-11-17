@@ -623,17 +623,19 @@ class Context
       return false unless fresh.length == pinned.length
 
       fresh.each_with_index.all? do |holdout, i|
-        holdout.id == pinned[i].id && holdout.iteration == pinned[i].iteration
+        holdout_id(holdout.id) == holdout_id(pinned[i].id) && holdout.iteration == pinned[i].iteration
       end
     end
 
     # The arm is computed with the covered experiment's unit type, cached per
     # (holdout id, unit type) and kept while the holdout's iteration is
     # unchanged, together with the arm count it was computed against. nil
-    # means the unit is not set yet; it is never cached.
-    def holdout_assignment(holdout, unit_type, state)
+    # means the unit is not set yet; it is never cached. The definition comes
+    # from the current data, as in JS, so a read still holding the snapshot
+    # from before a refresh can't replace a newer arm and expose it again.
+    def holdout_assignment(holdout, unit_type)
       id = holdout_id(holdout.id)
-      live = state.holdouts_by_id[id] || holdout
+      live = @state.holdouts_by_id[id] || holdout
       key = [id, unit_type]
       cached = @holdout_assignments&.[](key)
       return cached if cached && cached.iteration == live.iteration
@@ -642,7 +644,7 @@ class Context
       return nil if uid.nil?
 
       assignment = Assignment.new
-      assignment.id = live.id
+      assignment.id = id
       assignment.iteration = live.iteration
       assignment.unit_type = unit_type
       assignment.variant = variant_assigner(unit_type, uid).assign(live.split, live.seed_hi || 0, live.seed_lo || 0)
@@ -763,13 +765,12 @@ class Context
       assignment.name = experiment_name
       assignment.eligible = true
 
-      # Resolved for overrides too: their holdouts still expose.
       if !experiment.nil? && !experiment.holdouts.nil?
         data = experiment.data
         unit_type = data.unit_type
         assignment.holdouts = experiment.holdouts
         assignment.holdout_assignments = experiment.holdouts.map do |holdout|
-          unit_type.nil? ? nil : holdout_assignment(holdout, unit_type, state)
+          unit_type.nil? ? nil : holdout_assignment(holdout, unit_type)
         end
         assignment.suppressed = assignment.holdout_assignments.any? do |holdout_assignment|
           !holdout_assignment.nil? &&

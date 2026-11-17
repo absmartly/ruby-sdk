@@ -438,7 +438,6 @@ module ContextHoldoutsSpec
         expect(context.treatment("exp_holdout_custom")).to eq(0)
         expect(context.treatment("exp_holdout_custom")).to eq(0)
         expect(context.pending_count).to eq(1)
-        # The held-out assignment is reused, not rebuilt on every read.
         expect(context.instance_variable_get(:@assignment_cache)["exp_holdout_custom"]).to be(cached)
       end
 
@@ -726,7 +725,7 @@ module ContextHoldoutsSpec
         expect(context.pending_count).to eq(3)
 
         stale = Experiment.new(holdout(11, "holdout_h", HOLDOUT_A))
-        pinned = context.send(:holdout_assignment, stale, UNIT_TYPE, context.instance_variable_get(:@state))
+        pinned = context.send(:holdout_assignment, stale, UNIT_TYPE)
         expect(pinned.variant).to eq(1)
         expect(pinned.exposed).to eq(true)
         expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_h", 0), own_exposure(2, "exp_g", NORMAL_VARIANT),
@@ -767,6 +766,44 @@ module ContextHoldoutsSpec
                                  [holdout(11, "holdout_a", HOLDOUT_B).merge(id: "11")]))
 
         expect(context.treatment("exp_b")).to eq(0)
+        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0)])
+      end
+
+      it "does not let a reader holding the old snapshot replace the newer exposed arm" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
+                                         [holdout(11, "holdout_h", HOLDOUT_B)]))
+        stale = context.instance_variable_get(:@state)
+
+        refresh(context, data_of([experiment(1, "exp", holdout_ids: [11])],
+                                 [holdout(11, "holdout_h", HOLDOUT_A, iteration: 2)]))
+        expect(context.treatment("exp")).to eq(0)
+
+        # A variable read that captured the state before the refresh resumes.
+        context.send(:assignment, "exp", stale)
+        context.treatment("exp")
+        context.variable_value("missing", "default")
+
+        holdout_exposures = exposures_of(context).select { |e| e[0] == 11 }
+        expect(holdout_exposures).to eq([holdout_exposure(11, "holdout_h", 0)])
+      end
+
+      it "keeps an exposed assignment when a refresh spells the same holdout id differently" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
+                                         [holdout(11, "holdout_a", HOLDOUT_B)]))
+        expect(context.treatment("exp")).to eq(NORMAL_VARIANT)
+        expect(context.pending_count).to eq(2)
+
+        refresh(context, data_of([experiment(1, "exp", holdout_ids: ["11"])],
+                                 [holdout(11, "holdout_a", HOLDOUT_B).merge(id: "11")]))
+
+        expect(context.treatment("exp")).to eq(NORMAL_VARIANT)
+        expect(context.pending_count).to eq(2)
+      end
+
+      it "publishes an integer id for a holdout whose id arrives as text" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
+                                         [holdout(11, "holdout_a", HOLDOUT_A).merge(id: "11")]))
+        context.treatment("exp")
         expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0)])
       end
 
