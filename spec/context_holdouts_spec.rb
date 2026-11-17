@@ -725,7 +725,7 @@ module ContextHoldoutsSpec
         expect(context.pending_count).to eq(3)
 
         stale = Experiment.new(holdout(11, "holdout_h", HOLDOUT_A))
-        pinned = context.send(:holdout_assignment, stale, UNIT_TYPE)
+        pinned = context.send(:holdout_assignment, stale, UNIT_TYPE, context.instance_variable_get(:@state))
         expect(pinned.variant).to eq(1)
         expect(pinned.exposed).to eq(true)
         expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_h", 0), own_exposure(2, "exp_g", NORMAL_VARIANT),
@@ -769,22 +769,69 @@ module ContextHoldoutsSpec
         expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0)])
       end
 
-      it "does not let a reader holding the old snapshot replace the newer exposed arm" do
-        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
-                                         [holdout(11, "holdout_h", HOLDOUT_B)]))
-        stale = context.instance_variable_get(:@state)
+      # variable_value walks the key's candidates from the state it started
+      # with; a logger callback on the first candidate's exposure refreshes
+      # and exposes the second one under the new data before the walk reaches
+      # it, the interleaving of a read overlapping a refresh.
+      def overlapping_read(context, steps)
+        fired = false
+        allow(event_logger).to receive(:handle_event) do |_type, data|
+          next if fired || !(data.is_a?(Exposure) && data.id == 1)
 
-        refresh(context, data_of([experiment(1, "exp", holdout_ids: [11])],
-                                 [holdout(11, "holdout_h", HOLDOUT_A, iteration: 2)]))
-        expect(context.treatment("exp")).to eq(0)
+          fired = true
+          steps.call
+        end
+        context.variable_value("color", "default")
+      end
 
-        # A variable read that captured the state before the refresh resumes.
-        context.send(:assignment, "exp", stale)
-        context.treatment("exp")
-        context.variable_value("missing", "default")
+      def shared_key_experiments
+        first = experiment(1, "exp_a")
+        first[:variants] = [{ name: "A", config: '{"color":"a_control"}' }, { name: "B", config: '{"other":"x"}' }]
+        [first, with_variables(experiment(2, "exp_b", holdout_ids: [11]), "color")]
+      end
 
-        holdout_exposures = exposures_of(context).select { |e| e[0] == 11 }
-        expect(holdout_exposures).to eq([holdout_exposure(11, "holdout_h", 0)])
+      it "does not let a read that started before a refresh expose the new arm again" do
+        context = create_context(data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_B)]))
+        result = overlapping_read(context, lambda {
+          refresh(context, data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_A, iteration: 2)]))
+          expect(context.treatment("exp_b")).to eq(0)
+        })
+        context.treatment("exp_b")
+
+        expect(result).to eq("control")
+        expect(exposures_of(context)).to eq([own_exposure(1, "exp_a", NORMAL_VARIANT), holdout_exposure(11, "holdout_h", 0)])
+      end
+
+      it "does not expose an experiment again when a read meets a non-suppressing new arm" do
+        context = create_context(data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_A)]))
+        result = overlapping_read(context, lambda {
+          refresh(context, data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_B, iteration: 2)]))
+          expect(context.treatment("exp_b")).to eq(NORMAL_VARIANT)
+        })
+        context.treatment("exp_b")
+
+        expect(result).to eq("treatment")
+        expect(exposures_of(context)).to eq([own_exposure(1, "exp_a", NORMAL_VARIANT),
+                                             own_exposure(2, "exp_b", NORMAL_VARIANT), holdout_exposure(11, "holdout_h", 1)])
+      end
+
+      it "does not expose an old arm again when a read resumes after the holdout is removed" do
+        context = create_context(data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_A)]))
+        expect(context.treatment("exp_b")).to eq(0)
+        uncovered = shared_key_experiments.tap { |e| e[1].delete(:holdoutIds) }
+        result = overlapping_read(context, lambda {
+          refresh(context, data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_B, iteration: 2)]))
+          expect(context.treatment("exp_b")).to eq(NORMAL_VARIANT)
+          refresh(context, data_of(uncovered, []))
+        })
+        context.treatment("exp_b")
+
+        expect(result).to eq("treatment")
+        # Removing the coverage re-resolves exp_b once (scenario 225); the
+        # iteration 1 arm is never exposed again.
+        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_h", 0), own_exposure(1, "exp_a", NORMAL_VARIANT),
+                                             own_exposure(2, "exp_b", NORMAL_VARIANT), holdout_exposure(11, "holdout_h", 1),
+                                             own_exposure(2, "exp_b", NORMAL_VARIANT)])
       end
 
       it "keeps an exposed assignment when a refresh spells the same holdout id differently" do

@@ -630,12 +630,10 @@ class Context
     # The arm is computed with the covered experiment's unit type, cached per
     # (holdout id, unit type) and kept while the holdout's iteration is
     # unchanged, together with the arm count it was computed against. nil
-    # means the unit is not set yet; it is never cached. The definition comes
-    # from the current data, as in JS, so a read still holding the snapshot
-    # from before a refresh can't replace a newer arm and expose it again.
-    def holdout_assignment(holdout, unit_type)
+    # means the unit is not set yet; it is never cached.
+    def holdout_assignment(holdout, unit_type, state)
       id = holdout_id(holdout.id)
-      live = @state.holdouts_by_id[id] || holdout
+      live = state.holdouts_by_id[id] || holdout
       key = [id, unit_type]
       cached = @holdout_assignments&.[](key)
       return cached if cached && cached.iteration == live.iteration
@@ -727,8 +725,12 @@ class Context
       [assigner.assign(action.split, experiment.seed_hi, experiment.seed_lo), false]
     end
 
-    def assignment(experiment_name, state = @state)
-      @assignment_mutex.synchronize { cached_or_new_assignment(experiment_name, state) }
+    # The state is read under the lock, so each holder sees data at least as
+    # new as the previous one: a read that started before a refresh can't
+    # overwrite assignments (or holdout arms) already built from newer data,
+    # which would reset their exposed flag and expose them again.
+    def assignment(experiment_name)
+      @assignment_mutex.synchronize { cached_or_new_assignment(experiment_name, @state) }
     end
 
     def cached_or_new_assignment(experiment_name, state)
@@ -770,7 +772,7 @@ class Context
         unit_type = data.unit_type
         assignment.holdouts = experiment.holdouts
         assignment.holdout_assignments = experiment.holdouts.map do |holdout|
-          unit_type.nil? ? nil : holdout_assignment(holdout, unit_type)
+          unit_type.nil? ? nil : holdout_assignment(holdout, unit_type, state)
         end
         assignment.suppressed = assignment.holdout_assignments.any? do |holdout_assignment|
           !holdout_assignment.nil? &&
@@ -857,7 +859,7 @@ class Context
       key = key.to_s.to_sym
       suppressed_fallback = nil
       (state.index_variables[key] || []).each do |experiment|
-        assignment = assignment(experiment.data.name, state)
+        assignment = assignment(experiment.data.name)
         next if assignment.variables.nil?
 
         queue_exposure(assignment) if expose
