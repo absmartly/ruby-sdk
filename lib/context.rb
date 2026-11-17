@@ -17,6 +17,8 @@ class Context
   # readers see either the complete old or the complete new state.
   State = Struct.new(:data, :index, :index_variables, :custom_fields, :holdouts_by_id)
   NO_RULES = ""
+  NO_HOLDOUTS = {}.freeze
+  private_constant :NO_HOLDOUTS
 
   attr_reader :pending_count
 
@@ -630,9 +632,10 @@ class Context
     # unchanged, together with the arm count it was computed against. nil
     # means the unit is not set yet; it is never cached.
     def holdout_assignment(holdout, unit_type, state)
-      live = state.holdouts_by_id[holdout.id] || holdout
-      key = [live.id, unit_type]
-      cached = @holdout_assignments[key]
+      id = holdout_id(holdout.id)
+      live = state.holdouts_by_id[id] || holdout
+      key = [id, unit_type]
+      cached = @holdout_assignments&.[](key)
       return cached if cached && cached.iteration == live.iteration
 
       uid = @units[unit_type.to_sym]
@@ -645,7 +648,7 @@ class Context
       assignment.variant = variant_assigner(unit_type, uid).assign(live.split, live.seed_hi || 0, live.seed_lo || 0)
       assignment.assigned = true
       assignment.holdout_arm_count = live.split.length
-      @holdout_assignments[key] = assignment
+      (@holdout_assignments ||= {})[key] = assignment
     end
 
     def audience_matches(entry, assignment)
@@ -887,17 +890,22 @@ class Context
       index = {}
       index_variables = {}
       custom_fields = {}
-      holdouts_by_id = {}
+      holdouts_by_id = NO_HOLDOUTS
 
-      # Only holdouts with a split can assign a unit; the others are ignored,
-      # and so are holdoutIds that name none of them.
+      # Only holdouts with a numeric split and seeds can assign a unit; the
+      # others are ignored, and so are holdoutIds that name none of them.
       # A custom deserializer's data may predate holdouts, so they are optional.
       holdouts = data.holdouts if data.respond_to?(:holdouts)
       holdouts.each do |holdout|
-        next unless holdout.is_a?(Experiment) && holdout.id.is_a?(Integer)
-        next unless holdout.split.is_a?(Array) && !holdout.split.empty?
+        next unless holdout.is_a?(Experiment)
 
-        holdouts_by_id[holdout.id] = holdout
+        id = holdout_id(holdout.id)
+        split = holdout.split
+        next if id.nil? || !split.is_a?(Array) || split.empty? || !split.all?(Numeric)
+        next unless [holdout.seed_hi, holdout.seed_lo].all? { |seed| seed.nil? || seed.is_a?(Integer) }
+
+        holdouts_by_id = {} if holdouts_by_id.frozen?
+        holdouts_by_id[id] = holdout
       end if holdouts.is_a?(Array)
 
       if data && !data.experiments.nil? && !data.experiments.empty?
@@ -917,7 +925,7 @@ class Context
                                                (experiment.audience.nil? || experiment.audience.empty?)
           holdout_ids = experiment.holdout_ids unless holdouts_by_id.empty? || !experiment.respond_to?(:holdout_ids)
           if holdout_ids.is_a?(Array) && !holdout_ids.empty?
-            holdouts = holdout_ids.filter_map { |id| holdouts_by_id[id] }.uniq.sort_by(&:id)
+            holdouts = holdout_ids.filter_map { |id| holdouts_by_id[holdout_id(id)] }.uniq.sort_by { |h| holdout_id(h.id) }
             experiment_variables.holdouts = holdouts unless holdouts.empty?
           end
           experiment_variables.variables ||= []
@@ -973,10 +981,20 @@ class Context
       @state = State.new(data, index, index_variables, custom_fields, holdouts_by_id)
     end
 
+    # Like a JavaScript object key, an id matches as an integer, an integral
+    # float or its decimal text.
+    def holdout_id(id)
+      case id
+      when Integer then id
+      when Float then id.to_i if id.finite? && id == id.floor
+      when String then Integer(id, 10) if id.match?(/\A-?\d+\z/)
+      end
+    end
+
     def set_data_failed(exception)
       @data_failed = exception
       @ready_error = exception
-      @state = State.new(ContextData.new, {}, {}, {}, {})
+      @state = State.new(ContextData.new, {}, {}, {}, NO_HOLDOUTS)
       @failed = true
     end
 
@@ -998,10 +1016,10 @@ class Context
 
     def init_common(clock, config, data_provider, event_handler, event_logger,
                     variable_parser, audience_matcher, application = nil, environment = nil)
-      @state = State.new(nil, {}, {}, {}, {})
+      @state = State.new(nil, {}, {}, {}, NO_HOLDOUTS)
       @achievements = []
       @assignment_cache = {}
-      @holdout_assignments = {}
+      @holdout_assignments = nil
       @assignment_mutex = Mutex.new
       @assignments = {}
       @clock = clock.is_a?(String) ? Time.iso8601(clock) : clock

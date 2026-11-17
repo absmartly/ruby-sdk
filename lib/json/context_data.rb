@@ -34,11 +34,21 @@ class ContextData
   end
 
   private
+    # A holdout only needs its id, iteration, seeds and split, so nested fields
+    # that can't be decoded are dropped rather than the whole holdout.
     def decode_holdout(holdout)
       return holdout if holdout.is_a?(Experiment)
+      return nil unless holdout.is_a?(Hash)
 
-      Experiment.new(holdout) if holdout.is_a?(Hash)
+      begin
+        Experiment.new(holdout)
+      rescue StandardError
+        Experiment.new(holdout.reject { |key, _| NESTED_HOLDOUT_KEYS.include?(key.to_s) })
+      end
     rescue StandardError
       nil
     end
+
+    NESTED_HOLDOUT_KEYS = %w[applications variants customFieldValues custom_field_values].freeze
+    private_constant :NESTED_HOLDOUT_KEYS
 end

@@ -352,7 +352,9 @@ module ContextHoldoutsSpec
       end
 
       [["a null entry", nil], ["a non-object entry", 7], ["a null split", { split: nil }],
-       ["an empty split", { split: [] }], ["no split", :drop_split], ["a non-integer id", { id: "11" }]].each do |label, change|
+       ["an empty split", { split: [] }], ["no split", :drop_split], ["a non-numeric split", { split: ["a", "b"] }],
+       ["a split with a null", { split: [nil, 1] }], ["a text seed", { seedLo: "111" }],
+       ["a fractional id", { id: 11.5 }], ["a non-numeric id", { id: "eleven" }]].each do |label, change|
         it "ignores #{label}" do
           entry = case change
                   when Hash then holdout(11, "holdout_bad", HOLDOUT_A).merge(change)
@@ -366,14 +368,39 @@ module ContextHoldoutsSpec
         end
       end
 
-      it "drops only a holdout whose fields can't be decoded" do
+      it "keeps a holdout whose nested fields can't be decoded, as JS does" do
         broken = holdout(12, "holdout_broken", HOLDOUT_A, variants: "not a list", applications: 3)
-        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11, 12])],
-                                         [broken, holdout(11, "holdout_a", HOLDOUT_A)]))
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [12])], [broken]))
+
+        expect(context.data.holdouts.map(&:id)).to eq([12])
+        expect(context.treatment("exp")).to eq(0)
+        expect(exposures_of(context)).to eq([holdout_exposure(12, "holdout_broken", 0)])
+      end
+
+      it "keeps a holdout with null variants" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
+                                         [holdout(11, "holdout_a", HOLDOUT_A, variants: nil)]))
+
+        expect(context.treatment("exp")).to eq(0)
+      end
+
+      it "drops only an entry that can't be decoded at all" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
+                                         [[1, 2], holdout(11, "holdout_a", HOLDOUT_A)]))
 
         expect(context.data.holdouts.map(&:id)).to eq([11])
         expect(context.treatment("exp")).to eq(0)
-        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0)])
+      end
+
+      # A JavaScript object key matches 11, 11.0 and "11" alike.
+      [[11.0, [11]], ["11", [11]], [11, [11.0]], [11, ["11"]]].each do |id, ids|
+        it "matches holdout id #{id.inspect} with holdoutIds #{ids.inspect}" do
+          context = create_context(data_of([experiment(1, "exp", holdout_ids: ids)],
+                                           [holdout(11, "holdout_a", HOLDOUT_A).merge(id: id)]))
+
+          expect(context.treatment("exp")).to eq(0)
+          expect(context.pending_count).to eq(1)
+        end
       end
 
       it "treats a non-array holdouts value or holdoutIds as no coverage" do
@@ -714,6 +741,18 @@ module ContextHoldoutsSpec
         expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0), own_exposure(1, "exp", NORMAL_VARIANT)])
       end
 
+      it "keeps the pinned arm when a refresh spells the holdout id differently" do
+        context = create_context(data_of([experiment(1, "exp_a", holdout_ids: [11])],
+                                         [holdout(11, "holdout_a", HOLDOUT_A)]))
+        expect(context.treatment("exp_a")).to eq(0)
+
+        refresh(context, data_of([experiment(1, "exp_a", holdout_ids: [11]), experiment(2, "exp_b", holdout_ids: ["11"])],
+                                 [holdout(11, "holdout_a", HOLDOUT_B).merge(id: "11")]))
+
+        expect(context.treatment("exp_b")).to eq(0)
+        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0)])
+      end
+
       it "keeps the exposed state across a publish" do
         context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
                                          [holdout(11, "holdout_a", HOLDOUT_B)]))
@@ -988,6 +1027,26 @@ module ContextHoldoutsSpec
         expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0)])
       end
 
+      it "skips an overridden held-out experiment when picking the control fallback" do
+        first = experiment(1, "exp_ov", holdout_ids: [11])
+        first[:variants] = [{ name: "A", config: '{"color":"ov_control"}' }, { name: "B", config: '{"other":"x"}' }]
+        second = with_variables(experiment(2, "exp_second", holdout_ids: [11]), "color")
+        context = create_context(data_of([first, second], [holdout(11, "holdout_a", HOLDOUT_A)]),
+                                 overrides: { "exp_ov" => 1 })
+
+        expect(context.peek_variable_value("color", "default")).to eq("control")
+      end
+
+      it "skips a rule-won held-out experiment when picking the control fallback" do
+        first = experiment(1, "exp_rule", holdout_ids: [11], assignmentRules: US_RULE)
+        first[:variants] = [{ name: "A", config: '{"color":"rule_control"}' }, { name: "B", config: '{"other":"x"}' }]
+        second = with_variables(experiment(2, "exp_second", holdout_ids: [11]), "color")
+        context = create_context(data_of([first, second], [holdout(11, "holdout_a", HOLDOUT_A)]))
+        context.set_attribute("country", "US")
+
+        expect(context.peek_variable_value("color", "default")).to eq("control")
+      end
+
       it "keeps the first suppressed experiment's control even when it lacks the key" do
         first = experiment(1, "exp_first", holdout_ids: [11])
         first[:variants] = [{ name: "A", config: '{"other":"x"}' }, { name: "B", config: '{"color":"first"}' }]
@@ -1060,6 +1119,23 @@ module ContextHoldoutsSpec
 
         expect(context.treatment("exp")).to eq(0)
         expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0)])
+      end
+
+      it "compares holdout fields in model equality" do
+        base = experiment(1, "exp", holdout_ids: [11])
+        expect(Experiment.new(base)).to eq(Experiment.new(base))
+        expect(Experiment.new(base)).not_to eq(Experiment.new(base.merge(holdoutIds: [12])))
+        expect(Experiment.new(base)).not_to eq(Experiment.new(base.merge(holdoutType: "full")))
+        expect(ContextData.new([base], [holdout(11, "h", HOLDOUT_A)])).to eq(ContextData.new([base], [holdout(11, "h", HOLDOUT_A)]))
+        expect(ContextData.new([base], [holdout(11, "h", HOLDOUT_A)])).not_to eq(ContextData.new([base], [holdout(11, "h", HOLDOUT_B)]))
+        expect(ContextData.new([base], [])).not_to eq(ContextData.new([base]))
+      end
+
+      it "allocates no holdout state for a context without holdouts" do
+        context = create_context(data_of([experiment(1, "exp")]))
+        context.treatment("exp")
+        expect(context.instance_variable_get(:@holdout_assignments)).to be_nil
+        expect(context.instance_variable_get(:@state).holdouts_by_id).to be_frozen
       end
 
       it "builds the same data as before without holdouts" do
