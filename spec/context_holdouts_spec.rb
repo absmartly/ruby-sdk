@@ -800,6 +800,17 @@ module ContextHoldoutsSpec
         expect(context.pending_count).to eq(2)
       end
 
+      it "names the holdout exposure after the definition the decision was made with" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
+                                         [holdout(11, "holdout_a", HOLDOUT_A)]))
+        expect(context.peek_treatment("exp")).to eq(0)
+
+        refresh(context, data_of([experiment(1, "exp", holdout_ids: [11])], [holdout(11, "holdout_renamed", HOLDOUT_A)]))
+
+        expect(context.treatment("exp")).to eq(0)
+        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0)])
+      end
+
       it "publishes an integer id for a holdout whose id arrives as text" do
         context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
                                          [holdout(11, "holdout_a", HOLDOUT_A).merge(id: "11")]))
