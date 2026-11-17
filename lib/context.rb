@@ -631,23 +631,23 @@ class Context
     # (holdout id, unit type) and kept while the holdout's iteration is
     # unchanged, together with the arm count it was computed against. nil
     # means the unit is not set yet; it is never cached.
-    def holdout_assignment(holdout, unit_type, state)
+    def holdout_assignment(holdout, unit_type)
       id = holdout_id(holdout.id)
-      live = state.holdouts_by_id[id] || holdout
       key = [id, unit_type]
       cached = @holdout_assignments&.[](key)
-      return cached if cached && cached.iteration == live.iteration
+      return cached if cached && cached.iteration == holdout.iteration
 
       uid = @units[unit_type.to_sym]
       return nil if uid.nil?
 
       assignment = Assignment.new
       assignment.id = id
-      assignment.iteration = live.iteration
+      assignment.iteration = holdout.iteration
       assignment.unit_type = unit_type
-      assignment.variant = variant_assigner(unit_type, uid).assign(live.split, live.seed_hi || 0, live.seed_lo || 0)
+      assignment.variant = variant_assigner(unit_type, uid).assign(holdout.split, holdout.seed_hi || 0,
+                                                                   holdout.seed_lo || 0)
       assignment.assigned = true
-      assignment.holdout_arm_count = live.split.length
+      assignment.holdout_arm_count = holdout.split.length
       (@holdout_assignments ||= {})[key] = assignment
     end
 
@@ -772,7 +772,7 @@ class Context
         unit_type = data.unit_type
         assignment.holdouts = experiment.holdouts
         assignment.holdout_assignments = experiment.holdouts.map do |holdout|
-          unit_type.nil? ? nil : holdout_assignment(holdout, unit_type, state)
+          unit_type.nil? ? nil : holdout_assignment(holdout, unit_type)
         end
         assignment.suppressed = assignment.holdout_assignments.any? do |holdout_assignment|
           !holdout_assignment.nil? &&

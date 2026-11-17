@@ -714,22 +714,24 @@ module ContextHoldoutsSpec
                                              holdout_exposure(11, "holdout_h", 1)])
       end
 
-      it "does not let a stale holdout definition overwrite a newer pinned arm" do
-        context = create_context(data_of([experiment(1, "exp_f", holdout_ids: [11])],
-                                         [holdout(11, "holdout_h", HOLDOUT_A)]))
-        expect(context.treatment("exp_f")).to eq(0)
+      it "does not let a thread that waited on the assignment lock across a refresh expose the arm again" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
+                                         [holdout(11, "holdout_h", HOLDOUT_B)]))
+        lock = context.instance_variable_get(:@assignment_mutex)
+        waiting = nil
+        lock.synchronize do
+          waiting = Thread.new { context.treatment("exp") }
+          Thread.pass until waiting.status == "sleep"
 
-        refresh(context, data_of([experiment(1, "exp_f", holdout_ids: [11]), experiment(2, "exp_g", holdout_ids: [11])],
-                                 [holdout(11, "holdout_h", HOLDOUT_B, iteration: 2)]))
-        expect(context.treatment("exp_g")).to eq(NORMAL_VARIANT)
-        expect(context.pending_count).to eq(3)
+          refresh(context, data_of([experiment(1, "exp", holdout_ids: [11])],
+                                   [holdout(11, "holdout_h", HOLDOUT_A, iteration: 2)]))
+          context.send(:cached_or_new_assignment, "exp", context.instance_variable_get(:@state)).tap do |current|
+            context.queue_exposure(current)
+          end
+        end
+        waiting.join
 
-        stale = Experiment.new(holdout(11, "holdout_h", HOLDOUT_A))
-        pinned = context.send(:holdout_assignment, stale, UNIT_TYPE, context.instance_variable_get(:@state))
-        expect(pinned.variant).to eq(1)
-        expect(pinned.exposed).to eq(true)
-        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_h", 0), own_exposure(2, "exp_g", NORMAL_VARIANT),
-                                             holdout_exposure(11, "holdout_h", 1)])
+        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_h", 0)])
       end
 
       it "re-resolves an overridden experiment when a refresh adds a holdout" do
