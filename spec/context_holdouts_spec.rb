@@ -423,6 +423,17 @@ module ContextHoldoutsSpec
         expect(context.peek_treatment("exp_holdout_audience")).to eq(0)
       end
 
+      it "still exposes the holdout of a not-held-out unit that fails a strict audience" do
+        context = create_context(data_of([experiment(1, "exp_strict", holdout_ids: [11], audienceStrict: true,
+                                                                       audience: '{"filter":[{"gte":[{"var":"age"},{"value":20}]}]}')],
+                                         [holdout(11, "holdout_a", HOLDOUT_A)]), units: { UNIT_TYPE => UID_NOT_HELD_OUT })
+        context.set_attribute("age", 5)
+
+        expect(context.treatment("exp_strict")).to eq(0)
+        expect(exposures_of(context)).to eq([own_exposure(1, "exp_strict", 0, assigned: false, audience_mismatch: true),
+                                             holdout_exposure(11, "holdout_a", 1)])
+      end
+
       it "lets a matching assign rule win over suppression and still exposes the holdout" do
         context = create_context(data_of([experiment(1, "exp_holdout_rules", holdout_ids: [11],
                                                                                assignmentRules: US_RULE)],
