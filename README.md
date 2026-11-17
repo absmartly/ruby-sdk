@@ -174,7 +174,7 @@ if context.ready?
 end
 ```
 
-Read methods (`treatment`, `peek_treatment`, `variable_value`, `peek_variable_value`, `variable_keys`, `experiments`, `custom_field_keys`, `custom_field_value`) raise `IllegalStateException` ("ABSmartly Context is not yet ready") until the context is ready, and ("ABSmartly Context is closed") after `close` or `finalize`. Check `ready?` first. A context whose data fetch failed is ready and failed: reads return control (0) and the caller's defaults.
+Read methods (`treatment`, `peek_treatment`, `variable_value`, `peek_variable_value`, `variable_keys`, `experiments`, `custom_field_keys`, `custom_field_value`) raise `IllegalStateException` ("ABSmartly Context is not yet ready") until the context is ready, and ("ABSmartly Context is closed") after `close` or `finalize` (except `experiments`, which still works after `finalize`). Check `ready?` first. A context whose data fetch failed is ready and failed: reads return control (0) and the caller's defaults.
 
 Or using the global configuration approach:
 

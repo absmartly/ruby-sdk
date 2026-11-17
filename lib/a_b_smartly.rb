@@ -64,7 +64,7 @@ class ABSmartly
         end
 
         if @context_event_handler.nil?
-          @context_event_handler = DefaultContextPublisher.new(@client)
+          @context_event_handler = DefaultContextEventHandler.new(@client)
         end
       end
 
@@ -103,7 +103,7 @@ class ABSmartly
 
       @client = Client.create(client_config)
       @context_data_provider = DefaultContextDataProvider.new(@client)
-      @context_event_handler = DefaultContextPublisher.new(@client)
+      @context_event_handler = DefaultContextEventHandler.new(@client)
       @context_event_logger = event_logger
       @variable_parser = DefaultVariableParser.new
       @audience_deserializer = DefaultAudienceDeserializer.new
@@ -131,7 +131,7 @@ class ABSmartly
       data_future = data_provider.context_data
       context.set_data(data_future)
     rescue => e
-      context.set_data(ContextDataResult.failure(e))
+      context.set_data(Absmartly::ContextDataResult.failure(e))
     end
     context
   end

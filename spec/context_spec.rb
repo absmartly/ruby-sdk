@@ -17,6 +17,7 @@ require "scheduled_executor_service"
 require "audience_matcher"
 require "json/unit"
 require "logger"
+require "timeout"
 
 RSpec.describe Context do
   let(:units) {
@@ -327,6 +328,44 @@ RSpec.describe Context do
     expect(context.close).to be_nil
   end
 
+  it "returns the event logger's result from a failed refresh and keeps the data, as in v1.3.0" do
+    logger = Class.new(ContextEventLogger) do
+      def handle_event(event, data)
+        "logged #{event} #{data}"
+      end
+    end.new
+    config = ContextConfig.create
+    config.set_units(units)
+    context = Context.create(clock, config, data_future_ready, data_provider, event_handler, logger,
+                             variable_parser, audience_matcher)
+    allow(data_provider).to receive(:context_data).and_return(failure_future)
+
+    expect(context.refresh).to eq("logged error FAILED")
+    expect(context.failed?).to be_falsey
+  end
+
+  it "close stops after one extra publish when a logger keeps queueing events" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = {}
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        holder[:context]&.track("again", nil) if event == ContextEventLogger::EVENT_TYPE::PUBLISH
+      end
+    end.new
+    publishes = 0
+    handler = instance_double(ContextPublisher)
+    allow(handler).to receive(:publish) { publishes += 1; nil }
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+
+    Timeout.timeout(5) { holder[:context].close }
+    expect(holder[:context].closed?).to be true
+    expect(holder[:context].pending_count).to eq(0)
+    expect(publishes).to eq(2)
+  end
+
   it "publishes and refreshes before the context is ready, as in v1.3.0" do
     context = create_context(data_future)
     expect(context.ready?).to be_falsey
@@ -418,6 +457,15 @@ RSpec.describe Context do
     expect {
       context.set_unit("db_user_id", blank.new)
     }.to raise_error(IllegalStateException, "Unit 'db_user_id' UID must not be blank.")
+  end
+
+  it "accepts the same unit again as a String or a number, as in v1.3.0" do
+    context = create_ready_context
+    context.set_unit("db_id", 123456)
+    expect { context.set_unit("db_id", "123456") }.not_to raise_error
+    expect { context.set_unit(:db_id, " 123456 ") }.not_to raise_error
+    expect(context.get_unit(:db_id)).to eq(123456)
+    expect { context.set_unit("db_id", "654321") }.to raise_error(IllegalStateException, "Unit 'db_id' already set.")
   end
 
   it "set unit throws on already set" do

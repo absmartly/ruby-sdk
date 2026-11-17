@@ -7,8 +7,9 @@ class AudienceMatcher
   attr_accessor :deserializer, :json_expr
 
   SPLIT_PERCENTAGES_SUM_TOLERANCE = 0.01
-  # The longest decimal prefix JavaScript's parseFloat accepts.
-  FLOAT_PREFIX = /\A\s*([+-]?(?:Infinity|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?))/.freeze
+  # The longest decimal prefix JavaScript's parseFloat accepts, after the
+  # ECMAScript white space and line terminators (U+FEFF included, U+0085 not).
+  FLOAT_PREFIX = /\A[\t\n\v\f\r\u2028\u2029\uFEFF\p{Zs}]*([+-]?(?:Infinity|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?))/.freeze
 
   RuleAction = Struct.new(:variant, :split) do
     def split?

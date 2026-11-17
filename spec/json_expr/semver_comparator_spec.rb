@@ -3,7 +3,7 @@
 require "json_expr/json_expr"
 require "json_expr/semver_comparator"
 
-RSpec.describe SemverComparator do
+RSpec.describe Absmartly::SemverComparator do
   let(:json_expr) { JsonExpr.new }
   let(:evaluator) { ExprEvaluator.new(json_expr.operators, {}) }
 

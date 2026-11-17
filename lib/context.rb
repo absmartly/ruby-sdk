@@ -17,6 +17,8 @@ class Context
   # readers see either the complete old or the complete new state.
   State = Struct.new(:data, :index, :index_variables, :custom_fields)
   NO_RULES = ""
+  SEAL_FLUSH_PASSES = 2
+  private_constant :SEAL_FLUSH_PASSES
 
   attr_reader :pending_count
 
@@ -196,13 +198,16 @@ class Context
     end
 
     previous = @units[unit_type.to_sym]
-    if !previous.nil? && previous != trimmed
+    # Compared as text, so 123456 and "123456" are the same unit, as in v1.3.0.
+    if !previous.nil? && previous.to_s != trimmed.to_s
       raise IllegalStateException.new("Unit '#{unit_type}' already set.")
     end
 
     if trimmed.is_a?(String) && trimmed.empty?
       raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
     end
+
+    return previous unless previous.nil?
 
     @units[unit_type.to_sym] = trimmed
     invalidate_assignments_missing_unit(unit_type.to_s)
@@ -428,9 +433,13 @@ class Context
 
       @closing = true
       begin
-        loop do
+        # One extra pass sends events a logger callback queued during the
+        # first publish; after that the context seals, so a callback that
+        # queues on every publish can't keep close publishing forever.
+        SEAL_FLUSH_PASSES.times do |pass|
           result = flush
-          drop_queued = false
+          last_pass = pass == SEAL_FLUSH_PASSES - 1
+          drop_queued = last_pass
           if !@failed && publish_failed?(result)
             raise_publish_failure(result) unless event_type == ContextEventLogger::EVENT_TYPE::CLOSE
 
@@ -458,6 +467,7 @@ class Context
           # Like v1.3.0, close returns what the event logger returned.
           return event_type == ContextEventLogger::EVENT_TYPE::CLOSE ? logged : nil
         end
+        nil
       ensure
         @closing = false
       end

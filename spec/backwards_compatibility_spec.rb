@@ -42,6 +42,23 @@ RSpec.describe "Backwards Compatibility" do
     expect([out, status.success?]).to eq(["[Module, Object, [], true]\n", true]), err
   end
 
+  it "loads next to application classes named like the SDK's additions without replacing them" do
+    out, err, status = run_ruby(<<~RUBY)
+      class PublishError < RuntimeError; end
+      class SemverComparator; end
+      class ContextDataResult; end
+      class ContextPublisher; end
+      DefaultContextPublisher = :mine
+      require "absmartly"
+      p [PublishError.superclass, SemverComparator.class, ContextPublisher == ContextEventHandler,
+         DefaultContextPublisher, Absmartly::PublishError.superclass,
+         ABSmartly.new("https://x/v1", api_key: "k", application: "a", environment: "e")
+           .context_event_handler.class]
+    RUBY
+    expect([out, status.success?])
+      .to eq(["[RuntimeError, Class, false, :mine, StandardError, DefaultContextEventHandler]\n", true]), err
+  end
+
   it "ContextEventHandler is still the v1.3.0 class, aliased as ContextPublisher without a warning" do
     original = Warning[:deprecated]
     Warning[:deprecated] = true
