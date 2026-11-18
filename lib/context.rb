@@ -237,7 +237,7 @@ class Context
   def treatment(experiment_name)
     check_ready?(true)
 
-    now = now_millis
+    now = @switchbacks_active ? now_millis : nil
     assignment = assignment(experiment_name, now)
     queue_exposure(assignment, now)
     assignment.variant
@@ -282,7 +282,7 @@ class Context
   def peek_treatment(experiment_name)
     check_ready?(true)
 
-    assignment(experiment_name, now_millis).variant
+    assignment(experiment_name, @switchbacks_active ? now_millis : nil).variant
   end
 
   alias peek peek_treatment
@@ -765,8 +765,9 @@ class Context
     # new as the previous one: a read that started before a refresh can't
     # overwrite assignments (or holdout arms) already built from newer data,
     # which would reset their exposed flag and expose them again.
-    # now is the caller's one clock reading, so a switchback's period, its
-    # cluster attributes and its exposure's exposedAt all agree.
+    # now is the caller's one clock reading (nil when the data has no
+    # switchback), so a switchback's period, its cluster attributes and its
+    # exposure's exposedAt all agree.
     def assignment(experiment_name, now)
       @assignment_mutex.synchronize { cached_or_new_assignment(experiment_name, @state, now) }
     end
@@ -776,11 +777,15 @@ class Context
       custom = @cassignments[exp_key]
       override = @overrides[exp_key]
       experiment = experiment(experiment_name.to_s, state)
-      if !experiment.nil? && experiment.switchback
-        return switchback_assignment(experiment_name.to_s, experiment, custom, override, now)
-      end
+      # One ivar check on the ordinary path: no switchback in the data and none cached.
+      if @switchbacks_active
+        if !experiment.nil? && experiment.switchback
+          # nil when the caller read the clock before a refresh added the first switchback.
+          return switchback_assignment(experiment_name.to_s, experiment, custom, override, now || now_millis)
+        end
 
-      drop_switchback_epoch(experiment_name.to_s) unless @switchback_epochs.empty?
+        drop_switchback_epoch(experiment_name.to_s)
+      end
       assignment = @assignment_cache[experiment_name.to_s]
 
       if !assignment.nil?
@@ -900,7 +905,7 @@ class Context
     # experiment rather than the default.
     def resolve_variable_value(key, default_value, expose)
       state = @state
-      now = now_millis
+      now = @switchbacks_active ? now_millis : nil
       key = key.to_s.to_sym
       suppressed_fallback = nil
       (state.index_variables[key] || []).each do |experiment|
@@ -1036,6 +1041,8 @@ class Context
       # Publish the fully built snapshot; the maps are never mutated after this.
       @data_mutex.synchronize do
         assign_switchback_generations(index, @state.index)
+        # Stays set once a switchback was installed: its epochs must still be dropped.
+        @switchbacks_active ||= index.each_value.any?(&:switchback)
         @state = State.new(data, index, index_variables, custom_fields, holdouts_by_id)
       end
     end
@@ -1344,6 +1351,7 @@ class Context
       @assignment_mutex = Mutex.new
       @data_mutex = Mutex.new
       @switchback_epochs = {}
+      @switchbacks_active = false
       @switchback_generation = 0
       @assignments = {}
       @clock = clock.is_a?(String) ? Time.iso8601(clock) : clock

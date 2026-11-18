@@ -325,6 +325,24 @@ Experiments can be covered by holdouts set up on the Web Console. A holdout keep
 - `set_override` and a matching assignment rule still win over a holdout; the holdout's exposure is still sent.
 - Peeking (`peek_treatment`, `peek_variable_value`) never sends exposures.
 
+### Switchback Experiments
+
+A switchback experiment is randomized over clusters and time: every unit in the same cluster (for example, a store's region) sees the same variant within a period, and the variant changes on a fixed time grid. The SDK serves switchbacks set up on the Web Console with no code changes, as the Collector and the Java SDK do. Set the attribute that holds each unit's cluster value:
+
+```ruby
+context.set_unit(:store_id, "store-123")
+context.set_attribute(:region, "lisbon")       # or a nested value: { "city" => "lisbon" }
+
+context.treatment("delivery_fee_test")        # the variant of cluster "lisbon" in the current period
+```
+
+- The experiment names, in order, the unit types it is linked to and the attribute path holding each one's cluster value. The first linked unit, in that order, whose attribute has a value serves the experiment; its exposure is sent under that unit.
+- A cluster value is a non-empty string, used as is, or an Integer, keyed by its decimal text. A Float (even `3.0`), `true`/`false`, a Hash, an Array, `""` and `nil` give no value.
+- With no value, linked units that disagree, or a value the experiment does not allow, the unit gets control (variant 0) and no exposure is sent. Without a unit of a linked type, the experiment does not apply.
+- Before the experiment's start the unit gets control and no exposure is sent; an assignment rule, a strict audience mismatch and full-on still apply.
+- One exposure is sent per experiment and period. The attribute is read once per period: setting it again takes effect in the next period.
+- `set_override`, assignment rules, strict audiences, full-on and `set_custom_assignment` apply as for other experiments. Holdouts never apply to a switchback.
+
 ### Custom Assignments
 
 Sometimes it may be necessary to override the automatic selection of a variant. For example, if you wish to have your variant chosen based on data from an API call. This can be accomplished using the `set_custom_assignment` method.
