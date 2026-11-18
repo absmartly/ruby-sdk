@@ -396,11 +396,9 @@ class Context
         assign_data(data_future.data_future)
         @ready_condvar.broadcast
       end
-      # Like v1.3.0, a successful refresh returns what the event logger returned.
       log_event(ContextEventLogger::EVENT_TYPE::REFRESH, data_future.data_future)
     else
-      # A failed refresh keeps the current data; like v1.3.0 it returns what
-      # the event logger returned for the error.
+      # A failed refresh keeps the current data.
       log_error(data_future.exception)
     end
   end
@@ -476,7 +474,6 @@ class Context
           next if sealed == :retry
 
           logged = log_event(event_type, nil)
-          # Like v1.3.0, close returns what the event logger returned.
           return event_type == ContextEventLogger::EVENT_TYPE::CLOSE ? logged : nil
         end
         nil
@@ -581,12 +578,12 @@ class Context
 
     def run_deferred_seal(event_type)
       seal(event_type)
-    rescue StandardError
+    rescue StandardError => error
       # A deferred seal that did not finish (events still queued, or its own
       # publish rejected or raised) stays pending for the next successful
       # publish. Only the "events still queued" case lets this publish return.
       @close_pending ||= event_type unless @closed
-      raise unless $!.is_a?(EventsQueuedWhileClosing)
+      raise unless error.is_a?(EventsQueuedWhileClosing)
     end
 
     def publish_failed?(result)
