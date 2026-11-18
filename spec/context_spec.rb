@@ -551,6 +551,26 @@ RSpec.describe Context do
     expect(seen.keys).to eq(["application", "environment", :environment])
   end
 
+  it "keeps a user String key that reuses the configured value object when a Symbol key follows" do
+    seen = nil
+    matcher = Class.new do
+      define_method(:evaluate) do |_audience, attributes|
+        seen = attributes
+        Struct.new(:result).new(attributes["environment"] == "prod")
+      end
+    end.new
+    env = "prod"
+    config = ContextConfig.create
+    config.set_units(units)
+    context = Context.create(clock, config, audience_strict_data_future_ready, data_provider, event_handler,
+                             event_logger, variable_parser, matcher, application: "website", environment: env)
+    context.set_attribute("environment", env)
+    context.set_attribute(:environment, "staging")
+
+    expect(context.peek_treatment("exp_test_ab")).not_to eq(0)
+    expect(seen).to eq("application" => "website", "environment" => "prod", :environment => "staging")
+  end
+
   it "publish returns normally when a logger's deferred close still has events queued" do
     config = ContextConfig.create
     config.set_units(units)
