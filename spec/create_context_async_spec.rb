@@ -243,7 +243,21 @@ RSpec.describe "create_context_async" do
       context.set_data(OpenStruct.new(data_future: stale, success?: true))
 
       expect(context.data).to equal(refreshed)
-      expect(events.map(&:first)).to include(ContextEventLogger::EVENT_TYPE::READY)
+      expect(events.last).to eq([ContextEventLogger::EVENT_TYPE::READY, refreshed])
+    end
+
+    it "logs only the error when the initial fetch fails on a context that is not ready" do
+      events = []
+      logger = Class.new(ContextEventLogger) do
+        define_method(:handle_event) { |event, _data| events << event }
+      end.new
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider,
+                                     event_handler, logger, variable_parser, audience_matcher)
+      context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+
+      expect(events).to eq([ContextEventLogger::EVENT_TYPE::ERROR])
     end
 
     it "logs ready when a refresh made the context ready and the initial fetch then fails" do
