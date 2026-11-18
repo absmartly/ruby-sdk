@@ -214,7 +214,6 @@ class Context
       @units[unit_type.to_sym] = trimmed
       invalidate_assignments_missing_unit(unit_type.to_s)
     end
-    # Returns the UID's text, as in v1.3.0.
     trimmed.to_s
   end
 
@@ -430,9 +429,10 @@ class Context
       return nil if @closed
 
       # Called from a logger callback while a publish is in flight: defer so the
-      # events queued by the callback are still sent before finalizing.
+      # events queued by the callback are still sent before finalizing. A seal
+      # that is already running sends them within its own pass budget.
       if @publish_mutex.owned?
-        @close_pending = event_type
+        @close_pending = event_type unless @closing
         return nil
       end
 
@@ -498,6 +498,7 @@ class Context
       # deadlock or re-send the in-flight snapshot; the outer call owns it.
       return nil if @publish_mutex.owned?
 
+      claimed = nil
       result = @publish_mutex.synchronize do
         exposures = achievements = nil
         event_count = 0
@@ -545,22 +546,32 @@ class Context
             @achievements.shift(achievements.size)
             @pending_count = [@pending_count - event_count, 0].max
           end
+          # Claim a deferred close while still holding the lock, so only this
+          # successful publish can carry it out; a request made by another
+          # thread after a rejected publish waits for its own success.
+          claimed = take_close_pending
           response
         end
       end
 
-      if @close_pending && !@closed && !publish_failed?(result)
-        event_type = @close_pending
-        @close_pending = false
-        begin
-          seal(event_type)
-        rescue EventsQueuedWhileClosing
-          # Events are still queued: keep the close request for the next
-          # publish, and let this publish return as in v1.3.0.
-          @close_pending = event_type
-        end
-      end
+      run_deferred_seal(claimed) if claimed
       result
+    end
+
+    def take_close_pending
+      claimed = @close_pending
+      @close_pending = false
+      claimed || nil
+    end
+
+    def run_deferred_seal(event_type)
+      seal(event_type)
+    rescue StandardError
+      # A deferred seal that did not finish (events still queued, or its own
+      # publish rejected or raised) stays pending for the next successful
+      # publish. Only the "events still queued" case lets this publish return.
+      @close_pending ||= event_type unless @closed
+      raise unless $!.is_a?(EventsQueuedWhileClosing)
     end
 
     def publish_failed?(result)
@@ -624,10 +635,17 @@ class Context
       # matchers. A system entry is added only when no user attribute has that
       # name as text, whatever the key's type.
       user = {}
-      @attributes.each { |attr| user[attr.name] = attr.value }
+      other_names = nil
+      @attributes.each do |attr|
+        name = attr.name
+        user[name] = attr.value
+        (other_names ||= []) << name.to_s unless name.is_a?(String) || name.is_a?(Symbol)
+      end
       attrs = {}
       @system_attributes.each do |name, value|
-        attrs[name] = value if user.each_key.none? { |key| key.to_s == name }
+        next if user.key?(name) || user.key?(name.to_sym) || other_names&.include?(name)
+
+        attrs[name] = value
       end
       attrs.merge!(user)
     end

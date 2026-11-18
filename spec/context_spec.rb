@@ -747,6 +747,168 @@ RSpec.describe Context do
     expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
   end
 
+  it "a close requested from a publish callback during close stays within close's two passes" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { goals: 0 }
+    publishes = 0
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        next unless event == ContextEventLogger::EVENT_TYPE::PUBLISH && holder[:goals] < 10
+
+        holder[:goals] += 1
+        holder[:context].track("cb#{holder[:goals]}", nil)
+        holder[:context].close
+      end
+    end.new
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish) { publishes += 1; nil }
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+
+    expect { Timeout.timeout(5) { holder[:context].close } }
+      .to raise_error(StandardError, "Events queued while closing; retry close or finalize")
+    expect(publishes).to eq(2)
+    expect(holder[:context].closed?).to be false
+    expect(holder[:context].pending_count).to eq(1)
+  end
+
+  it "keeps a deferred finalize pending when its own publish is rejected" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { goals: 0, events: [] }
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        holder[:events] << event
+        next unless event == ContextEventLogger::EVENT_TYPE::PUBLISH && holder[:goals] < 1
+
+        holder[:goals] += 1
+        holder[:context].track("cb", nil)
+        holder[:context].finalize
+      end
+    end.new
+    # The first publish succeeds and its callback asks for finalize; the
+    # deferred finalize's own publish is rejected; the next publish succeeds.
+    responses = [nil, failure_future, nil, nil]
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish) { responses.shift }
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+
+    expect { Timeout.timeout(5) { holder[:context].publish } }.to raise_error(Exception, "FAILED")
+    expect(holder[:context].finalized?).to be false
+    expect(holder[:context].pending_count).to eq(1)
+    holder[:context].track("late", nil)
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].finalized?).to be true
+    expect(holder[:context].pending_count).to eq(0)
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::FINALIZE)).to eq(1)
+  end
+
+  it "a close requested after another thread's rejected publish waits for a later success" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { events: [] }
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        holder[:events] << event
+        holder[:context].close if event == ContextEventLogger::EVENT_TYPE::ERROR && !holder[:asked] && (holder[:asked] = true)
+      end
+    end.new
+    calls = 0
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish) do
+      calls += 1
+      calls == 2 ? failure_future : publish_future
+    end
+    context = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                             variable_parser, audience_matcher)
+    holder[:context] = context
+    # Pause thread A just after its successful publish releases the publish
+    # lock, let thread B publish, be rejected and ask for close from the error
+    # callback, then resume A. A's earlier success must not carry B's request.
+    released = Queue.new
+    resume = Queue.new
+    pause_after_unlock = Class.new(Mutex) do
+      define_method(:synchronize) do |&block|
+        result = super(&block)
+        if Thread.current[:role] == :a && !Thread.current[:paused]
+          Thread.current[:paused] = true
+          released << true
+          resume.pop
+        end
+        result
+      end
+    end
+    context.instance_variable_set(:@publish_mutex, pause_after_unlock.new)
+
+    context.track("goal_a", nil)
+    a = Thread.new do
+      Thread.current[:role] = :a
+      context.publish
+    end
+    Timeout.timeout(5) { released.pop }
+    context.track("goal_b", nil)
+    expect(Timeout.timeout(5) { context.publish }).to eq(failure_future)
+    resume << true
+    Timeout.timeout(5) { a.join }
+
+    expect(context.closed?).to be false
+    expect(context.pending_count).to eq(1)
+    Timeout.timeout(5) { context.publish }
+    expect(context.closed?).to be true
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
+  end
+
+  it "a close requested from a publish callback during close is not kept once close raises" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { goals: 0 }
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        next unless event == ContextEventLogger::EVENT_TYPE::PUBLISH && holder[:goals] < 2
+
+        holder[:goals] += 1
+        holder[:context].track("cb#{holder[:goals]}", nil)
+        holder[:context].close
+      end
+    end.new
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish).and_return(nil)
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+
+    expect { Timeout.timeout(5) { holder[:context].close } }.to raise_error(StandardError, /retry close/)
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].closed?).to be false
+    expect(holder[:context].pending_count).to eq(0)
+  end
+
+  it "matches the system entry's name exactly, not case-insensitively" do
+    seen = nil
+    matcher = Class.new do
+      define_method(:evaluate) do |_audience, attributes|
+        seen = attributes
+        Struct.new(:result).new(true)
+      end
+    end.new
+    config = ContextConfig.create
+    config.set_units(units)
+    context = Context.create(clock, config, audience_strict_data_future_ready, data_provider, event_handler,
+                             event_logger, variable_parser, matcher, application: "website", environment: "prod")
+    name = Object.new
+    def name.to_s
+      "Environment"
+    end
+    context.set_attribute(name, "staging")
+    context.peek_treatment("exp_test_ab")
+
+    expect(seen).to eq("application" => "website", "environment" => "prod", name => "staging")
+  end
+
   it "a deferred close still raises a publisher error from its own publish" do
     config = ContextConfig.create
     config.set_units(units)
