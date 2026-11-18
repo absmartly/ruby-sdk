@@ -1540,6 +1540,27 @@ RSpec.describe Context do
     expect(holder[:context].pending_count).to eq(1)
   end
 
+  it "does not let an overridden public getter change matcher attributes" do
+    seen = []
+    matcher = Class.new do
+      define_method(:evaluate) do |_audience, attributes|
+        seen << attributes.dup
+        Struct.new(:result).new(true)
+      end
+    end.new
+    config = ContextConfig.create
+    config.set_unit(:session_id, "alice")
+    config.set_attribute(:country, "US")
+    context = Context.create(clock, config, data_future_ready, data_provider, event_handler,
+                             event_logger, variable_parser, matcher)
+    context.define_singleton_method(:get_attributes) { { bad: "override" } }
+    context.experiments.each { |name| context.peek_treatment(name) }
+
+    expect(seen).not_to be_empty
+    expect(seen).to all(include(country: "US"))
+    expect(seen.any? { |attributes| attributes.key?(:bad) }).to be false
+  end
+
   it "set_unit returns the stored UID, as in v1.3.0" do
     context = create_ready_context
     expect(context.set_unit("extra_id", " padded ")).to eq("padded")

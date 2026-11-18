@@ -89,7 +89,7 @@ class Context
   def wait_until_ready(timeout = nil)
     # Called from a variable parser while this thread builds the data that
     # would make the context ready: waiting here could never finish.
-    return self if @building_thread.equal?(Thread.current)
+    return self if @ready_mutex.synchronize { @building_threads.key?(Thread.current) }
 
     @ready_mutex.synchronize do
       unless ready? || failed?
@@ -572,14 +572,16 @@ class Context
       result
     end
 
-    # Removes only the events in the batch just sent: they are at the head of
-    # the queue, since only a holder of the publish lock removes events, and
-    # others may have been queued while the request was in flight.
-    def remove_published(exposures, achievements, event_count)
+    # A failed-context publish can clear the queue while a request is in flight.
+    # Remove only the actual objects sent, never newer events at their positions.
+    def remove_published(exposures, achievements, _event_count)
+      sent = {}.compare_by_identity
+      exposures.each { |event| sent[event] = true }
+      achievements.each { |event| sent[event] = true }
       @queue_mutex.synchronize do
-        @exposures.shift(exposures.size)
-        @achievements.shift(achievements.size)
-        @pending_count = [@pending_count - event_count, 0].max
+        @exposures.delete_if { |event| sent.key?(event) }
+        @achievements.delete_if { |event| sent.key?(event) }
+        @pending_count = @exposures.size + @achievements.size
       end
     end
 
@@ -898,10 +900,14 @@ class Context
     # Builds the snapshot for data, calling the variable parser; callers run
     # it outside the readiness lock so a parser may call wait_until_ready.
     def build_state(data)
-      @building_thread = Thread.current
+      thread = Thread.current
+      @ready_mutex.synchronize { @building_threads[thread] = (@building_threads[thread] || 0) + 1 }
       build_state_maps(data)
     ensure
-      @building_thread = nil
+      @ready_mutex.synchronize do
+        @building_threads[thread] -= 1
+        @building_threads.delete(thread) if @building_threads[thread].zero?
+      end
     end
 
     def build_state_maps(data)
@@ -1021,6 +1027,8 @@ class Context
       @sealing = 0
       @failed = false
       @ready_error = nil
+      @sealed_by = nil
+      @building_threads = {}
 
       # System attributes (application/environment names from the client
       # config) seed the audience evaluation map. The collector already

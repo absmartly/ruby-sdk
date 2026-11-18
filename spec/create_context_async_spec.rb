@@ -481,6 +481,47 @@ RSpec.describe "create_context_async" do
       expect(events).to eq([ContextEventLogger::EVENT_TYPE::REFRESH, ContextEventLogger::EVENT_TYPE::READY])
     end
 
+    it "keeps refreshed data after an initial payload has already started parsing" do
+      parsing = Queue.new
+      release = Queue.new
+      parser = Object.new
+      parser.define_singleton_method(:parse) do |_c, _e, _v, config|
+        if Thread.current[:initial_build] && !Thread.current[:paused]
+          Thread.current[:paused] = true
+          parsing << true
+          release.pop
+        end
+        JSON.parse(config, symbolize_names: true)
+      rescue JSON::ParserError
+        nil
+      end
+      provider = Object.new
+      refreshed = DefaultContextDataDeserializer.new.deserialize(
+        '{"experiments":[]}', 0, 18
+      )
+      provider.define_singleton_method(:context_data) do
+        OpenStruct.new(data_future: refreshed, success?: true)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, provider,
+                                     event_handler, event_logger, parser, audience_matcher)
+      installer = Thread.new do
+        Thread.current[:initial_build] = true
+        context.set_data(OpenStruct.new(data_future: data, success?: true))
+      end
+      begin
+        Timeout.timeout(5) { parsing.pop }
+        context.refresh
+        release << true
+        Timeout.timeout(5) { installer.join }
+      ensure
+        release << true
+        installer.join(5) || installer.kill
+      end
+      expect(context.data).to equal(refreshed)
+    end
+
     it "wakes a waiter when a refresh supplies the first data" do
       context_config = ContextConfig.create
       context_config.set_units(units)
