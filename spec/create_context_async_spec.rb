@@ -522,6 +522,81 @@ RSpec.describe "create_context_async" do
       expect(context.data).to equal(refreshed)
     end
 
+    def blocking_parser(in_parser, release, raise_first: false)
+      parser = Object.new
+      parser.define_singleton_method(:parse) do |_context, _experiment, _variant, config|
+        if Thread.current[:block_parse] && !Thread.current[:parsed]
+          Thread.current[:parsed] = true
+          in_parser << true
+          release.pop
+          raise "parser failed" if raise_first
+        end
+        JSON.parse(config, symbolize_names: true)
+      rescue JSON::ParserError
+        nil
+      end
+      parser
+    end
+
+    it "keeps another thread's wait blocked while the initial data is still being built" do
+      in_parser = Queue.new
+      release = Queue.new
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider, event_handler, event_logger,
+                                     blocking_parser(in_parser, release), audience_matcher)
+      installer = Thread.new do
+        Thread.current[:block_parse] = true
+        context.set_data(OpenStruct.new(data_future: data, success?: true))
+      end
+      waiter = nil
+      begin
+        Timeout.timeout(5) { in_parser.pop }
+        waiter = Thread.new do
+          context.wait_until_ready
+          context.ready?
+        end
+        Timeout.timeout(5) { sleep 0.01 until waiter.status == "sleep" }
+        expect(waiter.alive?).to be true
+        release << true
+        expect(Timeout.timeout(5) { waiter.value }).to be true
+      ensure
+        release << true
+        [installer, waiter].compact.each { |t| t.join(5) || t.kill }
+      end
+    end
+
+    it "lets a thread whose own build raised wait normally afterwards" do
+      in_parser = Queue.new
+      release = Queue.new
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider, event_handler, event_logger,
+                                     blocking_parser(in_parser, release, raise_first: true), audience_matcher)
+      release << true
+      builder = Thread.new do
+        Thread.current[:block_parse] = true
+        begin
+          context.refresh
+        rescue RuntimeError => e
+          e
+        end
+        # This thread no longer builds anything: its wait must block until
+        # another thread installs the data, not return at once.
+        context.wait_until_ready
+        context.ready?
+      end
+      begin
+        Timeout.timeout(5) { in_parser.pop }
+        Timeout.timeout(5) { sleep 0.01 until builder.status == "sleep" }
+        expect(context.ready?).to be false
+        context.set_data(OpenStruct.new(data_future: data, success?: true))
+        expect(Timeout.timeout(5) { builder.value }).to be true
+      ensure
+        builder.join(5) || builder.kill
+      end
+    end
+
     it "wakes a waiter when a refresh supplies the first data" do
       context_config = ContextConfig.create
       context_config.set_units(units)
