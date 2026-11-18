@@ -509,9 +509,9 @@ class Context
         next nil if exposures.empty? && achievements.empty?
 
         if @switchback_exposures.nil?
-          event = publish_event(now_millis, @units, @attributes, exposures, achievements)
+          ordinary_event = publish_event(now_millis, @units, @attributes, exposures, achievements)
           begin
-            response = @event_handler.publish(self, event)
+            response = @event_handler.publish(self, ordinary_event)
           rescue StandardError => e
             log_error(e)
             raise
@@ -520,7 +520,7 @@ class Context
             failure = response.is_a?(Exception) ? response : response.respond_to?(:exception) && response.exception
             log_error(failure || StandardError.new("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})"))
           else
-            log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
+            log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, ordinary_event)
             @queue_mutex.synchronize do
               @exposures.shift(exposures.size)
               @achievements.shift(achievements.size)
