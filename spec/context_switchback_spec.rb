@@ -429,8 +429,8 @@ module ContextSwitchbackSpec
                     when :peek_treatment then context.peek_treatment("exp_sb")
                     else context.variable_value("sb.arm", -1)
             end
-            # The reading taken for this call must not stamp the thread's next call.
-            [value, Thread.current[Context.const_get(:LATE_READING)]]
+            # Nothing of this call's reading stays on the thread.
+            [value, Thread.current.keys.grep(/absmartly/).map { |k| Thread.current[k] }.compact]
           end
           deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
           Thread.pass until worker.status == "sleep" || !worker.alive? ||
@@ -440,11 +440,52 @@ module ContextSwitchbackSpec
           clock.now = ANCHOR + HOUR
           clock.next_read = ANCHOR + HOUR - 1
         end
-        expect(worker.value).to eq([EXPECTED_2_ARMS[0], nil])
+        expect(worker.value).to eq([EXPECTED_2_ARMS[0], []])
         expect(EXPECTED_2_ARMS[0]).not_to eq(EXPECTED_2_ARMS[1])
         expected = api == :peek_treatment ? [] : [sb_exposure(1, "exp_sb", EXPECTED_2_ARMS[0], ANCHOR + HOUR - 1, true, true)]
         expect(published_exposures(context)).to eq(expected)
       end
+    end
+
+    # A resolution that raises after taking the fallback reading leaves no state behind on the thread,
+    # so the thread's next read (another context racing its own first switchback) uses its own reading.
+    it "keeps a raising resolution's fallback reading out of later calls" do
+      raising = Class.new(AudienceMatcher) do
+        def evaluate(*)
+          raise "matcher failed"
+        end
+      end.new(DefaultAudienceDeserializer.new)
+      audience = '{"filter":[{"value":true}]}'
+      first = create_context([unit_twin(switchback(audience: audience))], audience_matcher: raising)
+      second = create_context([unit_twin(switchback)])
+      second.peek_treatment("exp_sb")
+
+      worker = nil
+      first.instance_variable_get(:@assignment_mutex).synchronize do
+        worker = Thread.new do
+          begin
+            first.peek_treatment("exp_sb")
+          rescue StandardError
+            nil
+          end
+          leftovers = Thread.current.keys.grep(/absmartly/).map { |k| Thread.current[k] }.compact
+          inner = nil
+          second.instance_variable_get(:@assignment_mutex).synchronize do
+            inner = Thread.new { second.variable_value("sb.arm", -1) }
+            Thread.pass until inner.status == "sleep" || !inner.alive?
+            refresh_to(second, [switchback])
+            clock.now = ANCHOR + HOUR
+          end
+          [leftovers, inner.value]
+        end
+        Thread.pass until worker.status == "sleep" || !worker.alive?
+        refresh_to(first, [switchback(audience: audience)])
+        clock.now = ANCHOR + HOUR - 1
+      end
+      leftovers, value = worker.value
+      expect(leftovers).to eq([])
+      expect(value).to eq(EXPECTED_2_ARMS[1])
+      expect(published_exposures(second).map(&:exposed_at)).to eq([ANCHOR + HOUR])
     end
 
     # A switchback slot cached before a refresh replaced it with a unit experiment of the same name
@@ -1378,14 +1419,15 @@ module ContextSwitchbackCostSpec
       context.peek_variable_value("banner.border", 0)
       # Only the exposure itself reads the clock, once.
       expect(clock).to have_received(:call).once
-      %i[take_late_reading expose_assignment].each do |helper|
+      %i[expose_assignment separate_switchback_exposures].each do |helper|
         allow(context).to receive(helper).and_call_original
       end
       context.treatment("exp_test_ab")
       context.peek_treatment("exp_test_ab")
       context.variable_value("banner.border", 0)
-      expect(context).not_to have_received(:take_late_reading)
+      context.publish
       expect(context).not_to have_received(:expose_assignment)
+      expect(context).not_to have_received(:separate_switchback_exposures)
       expect(context.instance_variable_get(:@switchback_epochs)).to be_empty
     end
   end

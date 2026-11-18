@@ -63,6 +63,14 @@ module ContextSwitchbackClusterSpec
       exposure(1, "exp_sb", UNIT_TYPE, variant, exposed_at, true, eligible, false, false, false, audience_mismatch)
     end
 
+    # The Collector re-resolves the cluster from the published attributes at exposedAt, so an
+    # exposure must point at an instant whose attributes give the cluster the SDK served.
+    def collector_cluster(event, exposure, path)
+      selected = event.attributes.select { |a| a.name.to_s.strip == path && a.set_at <= exposure.exposed_at }
+                      .max_by.with_index { |a, i| [a.set_at, i] }
+      selected&.value
+    end
+
     def expose_and_publish(context)
       clock.now = ANCHOR
       context.treatment("exp_sb")
@@ -387,10 +395,12 @@ module ContextSwitchbackClusterSpec
       refresh_to(context, attribute_switchback("city"))
       expect(expected("Faro", 0)).to eq(1)
       expect(context.treatment("exp_sb")).to eq(expected("Faro", 0))
-      # The second exposure keeps the Faro key, so it is stamped when the slot read it: at ANCHOR + 20
-      # the published city is Lisboa, which the Collector would credit instead.
+      # The second exposure keeps the Faro key: at ANCHOR + 20 the batch's city is Lisboa, so it is
+      # published in a body of its own with the attributes its slot read, at its own instant.
       expect(published_exposures(context)).to eq([sb_exposure(0, ANCHOR + 10, false, false),
-                                                  sb_exposure(expected("Faro", 0), ANCHOR + 10, true, false)])
+                                                  sb_exposure(expected("Faro", 0), ANCHOR + 20, true, false)])
+      separate = context.send(:event_handler).events.last
+      expect(collector_cluster(separate, separate.exposures[0], "city")).to eq("Faro")
     end
 
     # An audience change re-resolves the slot (a new exposure) but keeps its key.
@@ -406,9 +416,11 @@ module ContextSwitchbackClusterSpec
       context.set_attribute("tier", "silver")
       expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
 
-      # Stamped when the slot read Lisboa: at ANCHOR + 20 the published city is Porto.
+      # At ANCHOR + 20 the batch's city is Porto, so the second exposure goes in its own body.
       expect(published_exposures(context)).to eq([sb_exposure(expected("Lisboa", 0), ANCHOR + 10, true, false),
-                                                  sb_exposure(expected("Lisboa", 0), ANCHOR + 10, true, true)])
+                                                  sb_exposure(expected("Lisboa", 0), ANCHOR + 20, true, true)])
+      separate = context.send(:event_handler).events.last
+      expect(collector_cluster(separate, separate.exposures[0], "city")).to eq("Lisboa")
     end
 
     it "keeps a missing key through an audience re-evaluation" do
@@ -431,14 +443,6 @@ module ContextSwitchbackClusterSpec
       expect(context.peek_treatment("exp_sb")).to eq(expected("Faro", 2))
     end
 
-    # The Collector re-resolves the cluster from the published attributes at exposedAt, so an
-    # exposure must point at an instant whose attributes give the cluster the SDK served.
-    def collector_cluster(event, exposure, path)
-      selected = event.attributes.select { |a| a.name.to_s.strip == path && a.set_at <= exposure.exposed_at }
-                      .max_by.with_index { |a, i| [a.set_at, i] }
-      selected&.value
-    end
-
     it "publishes attributes that give the served cluster at exposedAt after a peek and a change" do
       context = create_context(attribute_switchback("city"))
       clock.now = ANCHOR + 10
@@ -450,10 +454,119 @@ module ContextSwitchbackClusterSpec
       expect(expected("Faro", 0)).not_to eq(expected("Lisboa", 0))
 
       context.publish
-      event = context.send(:event_handler).events.last
-      expect(event.exposures.length).to eq(1)
-      expect(collector_cluster(event, event.exposures[0], "city")).to eq("Lisboa")
-      expect(event.exposures[0].exposed_at).to eq(ANCHOR + 10)
+      events = context.send(:event_handler).events
+      expect(events.length).to eq(1)
+      expect(events[0].exposures.map(&:exposed_at)).to eq([ANCHOR + 20])
+      expect(collector_cluster(events[0], events[0].exposures[0], "city")).to eq("Lisboa")
+      expect(events[0].attributes.map(&:value)).to eq(%w[Lisboa])
+    end
+
+    # The batch's attributes would give Faro at the exposure's instant after a rewind: the exposure
+    # keeps its instant (no move across a burn window) and is published with what its slot read.
+    it "publishes the served cluster after a clock rewind, at the exposing call's instant" do
+      context = create_context(attribute_switchback("city"))
+      clock.now = ANCHOR + 10
+      context.set_attribute("city", "Lisboa")
+      clock.now = ANCHOR + 30
+      expect(context.peek_treatment("exp_sb")).to eq(expected("Lisboa", 0))
+      clock.now = ANCHOR + 20
+      context.set_attribute("city", "Faro")
+      clock.now = ANCHOR + 40
+      expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
+
+      context.publish
+      events = context.send(:event_handler).events
+      exposure = events.flat_map { |e| e.exposures || [] }.first
+      body = events.find { |e| (e.exposures || []).include?(exposure) }
+      expect(exposure.exposed_at).to eq(ANCHOR + 40)
+      expect(collector_cluster(body, exposure, "city")).to eq("Lisboa")
+    end
+
+    # The read saw an attribute stamped after the exposure's instant (the clock stepped back between
+    # them): the separate body carries the read's attributes stamped at exposedAt.
+    it "publishes the served cluster when the read's attribute is later than exposedAt" do
+      context = create_context(attribute_switchback("city"))
+      clock.now = ANCHOR + 30
+      context.set_attribute("city", "Lisboa")
+      expect(context.peek_treatment("exp_sb")).to eq(expected("Lisboa", 0))
+      clock.now = ANCHOR + 20
+      expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
+
+      context.publish
+      body = context.send(:event_handler).events.last
+      expect(body.exposures.map(&:exposed_at)).to eq([ANCHOR + 20])
+      expect(collector_cluster(body, body.exposures[0], "city")).to eq("Lisboa")
+      expect(body.attributes.map { |a| [a.value, a.set_at] }).to eq([["Lisboa", ANCHOR + 20]])
+    end
+
+    # The exposure is not moved to the slot's read instant, so a burn-in window that the exposing
+    # call is outside of keeps it in the analysis.
+    it "keeps an exposure outside burn-in after a mid-period change" do
+      context = create_context(attribute_switchback("city", switchbackBurnInDurationMs: 60_000))
+      clock.now = ANCHOR + 10
+      context.set_attribute("city", "Lisboa")
+      context.peek_treatment("exp_sb")
+      clock.now = ANCHOR + 120_000
+      context.set_attribute("city", "Faro")
+      clock.now = ANCHOR + 180_000
+      context.treatment("exp_sb")
+      context.publish
+      events = context.send(:event_handler).events
+      exposure = events.flat_map { |e| e.exposures || [] }.first
+      expect(exposure.exposed_at).to eq(ANCHOR + 180_000)
+      expect(collector_cluster(events.last, exposure, "city")).to eq("Lisboa")
+    end
+
+    # The Collector re-selects the serving unit from the batch's units: a unit added after the
+    # exposure must not move it or drop it.
+    it "publishes an exposure with the units it was served under after a later set_unit" do
+      sources = { "user_id" => "tier", UNIT_TYPE => "city" }
+      context = create_context(attribute_switchback("city", switchbackClusters: sources))
+      clock.now = ANCHOR + 10
+      context.set_attribute("tier", "1")
+      context.set_attribute("city", "0")
+      expect(context.treatment("exp_sb")).to eq(expected("0", 0))
+      context.set_unit("user_id", "u-1")
+      context.track("goal")
+      context.publish
+
+      events = context.send(:event_handler).events
+      separate = events.find { |e| e.exposures&.any? }
+      expect(separate.units.map(&:type)).to eq([UNIT_TYPE])
+      expect(separate.exposures.map(&:unit)).to eq([UNIT_TYPE])
+      expect(collector_cluster(separate, separate.exposures[0], "city")).to eq("0")
+      # Collector-equivalent selection over the body: only store_id is linked and present.
+      body_units = separate.units.to_h { |u| [u.type, u.uid] }
+      expect(sources.keys.select { |type| body_units.key?(type) }).to eq([UNIT_TYPE])
+      goals = events.find { |e| e.goals&.any? }
+      expect(goals.units.map(&:type)).to contain_exactly(UNIT_TYPE, "user_id")
+      expect(context.pending_count).to eq(0)
+    end
+
+    # A recorded traffic miss is checked the same way: the Collector resolves its cluster too.
+    it "publishes a traffic miss with the cluster it was read with after a mid-period change" do
+      context = create_context(attribute_switchback("city", trafficSplit: [1.0, 0.0]))
+      clock.now = ANCHOR + 10
+      context.set_attribute("city", "Lisboa")
+      context.peek_treatment("exp_sb")
+      clock.now = ANCHOR + 20
+      context.set_attribute("city", "Faro")
+      expect(context.treatment("exp_sb")).to eq(0)
+      context.publish
+      body = context.send(:event_handler).events.last
+      expect(body.exposures.map(&:eligible)).to eq([false])
+      expect(collector_cluster(body, body.exposures[0], "city")).to eq("Lisboa")
+    end
+
+    # Exposures the batch already attributes correctly share one body.
+    it "keeps one publish body when every exposure resolves from the batch" do
+      context = create_context(attribute_switchback("city"))
+      clock.now = ANCHOR + 10
+      context.set_attribute("city", "Lisboa")
+      context.treatment("exp_sb")
+      context.track("goal")
+      context.publish
+      expect(context.send(:event_handler).events.length).to eq(1)
     end
 
     # The exposing call's own instant is kept while the attributes still give the slot's cluster.

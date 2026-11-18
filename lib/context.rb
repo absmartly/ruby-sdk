@@ -25,14 +25,16 @@ class Context
   SWITCHBACK_RETAINED_PERIODS = 2
   # Fiber-local key for the clock reading of the call exposing a switchback.
   RESOLVED_AT = :__absmartly_switchback_resolved_at
-  # Fiber-local key for a reading taken under the lock by a caller that read none.
-  LATE_READING = :__absmartly_switchback_late_reading
   # The Collector's anchor bounds: hour aligned, in [0, 10000-01-01T00:00:00Z).
   SWITCHBACK_ANCHOR_ALIGNMENT_MS = 3_600_000
   SWITCHBACK_MAX_ANCHOR_MS = 253_402_300_800_000
   # One switchback's cache slots, all created under one generation.
   SwitchbackEpoch = Struct.new(:generation, :periods)
-  private_constant :SwitchbackEpoch, :RESOLVED_AT, :LATE_READING, :SWITCHBACK, :SWITCHBACK_KEY_SEPARATOR, :SWITCHBACK_RETAINED_PERIODS,
+
+  # A switchback slot handed to a caller that read no clock, with the reading
+  # that chose it. Only that call holds it; the cache keeps the slot itself.
+  LateSlot = Struct.new(:slot, :late_reading)
+  private_constant :SwitchbackEpoch, :LateSlot, :RESOLVED_AT, :SWITCHBACK, :SWITCHBACK_KEY_SEPARATOR, :SWITCHBACK_RETAINED_PERIODS,
                    :SWITCHBACK_ANCHOR_ALIGNMENT_MS, :SWITCHBACK_MAX_ANCHOR_MS
 
   attr_reader :pending_count
@@ -244,9 +246,12 @@ class Context
     check_ready?(true)
 
     unless @switchbacks_active
-      assignment = assignment(experiment_name, nil)
-      # A refresh installed the first switchback while this call waited.
-      return expose_assignment(assignment, take_late_reading).then { assignment.variant } if assignment.switchback
+      assignment = late_assignment(experiment_name)
+      if assignment.is_a?(LateSlot)
+        # A refresh installed the first switchback while this call waited.
+        expose_assignment(assignment.slot, assignment.late_reading)
+        return assignment.slot.variant
+      end
 
       queue_exposure(assignment)
       return assignment.variant
@@ -277,7 +282,10 @@ class Context
         assignment.exposed = true
 
         if assignment.switchback
-          exposure = enqueue_exposure(assignment.name, assignment, Thread.current[RESOLVED_AT]) unless assignment.switchback_silent
+          unless assignment.switchback_silent
+            exposure = enqueue_exposure(assignment.name, assignment, Thread.current[RESOLVED_AT])
+            (@switchback_exposures ||= {}.compare_by_identity)[exposure] = assignment
+          end
         elsif !assignment.suppressed || assignment.overridden || assignment.rule_override
           exposure = enqueue_exposure(assignment.name, assignment)
         end
@@ -297,11 +305,7 @@ class Context
   def peek_treatment(experiment_name)
     check_ready?(true)
 
-    unless @switchbacks_active
-      assignment = assignment(experiment_name, nil)
-      take_late_reading if assignment.switchback
-      return assignment.variant
-    end
+    return assignment(experiment_name, nil).variant unless @switchbacks_active
 
     assignment(experiment_name, now_millis).variant
   end
@@ -483,6 +487,7 @@ class Context
         @queue_mutex.synchronize do
           @exposures = []
           @achievements = []
+          @switchback_exposures = nil
           @pending_count = 0
         end
         return @data_failed
@@ -496,34 +501,44 @@ class Context
 
       result = @publish_mutex.synchronize do
         exposures = achievements = nil
-        event_count = 0
         @queue_mutex.synchronize do
           exposures = @exposures.dup
           achievements = @achievements.dup
-          event_count = exposures.size + achievements.size
         end
 
-        next nil unless event_count > 0
+        next nil if exposures.empty? && achievements.empty?
 
-        event = PublishEvent.new
-        event.hashed = true
-        # Never before a queued event, which the Collector would reject with the
-        # whole batch, if the wall clock stepped back since it was stamped.
-        event.published_at = [now_millis, *exposures.map(&:exposed_at), *achievements.map(&:achieved_at)].max
-        event.units = @units.map do |key, value|
-          Unit.new(key.to_s, unit_hash(key, value))
+        published_at = now_millis
+        events = []
+        batch_exposures = exposures
+        separate = separate_switchback_exposures(exposures, published_at) unless @switchback_exposures.nil?
+        unless separate.nil? || separate.empty?
+          batch_exposures = exposures.reject { |exposure| separate.key?(exposure) }
         end
-        event.exposures = exposures unless exposures.empty?
-        event.attributes = @attributes unless @attributes.empty?
-        event.goals = achievements unless achievements.empty?
+        unless batch_exposures.empty? && achievements.empty?
+          events << publish_event(published_at, @units, @attributes, batch_exposures, achievements)
+        end
+        separate&.each { |exposure, (units, attributes)| events << publish_event(published_at, units, attributes, [exposure], []) }
+
         # Like the JavaScript SDK, the publish event is logged once the batch is
         # delivered; a failed delivery logs an error event instead.
-        begin
-          response = @event_handler.publish(self, event)
-        rescue StandardError => e
-          log_error(e)
-          raise
+        response = nil
+        delivered = []
+        events.each do |event|
+          begin
+            response = @event_handler.publish(self, event)
+          rescue StandardError => e
+            log_error(e)
+            dequeue_published(delivered)
+            raise
+          end
+          break if publish_failed?(response)
+
+          log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event) if events.length > 1
+          delivered << event
         end
+        dequeue_published(delivered) if events.length > 1
+        event = events.last
 
         if response.is_a?(Exception)
           log_error(response)
@@ -535,13 +550,9 @@ class Context
           log_error(StandardError.new("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})"))
           response
         else
-          log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
-          # Remove only the events that were published; others may have been
-          # queued concurrently while the request was in flight.
-          @queue_mutex.synchronize do
-            @exposures.shift(exposures.size)
-            @achievements.shift(achievements.size)
-            @pending_count = [@pending_count - event_count, 0].max
+          if events.length == 1
+            log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
+            dequeue_published(events)
           end
           response
         end
@@ -553,6 +564,76 @@ class Context
         seal(event_type) unless @closed || publish_failed?(result)
       end
       result
+    end
+
+    # A publish body: hashed units, the attributes and the events. Its
+    # publishedAt is never before one of its events, which the Collector would
+    # reject with the whole batch, if the wall clock stepped back.
+    def publish_event(published_at, units, attributes, exposures, achievements)
+      event = PublishEvent.new
+      event.hashed = true
+      event.published_at = [published_at, *exposures.map(&:exposed_at), *achievements.map(&:achieved_at)].max
+      event.units = units.map { |key, value| Unit.new(key.to_s, unit_hash(key.to_sym, value)) }
+      event.exposures = exposures unless exposures.empty?
+      event.attributes = attributes unless attributes.empty?
+      event.goals = achievements unless achievements.empty?
+      event
+    end
+
+    # Removes the events of delivered publish bodies only; others may have been
+    # queued while the request was in flight.
+    def dequeue_published(events)
+      return if events.empty?
+
+      sent = {}.compare_by_identity
+      events.each do |event|
+        (event.exposures || []).each { |e| sent[e] = true }
+        (event.goals || []).each { |g| sent[g] = true }
+      end
+      @queue_mutex.synchronize do
+        before = @exposures.length + @achievements.length
+        @exposures.reject! { |e| sent.key?(e) }
+        @achievements.reject! { |g| sent.key?(g) }
+        @switchback_exposures&.delete_if { |e, _| sent.key?(e) }
+        @pending_count = [@pending_count - (before - @exposures.length - @achievements.length), 0].max
+      end
+    end
+
+    # The Collector resolves a switchback's serving unit and cluster again
+    # from the batch's units and attributes at exposedAt. An exposure the
+    # batch would credit to another unit or cluster (a later set_unit, an
+    # attribute written in its millisecond, a clock rewind) is sent in a body
+    # of its own, with the units and the attributes its slot read; exposedAt
+    # is kept. Returns exposure => [units, attributes].
+    def separate_switchback_exposures(exposures, published_at)
+      batch_units = @units.transform_keys(&:to_s)
+      separate = nil
+      @assignment_mutex.synchronize do
+        exposures.each do |exposure|
+          assignment = @switchback_exposures[exposure]
+          next if assignment.nil? || assignment.serving.status != Absmartly::Switchback::Serving::ELIGIBLE
+          next if served_at?(assignment, exposure.exposed_at, batch_units, @attributes)
+
+          payload = served_payload(assignment, exposure.exposed_at)
+          (separate ||= {}.compare_by_identity)[exposure] = payload unless payload.nil?
+        end
+      end
+      separate
+    end
+
+    # The units and the attributes set by the slot's read. Should a clock
+    # rewind leave the attributes the read selected after exposedAt, those are
+    # sent stamped at exposedAt instead.
+    def served_payload(assignment, exposed_at)
+      units = assignment.serving_units
+      read = @attributes.first(assignment.serving_attribute_count)
+      return [units, read] if served_at?(assignment, exposed_at, units, read)
+
+      selected = assignment.switchback_entry.switchback_source_paths.filter_map do |path|
+        latest_attribute(path.root_key, assignment.serving_read_at, read)
+      end.uniq
+      clamped = selected.map { |a| Attribute.new(a.name, a.value, [a.set_at, exposed_at].min) }
+      served_at?(assignment, exposed_at, units, clamped) ? [units, clamped] : nil
     end
 
     def publish_failed?(result)
@@ -575,20 +656,8 @@ class Context
     # The exposing call's clock reading reaches queue_exposure through a
     # fiber-local, so queue_exposure keeps its v1.3.0 signature for subclasses
     # that override it, and concurrent callers each stamp their own reading.
-    # The reading taken under the lock for a caller that read none, cleared so
-    # it never stamps a later call.
-    def take_late_reading
-      reading = Thread.current[LATE_READING]
-      Thread.current[LATE_READING] = nil unless reading.nil?
-      reading
-    end
-
     def expose_assignment(assignment, now)
       return queue_exposure(assignment) if now.nil? || !assignment.switchback
-
-      if assignment.switchback && !assignment.exposed && !assignment.switchback_silent
-        now = switchback_exposure_instant(assignment, now)
-      end
 
       previous = Thread.current[RESOLVED_AT]
       Thread.current[RESOLVED_AT] = now
@@ -599,21 +668,12 @@ class Context
       end
     end
 
-    # The Collector resolves a switchback's cluster again at exposedAt from the
-    # published attributes. The exposing call's instant is kept when they give
-    # the slot's cluster there; otherwise the exposure is stamped when the slot
-    # read its cluster, in the same period.
-    def switchback_exposure_instant(assignment, now)
-      with_assignment_lock do
-        view = resolve_switchback_serving(assignment.switchback_entry, now)
-        slot = assignment.serving
-        same = view.status == slot.status && view.unit_type == slot.unit_type && view.cluster_key == slot.cluster_key
-        same ? now : assignment.serving_read_at
-      end
-    end
-
-    def with_assignment_lock(&block)
-      @assignment_mutex.owned? ? yield : @assignment_mutex.synchronize(&block)
+    # Whether the Collector, resolving the cluster from these units and
+    # attributes at the exposure's instant, finds the one the slot served.
+    def served_at?(assignment, at, units, attributes)
+      view = resolve_switchback_serving(assignment.switchback_entry, at, units, attributes)
+      slot = assignment.serving
+      view.status == slot.status && view.unit_type == slot.unit_type && view.cluster_key == slot.cluster_key
     end
 
     def enqueue_exposure(name, assignment, exposed_at = nil)
@@ -835,8 +895,16 @@ class Context
     # now is the caller's one clock reading (nil when the data has no
     # switchback), so a switchback's period, its cluster attributes and its
     # exposure's exposedAt all agree.
+    # A LateSlot (see cached_or_new_assignment) is unwrapped here only by the
+    # callers that read no clock; every other caller gets the Assignment.
     def assignment(experiment_name, now)
-      @assignment_mutex.synchronize { cached_or_new_assignment(experiment_name, @state, now) }
+      result = @assignment_mutex.synchronize { cached_or_new_assignment(experiment_name, @state, now) }
+      result.is_a?(LateSlot) ? result.slot : result
+    end
+
+    # An Assignment, or the LateSlot of a caller that read no clock.
+    def late_assignment(experiment_name)
+      @assignment_mutex.synchronize { cached_or_new_assignment(experiment_name, @state, nil) }
     end
 
     def cached_or_new_assignment(experiment_name, state, now)
@@ -848,11 +916,15 @@ class Context
         if !experiment.nil? && experiment.switchback
           # A caller that read no clock started before a refresh added the
           # first switchback; the reading taken here is the one it exposes with.
-          if now.nil?
-            now = now_millis
-            Thread.current[LATE_READING] = now
-          end
-          return switchback_assignment(experiment_name.to_s, experiment, custom, override, now)
+          return switchback_assignment(experiment_name.to_s, experiment, custom, override, now) unless now.nil?
+
+          # The caller started before a refresh installed the first switchback,
+          # so it read no clock. The reading taken here is returned with the
+          # slot, to the call only (a cached slot was chosen at its own), so
+          # the call exposes at the instant that chose the period.
+          now = now_millis
+          slot = switchback_assignment(experiment_name.to_s, experiment, custom, override, now)
+          return LateSlot.new(slot, now)
         end
 
         drop_switchback_epoch(experiment_name.to_s)
@@ -980,9 +1052,12 @@ class Context
       key = key.to_s.to_sym
       suppressed_fallback = nil
       (state.index_variables[key] || []).each do |experiment|
-        assignment = assignment(experiment.data.name, now)
-        # The rest of this call exposes with the reading that chose the first slot.
-        now ||= take_late_reading if @switchbacks_active
+        assignment = now.nil? ? late_assignment(experiment.data.name) : assignment(experiment.data.name, now)
+        if assignment.is_a?(LateSlot)
+          # The rest of this call exposes with the reading that chose the first slot.
+          now = assignment.late_reading
+          assignment = assignment.slot
+        end
         next if assignment.variables.nil?
 
         (now.nil? ? queue_exposure(assignment) : expose_assignment(assignment, now)) if expose
@@ -1181,15 +1256,16 @@ class Context
 
     # The Collector's switchbackServing at now. A missing, empty or unreadable
     # cluster map takes the legacy path.
-    def resolve_switchback_serving(entry, now)
-      units = @units.transform_keys(&:to_s)
+    # units maps unit type names to uids and attributes is the attribute list
+    # read, so a publish can resolve the cluster again from its own payload.
+    def resolve_switchback_serving(entry, now, units = @units.transform_keys(&:to_s), attributes = @attributes)
       if entry.switchback_source_paths.nil?
         return Absmartly::Switchback::Serving.legacy(entry.data.unit_type, units)
       end
 
       Absmartly::Switchback::Serving.resolve(entry.switchback_source_types, entry.switchback_source_paths,
                                              entry.data.switchback_cluster_values, units) do |path|
-        attribute = latest_attribute(path.root_key, now)
+        attribute = latest_attribute(path.root_key, now, attributes)
         attribute.nil? ? nil : path.resolve_attribute(attribute.value)
       end
     end
@@ -1197,9 +1273,9 @@ class Context
     # The attribute the Collector records with an exposure at now: among those
     # set at or before now with that (trimmed) name, the latest setAt, and on a
     # tie the one set last. System attributes are never read.
-    def latest_attribute(name, now)
+    def latest_attribute(name, now, attributes)
       selected = nil
-      @attributes.each do |attribute|
+      attributes.each do |attribute|
         next unless attribute.set_at <= now && attribute.name.to_s.strip == name
         selected = attribute if selected.nil? || attribute.set_at >= selected.set_at
       end
@@ -1222,8 +1298,15 @@ class Context
       # The serving unit and cluster key are read once per slot.
       serving = cached&.serving
       read_at = cached&.serving_read_at
+      units = cached&.serving_units
+      attribute_count = cached&.serving_attribute_count
       if serving.nil? || serving.status == Absmartly::Switchback::Serving::ABSENT
-        serving = resolve_switchback_serving(entry, now)
+        # The units and the attributes set so far, as the read sees them; an
+        # exposure that the final payload no longer resolves to this cluster is
+        # published with these.
+        units = @units.transform_keys(&:to_s).freeze
+        attribute_count = @attributes.length
+        serving = resolve_switchback_serving(entry, now, units)
         read_at = now
       end
 
@@ -1234,6 +1317,8 @@ class Context
       assignment.switchback = true
       assignment.serving = serving
       assignment.serving_read_at = read_at
+      assignment.serving_units = units
+      assignment.serving_attribute_count = attribute_count
       assignment.switchback_entry = entry
       assignment.id = entry.data.id
       if override.nil?
@@ -1512,7 +1597,7 @@ class Assignment
                 :rule_override, :rule_variant, :rule_missing_unit, :rule_key,
                 :suppressed, :holdouts, :holdout_assignments, :holdout_arm_count,
                 :switchback, :serving, :switchback_silent, :custom_assignment,
-                :serving_read_at, :switchback_entry
+                :serving_read_at, :switchback_entry, :serving_units, :serving_attribute_count
 
   def initialize
     @variant = 0

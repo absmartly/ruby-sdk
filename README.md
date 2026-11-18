@@ -340,7 +340,7 @@ context.treatment("delivery_fee_test")        # the variant of cluster "lisbon" 
 - A cluster value is a non-empty string, used as is, or an Integer, keyed by its decimal text. A Float (even `3.0`), `true`/`false`, a Hash, an Array, `""` and `nil` give no value.
 - With no value, linked units that disagree, or a value the experiment does not allow, the unit gets control (variant 0) and no exposure is sent. Without a unit of a linked type, the experiment does not apply.
 - Before the experiment's start the unit gets control and no exposure is sent; an assignment rule, a strict audience mismatch and full-on still apply.
-- One exposure is sent per experiment and period. The attribute is read once per period: setting it again takes effect in the next period, and an exposure sent after such a change is stamped with the time the cluster was read, so the Collector attributes it to the cluster that was served. Set cluster attributes before reading the experiment: as with the Java SDK, an attribute set in the same millisecond as an exposure ties with it, and the Collector takes the later value.
+- One exposure is sent per experiment and period. The attribute is read once per period: setting it again takes effect in the next period. An exposure whose cluster or serving unit the later attributes or units would change is published in a request of its own, with what its period read, so the Collector credits the cluster that was served.
 - `set_override`, assignment rules, strict audiences, full-on and `set_custom_assignment` apply as for other experiments. Holdouts never apply to a switchback.
 
 ### Custom Assignments
