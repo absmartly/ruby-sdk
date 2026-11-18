@@ -430,16 +430,13 @@ class Context
 
       # Called from a logger callback while a publish is in flight: defer so the
       # events queued by the callback are still sent before finalizing. A seal
-      # that is already running claims nothing, so the request survives if
-      # that seal fails, and is dropped if it raises the retry error below.
+      # that is already running does not claim it, so the request survives if
+      # that seal fails or gives up.
       if @publish_mutex.owned?
         @close_pending = event_type
         return nil
       end
 
-      # A request carried from before this seal (e.g. from the error callback
-      # of an earlier rejected publish) is kept if this seal gives up.
-      carried = @close_pending
       @closing = true
       begin
         # One extra pass sends events a logger callback queued during the
@@ -464,13 +461,9 @@ class Context
               @pending_count = 0
             end
             unless @exposures.empty? && @achievements.empty?
-              if last_pass
-                # The caller retries close/finalize itself, which covers any
-                # request made by a callback during this seal; one carried from
-                # before the seal stays pending.
-                @close_pending = carried
-                raise EventsQueuedWhileClosing.new("Events queued while closing; retry close or finalize")
-              end
+              # A pending request (from a callback, before or during this seal,
+              # on any thread) stays pending for the next successful publish.
+              raise EventsQueuedWhileClosing.new("Events queued while closing; retry close or finalize") if last_pass
 
               next :retry
             end

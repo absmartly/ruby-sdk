@@ -862,7 +862,7 @@ RSpec.describe Context do
     expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
   end
 
-  it "a close requested from a publish callback during close is not kept once close raises" do
+  it "a close requested from a publish callback during close is carried out by the next publish once close raises" do
     config = ContextConfig.create
     config.set_units(units)
     holder = { goals: 0 }
@@ -883,8 +883,62 @@ RSpec.describe Context do
 
     expect { Timeout.timeout(5) { holder[:context].close } }.to raise_error(StandardError, /retry close/)
     Timeout.timeout(5) { holder[:context].publish }
-    expect(holder[:context].closed?).to be false
+    expect(holder[:context].closed?).to be true
     expect(holder[:context].pending_count).to eq(0)
+  end
+
+  it "keeps a close another thread requests while finalize waits for the publish lock" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { events: [] }
+    in_publish = Queue.new
+    release = Queue.new
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        holder[:events] << event
+        if event == ContextEventLogger::EVENT_TYPE::ERROR && !holder[:asked]
+          holder[:asked] = true
+          holder[:context].close
+        end
+        holder[:context].track("cb", nil) if event == ContextEventLogger::EVENT_TYPE::PUBLISH && holder[:produce]
+      end
+    end.new
+    calls = 0
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish) do
+      calls += 1
+      if calls == 1
+        in_publish << true
+        release.pop
+        next failure_future
+      end
+      publish_future
+    end
+    context = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                             variable_parser, audience_matcher)
+    holder[:context] = context
+    context.track("goal_a", nil)
+    # Thread A holds the publish lock; B starts finalize and waits for it. A's
+    # publish is rejected and its error callback asks for close. B then hits
+    # the pass bound and raises the retry error; A's request must survive.
+    a = Thread.new { context.publish }
+    Timeout.timeout(5) { in_publish.pop }
+    holder[:produce] = true
+    b = Thread.new do
+      context.finalize
+    rescue StandardError => e
+      e
+    end
+    sleep 0.05 until b.status == "sleep"
+    release << true
+    Timeout.timeout(5) { a.join }
+    expect(Timeout.timeout(5) { b.value }).to be_a(StandardError)
+    holder[:produce] = false
+
+    Timeout.timeout(5) { context.publish }
+    expect(context.closed?).to be true
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE) +
+           holder[:events].count(ContextEventLogger::EVENT_TYPE::FINALIZE)).to eq(1)
   end
 
   it "matches the system entry's name exactly, not case-insensitively" do
