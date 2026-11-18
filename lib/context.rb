@@ -11,6 +11,7 @@ require_relative "json/attribute"
 require_relative "json/exposure"
 require_relative "json/publish_event"
 require_relative "json/goal_achievement"
+require_relative "absmartly/switchback"
 
 class Context
   # Immutable-by-convention snapshot swapped in with a single assignment so
@@ -19,6 +20,14 @@ class Context
   NO_RULES = ""
   NO_HOLDOUTS = {}.freeze
   private_constant :NO_HOLDOUTS
+  SWITCHBACK = "switchback"
+  SWITCHBACK_KEY_SEPARATOR = "\u001f"
+  SWITCHBACK_RETAINED_PERIODS = 2
+  # The Collector's anchor bounds: hour aligned, in [0, 10000-01-01T00:00:00Z).
+  SWITCHBACK_ANCHOR_ALIGNMENT_MS = 3_600_000
+  SWITCHBACK_MAX_ANCHOR_MS = 253_402_300_800_000
+  private_constant :SWITCHBACK, :SWITCHBACK_KEY_SEPARATOR, :SWITCHBACK_RETAINED_PERIODS,
+                   :SWITCHBACK_ANCHOR_ALIGNMENT_MS, :SWITCHBACK_MAX_ANCHOR_MS
 
   attr_reader :pending_count
 
@@ -228,8 +237,9 @@ class Context
   def treatment(experiment_name)
     check_ready?(true)
 
-    assignment = assignment(experiment_name)
-    queue_exposure(assignment)
+    now = now_millis
+    assignment = assignment(experiment_name, now)
+    queue_exposure(assignment, now)
     assignment.variant
   end
 
@@ -237,7 +247,10 @@ class Context
   # or rule chose its variant. The holdouts covering it then expose once each,
   # in id order, from the arms pinned when the assignment was made, so a
   # refresh in between can't publish another holdout epoch (as in JS).
-  def queue_exposure(assignment)
+  # A switchback exposure is stamped with resolved_at, the clock reading that
+  # chose its period; a switchback the Collector records nothing for (no
+  # linked unit, an ineligible cluster, pre-anchor) exposes nothing.
+  def queue_exposure(assignment, resolved_at = nil)
     exposure = nil
     holdout_exposures = nil
     @queue_mutex.synchronize do
@@ -248,7 +261,9 @@ class Context
       unless assignment.exposed
         assignment.exposed = true
 
-        if !assignment.suppressed || assignment.overridden || assignment.rule_override
+        if assignment.switchback
+          exposure = enqueue_exposure(assignment.name, assignment, resolved_at) unless assignment.switchback_silent
+        elsif !assignment.suppressed || assignment.overridden || assignment.rule_override
           exposure = enqueue_exposure(assignment.name, assignment)
         end
         assignment.holdout_assignments&.each_with_index do |holdout_assignment, i|
@@ -267,7 +282,7 @@ class Context
   def peek_treatment(experiment_name)
     check_ready?(true)
 
-    assignment(experiment_name).variant
+    assignment(experiment_name, now_millis).variant
   end
 
   alias peek peek_treatment
@@ -534,13 +549,13 @@ class Context
       end
     end
 
-    def enqueue_exposure(name, assignment)
+    def enqueue_exposure(name, assignment, exposed_at = nil)
       exposure = Exposure.new
       exposure.id = assignment.id || 0
       exposure.name = name
       exposure.unit = assignment.unit_type
       exposure.variant = assignment.variant
-      exposure.exposed_at = now_millis
+      exposure.exposed_at = exposed_at || now_millis
       exposure.assigned = assignment.assigned
       exposure.eligible = assignment.eligible
       exposure.overridden = assignment.overridden
@@ -562,7 +577,8 @@ class Context
       if clock.respond_to?(:call)
         clock.call
       elsif clock.is_a?(Time)
-        (clock.to_r * 1000).floor
+        # Cached: the cached read path must not allocate.
+        @fixed_millis ||= (clock.to_r * 1000).floor
       else
         clock.to_i
       end
@@ -612,6 +628,12 @@ class Context
     def invalidate_assignments_missing_unit(unit_type)
       @assignment_mutex.synchronize do
         @assignment_cache.delete_if do |_name, assignment|
+          # A switchback resolved before any linked unit was set is resolved
+          # again; unless overridden it published nothing, so even an exposed one.
+          if assignment.serving&.status == Absmartly::Switchback::Serving::ABSENT
+            next !assignment.overridden || !assignment.exposed
+          end
+
           assignment.unit_type.to_s == unit_type && !assignment.exposed &&
             (assignment.rule_missing_unit || assignment.holdout_assignments&.include?(nil))
         end
@@ -665,7 +687,7 @@ class Context
       (@holdout_assignments ||= {})[key] = assignment
     end
 
-    def audience_matches(entry, assignment)
+    def audience_matches(entry, assignment, unit_type = entry.data.unit_type)
       experiment = entry.data
       key = entry.rule_key
       cached_key = assignment.rule_key || NO_RULES
@@ -685,7 +707,7 @@ class Context
 
         unless key.empty?
           pinned_missing = assignment.exposed && assignment.rule_missing_unit
-          rule = resolve_rule(entry, attrs, pinned_missing)
+          rule = resolve_rule(entry, attrs, pinned_missing, unit_type)
           return false if rule&.first != assignment.rule_variant
 
           assignment.rule_missing_unit = rule ? rule.last : false
@@ -718,7 +740,8 @@ class Context
     # Returns [variant, missing_unit], or nil to fall back to normal
     # assignment (as JS and Java do for an out-of-range variant or a split
     # without one percentage per variant).
-    def resolve_rule(entry, attrs, unit_pinned_missing)
+    # A switchback's split rule randomizes over its serving unit (unit_type).
+    def resolve_rule(entry, attrs, unit_pinned_missing, unit_type = entry.data.unit_type)
       experiment = entry.data
       return nil if entry.rules.nil?
 
@@ -731,7 +754,6 @@ class Context
       end
       return nil if action.split.length != variant_count
 
-      unit_type = experiment.unit_type
       uid = unit_type.nil? || unit_pinned_missing ? nil : @units[unit_type.to_sym]
       return [experiment.full_on_variant || 0, true] if uid.nil?
 
@@ -743,16 +765,23 @@ class Context
     # new as the previous one: a read that started before a refresh can't
     # overwrite assignments (or holdout arms) already built from newer data,
     # which would reset their exposed flag and expose them again.
-    def assignment(experiment_name)
-      @assignment_mutex.synchronize { cached_or_new_assignment(experiment_name, @state) }
+    # now is the caller's one clock reading, so a switchback's period, its
+    # cluster attributes and its exposure's exposedAt all agree.
+    def assignment(experiment_name, now)
+      @assignment_mutex.synchronize { cached_or_new_assignment(experiment_name, @state, now) }
     end
 
-    def cached_or_new_assignment(experiment_name, state)
-      assignment = @assignment_cache[experiment_name.to_s]
+    def cached_or_new_assignment(experiment_name, state, now)
       exp_key = experiment_name.to_s.to_sym
       custom = @cassignments[exp_key]
       override = @overrides[exp_key]
       experiment = experiment(experiment_name.to_s, state)
+      if !experiment.nil? && experiment.switchback
+        return switchback_assignment(experiment_name.to_s, experiment, custom, override, now)
+      end
+
+      drop_switchback_epoch(experiment_name.to_s) unless @switchback_epochs.empty?
+      assignment = @assignment_cache[experiment_name.to_s]
 
       if !assignment.nil?
         if !override.nil?
@@ -871,13 +900,14 @@ class Context
     # experiment rather than the default.
     def resolve_variable_value(key, default_value, expose)
       state = @state
+      now = now_millis
       key = key.to_s.to_sym
       suppressed_fallback = nil
       (state.index_variables[key] || []).each do |experiment|
-        assignment = assignment(experiment.data.name)
+        assignment = assignment(experiment.data.name, now)
         next if assignment.variables.nil?
 
-        queue_exposure(assignment) if expose
+        queue_exposure(assignment, now) if expose
         if assignment.variables.key?(key) && (assignment.assigned || assignment.overridden || assignment.rule_override)
           return assignment.variables[key]
         end
@@ -941,7 +971,15 @@ class Context
           end
           experiment_variables.unconditional = experiment_variables.rule_key.equal?(NO_RULES) &&
                                                (experiment.audience.nil? || experiment.audience.empty?)
-          holdout_ids = experiment.holdout_ids unless holdouts_by_id.empty? || !experiment.respond_to?(:holdout_ids)
+          # Holdouts never apply to a switchback.
+          if experiment.respond_to?(:randomization_type) && experiment.randomization_type == SWITCHBACK
+            clusters = experiment.switchback_clusters
+            experiment_variables.switchback = true
+            experiment_variables.switchback_source_types = Absmartly::Switchback::Serving.source_types(clusters)
+            experiment_variables.switchback_source_paths = Absmartly::Switchback::Serving.source_paths(clusters)
+          end
+          holdout_ids = experiment.holdout_ids unless holdouts_by_id.empty? || experiment_variables.switchback ||
+                                                      !experiment.respond_to?(:holdout_ids)
           if holdout_ids.is_a?(Array) && !holdout_ids.empty?
             holdouts = holdout_ids.filter_map { |id| holdouts_by_id[holdout_id(id)] }.uniq.sort_by { |h| holdout_id(h.id) }
             experiment_variables.holdouts = holdouts unless holdouts.empty?
@@ -996,7 +1034,272 @@ class Context
       end
 
       # Publish the fully built snapshot; the maps are never mutated after this.
-      @state = State.new(data, index, index_variables, custom_fields, holdouts_by_id)
+      @data_mutex.synchronize do
+        assign_switchback_generations(index, @state.index)
+        @state = State.new(data, index, index_variables, custom_fields, holdouts_by_id)
+      end
+    end
+
+    # A switchback keeps its generation while its previous definition was a
+    # switchback with the same identity; otherwise it gets a fresh one, so its
+    # cached slots are dropped on its next resolution (an epoch change).
+    def assign_switchback_generations(index, previous_index)
+      index.each do |name, installed|
+        next unless installed.switchback
+
+        previous = previous_index[name]
+        installed.switchback_generation = if same_switchback_identity?(previous, installed)
+          previous.switchback_generation
+        else
+          @switchback_generation += 1
+        end
+      end
+    end
+
+    # id, iteration, the ordered cluster map, the allow-list, startAt,
+    # periodMs and design, plus unitType when either side takes the legacy
+    # path. Seed, split and the analysis-only fields are not identity.
+    def same_switchback_identity?(previous, installed)
+      return false if previous.nil? || !previous.switchback
+
+      a = previous.data
+      b = installed.data
+      a.id == b.id && a.iteration == b.iteration && switchback_grid(a) == switchback_grid(b) &&
+        ((!previous.switchback_source_paths.nil? && !installed.switchback_source_paths.nil?) ||
+         a.unit_type == b.unit_type)
+    end
+
+    def switchback_grid(experiment)
+      [Experiment.ordered_clusters(experiment.switchback_clusters), experiment.switchback_cluster_values,
+       experiment.switchback_start_at, experiment.switchback_period_ms, experiment.switchback_design_type]
+    end
+
+    def pin_switchback_config(assignment, experiment)
+      assignment.switchback = true
+      assignment.switchback_grid = switchback_grid(experiment)
+    end
+
+    # Whether the Collector can serve the schedule: an hour-aligned start in
+    # [0, 10000-01-01), used as served, a period > 0 and at least two arms.
+    def switchback_schedule_servable?(experiment)
+      start_at = experiment.switchback_start_at
+      period_ms = experiment.switchback_period_ms
+      start_at.is_a?(Integer) && start_at >= 0 && start_at < SWITCHBACK_MAX_ANCHOR_MS &&
+        (start_at % SWITCHBACK_ANCHOR_ALIGNMENT_MS).zero? &&
+        period_ms.is_a?(Integer) && period_ms > 0 &&
+        experiment.split.is_a?(Array) && experiment.split.length >= 2
+    end
+
+    # floor((now - startAt) / periodMs), or nil before the start, for an
+    # unservable schedule and on the legacy path.
+    def switchback_period(entry, now)
+      return nil if entry.switchback_source_paths.nil? || !switchback_schedule_servable?(entry.data)
+
+      start_at = entry.data.switchback_start_at
+      now < start_at ? nil : (now - start_at).div(entry.data.switchback_period_ms)
+    end
+
+    def switchback_seed(experiment)
+      ((experiment.seed_hi || 0) << 32) | ((experiment.seed_lo || 0) & 0xffffffff)
+    end
+
+    # The Collector's switchbackServing at now. A missing, empty or unreadable
+    # cluster map takes the legacy path.
+    def resolve_switchback_serving(entry, now)
+      units = @units.transform_keys(&:to_s)
+      if entry.switchback_source_paths.nil?
+        return Absmartly::Switchback::Serving.legacy(entry.data.unit_type, units)
+      end
+
+      Absmartly::Switchback::Serving.resolve(entry.switchback_source_types, entry.switchback_source_paths,
+                                             entry.data.switchback_cluster_values, units) do |path|
+        attribute = latest_attribute(path.root_key, now)
+        attribute.nil? ? nil : path.resolve_attribute(attribute.value)
+      end
+    end
+
+    # The attribute the Collector records with an exposure at now: among those
+    # set at or before now with that (trimmed) name, the latest setAt, and on a
+    # tie the one set last. System attributes are never read.
+    def latest_attribute(name, now)
+      selected = nil
+      @attributes.each do |attribute|
+        next unless attribute.set_at <= now && attribute.name.to_s.strip == name
+        selected = attribute if selected.nil? || attribute.set_at >= selected.set_at
+      end
+      selected
+    end
+
+    # Port of java-sdk's switchback branch of getAssignment. Each period has
+    # its own slot; the bare-name slot serves before the anchor and for an
+    # unservable schedule. Caller holds @assignment_mutex.
+    def switchback_assignment(name, entry, custom, override, now)
+      epoch = @switchback_epochs[name]
+      drop_switchback_epoch(name) if !epoch.nil? && epoch.generation != entry.switchback_generation
+
+      period = switchback_period(entry, now)
+      cache_key = period.nil? ? name : "#{name}#{SWITCHBACK_KEY_SEPARATOR}#{period}"
+      cached = @assignment_cache[cache_key]
+      cached = nil unless cached.nil? || cached.switchback
+      return cached if !cached.nil? && switchback_assignment_current?(cached, entry, custom, override)
+
+      # The serving unit and cluster key are read once per slot.
+      serving = cached&.serving
+      serving = resolve_switchback_serving(entry, now) if serving.nil? || serving.status == Absmartly::Switchback::Serving::ABSENT
+
+      assignment = Assignment.new
+      assignment.name = name
+      assignment.eligible = true
+      assignment.custom_assignment = custom
+      pin_switchback_config(assignment, entry.data)
+      assignment.serving = serving
+      assignment.id = entry.data.id
+      if override.nil?
+        resolve_switchback(assignment, entry, serving, custom, period)
+      else
+        assignment.unit_type = serving.unit_type || switchback_fallback_unit_type(entry)
+        assignment.overridden = true
+        assignment.variant = override
+      end
+
+      variants = entry.data.variants
+      if !variants.nil? && assignment.variant >= 0 && assignment.variant < variants.length
+        assignment.variables = entry.variables[assignment.variant] || {}
+      end
+
+      @assignment_cache[cache_key] = assignment
+      retain_switchback_period(name, entry, period)
+      assignment
+    end
+
+    # The Collector's order for an eligible cluster: rules (a split rule over
+    # the serving unit), audience, full-on, then, only with a current period,
+    # traffic on the serving unit's hash, custom assignment and the draw over
+    # the raw cluster key. Holdouts never apply.
+    def resolve_switchback(assignment, entry, serving, custom, period)
+      data = entry.data
+      assignment.iteration = data.iteration
+      assignment.traffic_split = data.traffic_split
+      assignment.full_on_variant = data.full_on_variant
+      assignment.rule_key = entry.rule_key
+      assignment.attrs_seq = @attrs_seq
+      assignment.variant = 0
+
+      if serving.status == Absmartly::Switchback::Serving::ABSENT
+        assignment.unit_type = switchback_fallback_unit_type(entry)
+        assignment.eligible = false
+        assignment.switchback_silent = true
+        return
+      end
+
+      assignment.unit_type = serving.unit_type
+      assignment.assigned = true
+      if serving.status == Absmartly::Switchback::Serving::INELIGIBLE
+        assignment.eligible = false
+        assignment.switchback_silent = true
+        return
+      end
+
+      attrs = attributes_map
+      rule = entry.rule_key.empty? ? nil : resolve_rule(entry, attrs, false, serving.unit_type)
+      assignment.rule_variant = rule&.first
+      if rule
+        assignment.assigned = false
+        assignment.rule_override = true
+        assignment.rule_missing_unit = rule.last
+        assignment.variant = rule.first
+        return
+      end
+
+      if !data.audience.nil? && data.audience.size > 0
+        match = @audience_matcher.evaluate(data.audience, attrs)
+        assignment.audience_mismatch = true if match && !match.result
+      end
+      if data.audience_strict && assignment.audience_mismatch
+        assignment.assigned = false
+        return
+      end
+      if data.full_on_variant != 0
+        assignment.variant = data.full_on_variant
+        assignment.full_on = true
+        return
+      end
+      if period.nil?
+        # Pre-anchor or unservable: no draw, so control and no exposure.
+        assignment.eligible = false
+        assignment.switchback_silent = true
+        return
+      end
+
+      assigner = variant_assigner(serving.unit_type, serving.uid)
+      if assigner.assign(data.traffic_split, data.traffic_seed_hi, data.traffic_seed_lo) != 1
+        assignment.eligible = false
+        return
+      end
+      if !custom.nil?
+        assignment.variant = custom
+        assignment.custom = true
+        return
+      end
+      assignment.variant = Absmartly::Switchback::Assigner.assign(serving.cluster_key, period,
+                                                                  switchback_seed(data), data.split.length)
+    end
+
+    def switchback_assignment_current?(assignment, entry, custom, override)
+      return false unless assignment.switchback_grid == switchback_grid(entry.data)
+      return assignment.overridden && assignment.variant == override unless override.nil?
+      return false if assignment.overridden
+      return false unless assignment.rule_override || custom == assignment.custom_assignment
+
+      data = entry.data
+      return false unless data.id == assignment.id && data.iteration == assignment.iteration &&
+                          data.full_on_variant == assignment.full_on_variant &&
+                          data.traffic_split == assignment.traffic_split
+
+      # Only an eligible cluster consulted its rules and audience.
+      assignment.serving.status != Absmartly::Switchback::Serving::ELIGIBLE ||
+        (entry.unconditional && assignment.rule_key.equal?(NO_RULES)) ||
+        audience_matches(entry, assignment, assignment.unit_type)
+    end
+
+    # The unit a switchback with no serving unit is recorded under: the first
+    # linked type of a readable map, otherwise the declared unitType.
+    def switchback_fallback_unit_type(entry)
+      entry.switchback_source_paths.nil? ? entry.data.unit_type : entry.switchback_source_types[0]
+    end
+
+    # Drops every slot of an experiment's epoch once its definition is gone,
+    # no longer a switchback, or of another generation. Caller holds
+    # @assignment_mutex.
+    def drop_switchback_epoch(name)
+      epoch = @switchback_epochs.delete(name)
+      return if epoch.nil?
+
+      epoch.periods.each { |period| @assignment_cache.delete("#{name}#{SWITCHBACK_KEY_SEPARATOR}#{period}") }
+      @assignment_cache.delete(name)
+    end
+
+    # At most SWITCHBACK_RETAINED_PERIODS period indices per experiment; the
+    # lowest one other than the period just installed is evicted.
+    def retain_switchback_period(name, entry, period)
+      epoch = (@switchback_epochs[name] ||= SwitchbackEpoch.new(entry.switchback_generation, []))
+      return if period.nil? || epoch.periods.include?(period)
+
+      epoch.periods.push(period).sort!
+      return if epoch.periods.length <= SWITCHBACK_RETAINED_PERIODS
+
+      evicted = epoch.periods[0] == period ? epoch.periods[1] : epoch.periods[0]
+      epoch.periods.delete(evicted)
+      @assignment_cache.delete("#{name}#{SWITCHBACK_KEY_SEPARATOR}#{evicted}")
+    end
+
+    # Test seam: the cached slot of a switchback at the clock's current reading.
+    def switchback_resolution_for_test(name)
+      @assignment_mutex.synchronize do
+        entry = experiment(name)
+        period = entry.nil? || !entry.switchback ? nil : switchback_period(entry, now_millis)
+        @assignment_cache[period.nil? ? name : "#{name}#{SWITCHBACK_KEY_SEPARATOR}#{period}"]
+      end
     end
 
     # Like a JavaScript object key, an id matches as an integer, an integral
@@ -1039,8 +1342,12 @@ class Context
       @assignment_cache = {}
       @holdout_assignments = nil
       @assignment_mutex = Mutex.new
+      @data_mutex = Mutex.new
+      @switchback_epochs = {}
+      @switchback_generation = 0
       @assignments = {}
       @clock = clock.is_a?(String) ? Time.iso8601(clock) : clock
+      @fixed_millis = nil
       @publish_delay = config.publish_delay
       @refresh_interval = config.refresh_interval
       @event_handler = event_handler
@@ -1123,7 +1430,8 @@ class Assignment
                 :traffic_split, :variant, :assigned, :overridden, :eligible,
                 :full_on, :custom, :audience_mismatch, :variables, :exposed, :attrs_seq,
                 :rule_override, :rule_variant, :rule_missing_unit, :rule_key,
-                :suppressed, :holdouts, :holdout_assignments, :holdout_arm_count
+                :suppressed, :holdouts, :holdout_assignments, :holdout_arm_count,
+                :switchback, :switchback_grid, :serving, :switchback_silent, :custom_assignment
 
   def initialize
     @variant = 0
@@ -1140,11 +1448,14 @@ class Assignment
     @rule_missing_unit = false
     @attrs_seq = 0
     @holdouts = nil
+    @switchback = false
+    @switchback_silent = false
   end
 end
 
 class ExperimentVariables
-  attr_accessor :data, :variables, :rules, :rule_key, :unconditional, :holdouts
+  attr_accessor :data, :variables, :rules, :rule_key, :unconditional, :holdouts,
+                :switchback, :switchback_source_types, :switchback_source_paths, :switchback_generation
 
   # Every field is set up front so all instances share one object shape and
   # the cached read path's attribute reads stay monomorphic.
@@ -1155,8 +1466,15 @@ class ExperimentVariables
     @rule_key = nil
     @unconditional = nil
     @holdouts = nil
+    @switchback = false
+    @switchback_source_types = nil
+    @switchback_source_paths = nil
+    @switchback_generation = nil
   end
 end
+
+# One switchback's cache slots, all created under one generation.
+SwitchbackEpoch = Struct.new(:generation, :periods)
 
 class ContextCustomFieldValues
   attr_accessor :type, :value

@@ -729,7 +729,7 @@ module ContextHoldoutsSpec
 
           refresh(context, data_of([experiment(1, "exp", holdout_ids: [11])],
                                    [holdout(11, "holdout_h", HOLDOUT_A, iteration: 2)]))
-          context.send(:cached_or_new_assignment, "exp", context.instance_variable_get(:@state)).tap do |current|
+          context.send(:cached_or_new_assignment, "exp", context.instance_variable_get(:@state), now).tap do |current|
             context.queue_exposure(current)
           end
         end

@@ -9,7 +9,11 @@ class Experiment
   attr_accessor :id, :name, :unit_type, :iteration, :seed_hi, :seed_lo, :split,
                 :traffic_seed_hi, :traffic_seed_lo, :traffic_split, :full_on_variant,
                 :applications, :variants, :audience_strict, :audience, :custom_field_values,
-                :assignment_rules, :holdout_ids, :holdout_type
+                :assignment_rules, :holdout_ids, :holdout_type,
+                :randomization_type, :switchback_clusters, :switchback_cluster_values,
+                :switchback_start_at, :switchback_period_ms, :switchback_carryover_duration_ms,
+                :switchback_burn_in_duration_ms, :switchback_burn_out_duration_ms,
+                :switchback_design_type, :switchback_estimand
 
   ALLOWED_KEYS = %i[
     id name unitType unit_type iteration seedHi seed_hi seedLo seed_lo split
@@ -17,6 +21,12 @@ class Experiment
     fullOnVariant full_on_variant applications variants audienceStrict audience_strict
     audience customFieldValues custom_field_values assignmentRules assignment_rules
     holdoutIds holdout_ids holdoutType holdout_type
+    randomizationType randomization_type switchbackClusters switchback_clusters
+    switchbackClusterValues switchback_cluster_values switchbackStartAt switchback_start_at
+    switchbackPeriodMs switchback_period_ms switchbackCarryoverDurationMs switchback_carryover_duration_ms
+    switchbackBurnInDurationMs switchback_burn_in_duration_ms switchbackBurnOutDurationMs
+    switchback_burn_out_duration_ms switchbackDesignType switchback_design_type
+    switchbackEstimand switchback_estimand
   ].freeze
 
   def initialize(args = {})
@@ -70,7 +80,23 @@ class Experiment
       @variants == that.variants && @audience_strict == that.audience_strict &&
       @audience == that.audience && @custom_field_values == that.custom_field_values &&
       @assignment_rules == that.assignment_rules &&
-      holdout_ids == that.holdout_ids && holdout_type == that.holdout_type
+      holdout_ids == that.holdout_ids && holdout_type == that.holdout_type &&
+      switchback_fields == that.switchback_fields
+  end
+
+  # The switchback fields, compared in order: switchbackClusters order is
+  # semantic, so two maps with the same entries in another order differ.
+  def switchback_fields
+    [randomization_type, Experiment.ordered_clusters(switchback_clusters), switchback_cluster_values,
+     switchback_start_at, switchback_period_ms, switchback_carryover_duration_ms,
+     switchback_burn_in_duration_ms, switchback_burn_out_duration_ms, switchback_design_type,
+     switchback_estimand]
+  end
+
+  # A cluster map as its ordered [type, path] pairs, with Symbol and String
+  # unit type names alike.
+  def self.ordered_clusters(clusters)
+    clusters.is_a?(Hash) ? clusters.map { |type, path| [type.to_s, path] } : clusters
   end
 
   def hash_code
