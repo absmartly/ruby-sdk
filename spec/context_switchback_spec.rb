@@ -837,6 +837,14 @@ module ContextSwitchbackSpec
       expect(published_exposures(context).map(&:exposed_at)).to eq([ANCHOR + 5, ANCHOR + 9])
     end
 
+    # A unit experiment next to a switchback is queued directly, without the switchback stamp.
+    it "queues a unit experiment next to a switchback without the switchback stamp" do
+      context = create_context([switchback(randomizationType: "unit"), switchback(2, "exp_other")])
+      allow(Thread.current).to receive(:[]=).and_call_original
+      context.treatment("exp_sb")
+      expect(Thread.current).not_to have_received(:[]=).with(:__absmartly_switchback_resolved_at, anything)
+    end
+
     it "keeps stamping unit experiments at enqueue time" do
       context = create_context([switchback(randomizationType: "unit"), switchback(2, "exp_other")])
       clock.now = ANCHOR + HOUR

@@ -584,7 +584,7 @@ class Context
     end
 
     def expose_assignment(assignment, now)
-      return queue_exposure(assignment) if now.nil?
+      return queue_exposure(assignment) if now.nil? || !assignment.switchback
 
       if assignment.switchback && !assignment.exposed && !assignment.switchback_silent
         now = switchback_exposure_instant(assignment, now)
