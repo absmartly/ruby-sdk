@@ -617,6 +617,7 @@ class Context
         @exposures.reject! { |e| sent.key?(e) }
         @achievements.reject! { |g| sent.key?(g) }
         @switchback_exposures&.delete_if { |e, _| sent.key?(e) }
+        @switchback_exposures = nil if @switchback_exposures&.empty?
         @pending_count = [@pending_count - (before - @exposures.length - @achievements.length), 0].max
       end
     end

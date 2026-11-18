@@ -612,12 +612,23 @@ module ContextSwitchbackClusterSpec
       expect(logged.map(&:first)).to eq([ContextEventLogger::EVENT_TYPE::PUBLISH] * 2)
       expect(logged[0][1].goals.map(&:name)).to eq(["goal"])
       expect(logged[1][1].exposures.map(&:name)).to eq(["exp_sb"])
-      expect(context.instance_variable_get(:@switchback_exposures)).to be_empty
+      expect(context.instance_variable_get(:@switchback_exposures)).to be_nil
       allow(context).to receive(:served_at?).and_call_original
       context.track("next")
       context.publish
       expect(context).not_to have_received(:served_at?)
       expect(context.pending_count).to eq(0)
+    end
+
+    it "returns ordinary publishes to the one-request fast path after switchback delivery" do
+      context = multi_request_context
+      context.publish
+      allow(context).to receive(:separate_switchback_exposures).and_call_original
+      allow(context).to receive(:dequeue_published).and_call_original
+      context.track("ordinary")
+      context.publish
+      expect(context).not_to have_received(:separate_switchback_exposures)
+      expect(context).not_to have_received(:dequeue_published)
     end
 
     it "preserves the serving unit when a newly added higher priority unit agrees" do
