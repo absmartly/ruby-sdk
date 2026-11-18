@@ -17,7 +17,7 @@ RSpec.describe "Context assignment rules" do
   let(:publish_future) { OpenStruct.new(success?: true) }
   let(:published) { [] }
   let(:event_handler) do
-    handler = double("ContextPublisher")
+    handler = double("Absmartly::ContextPublisher")
     allow(handler).to receive(:publish) do |_ctx, event|
       published << event
       publish_future

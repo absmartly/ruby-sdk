@@ -31,7 +31,7 @@ RSpec.describe "create_context_async" do
 
   let(:publish_future) { OpenStruct.new(success?: true) }
   let(:event_handler) do
-    ev = instance_double(ContextPublisher)
+    ev = instance_double(Absmartly::ContextPublisher)
     allow(ev).to receive(:publish).and_return(publish_future)
     ev
   end

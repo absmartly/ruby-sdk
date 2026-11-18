@@ -26,7 +26,7 @@ RSpec.describe "Backwards Compatibility" do
       class MyPublisher < ContextEventHandler
         def publish(context, event); end
       end
-      p [MyPublisher.ancestors.include?(ContextPublisher), DefaultContextEventHandler == DefaultContextPublisher]
+      p [MyPublisher.ancestors.include?(Absmartly::ContextPublisher), DefaultContextEventHandler == Absmartly::DefaultContextPublisher]
     RUBY
     expect([out, status.success?]).to eq(["[true, true]\n", true]), err
   end
@@ -47,22 +47,31 @@ RSpec.describe "Backwards Compatibility" do
       class PublishError < RuntimeError; end
       class SemverComparator; end
       class ContextDataResult; end
-      class ContextPublisher; end
-      DefaultContextPublisher = :mine
       require "absmartly"
-      p [PublishError.superclass, SemverComparator.class, ContextPublisher == ContextEventHandler,
-         DefaultContextPublisher, Absmartly::PublishError.superclass,
+      class Base; end
+      class ContextPublisher < Base
+        def publish(*); :mine; end
+      end
+      class DefaultContextPublisher
+        def publish(*); :mine_too; end
+      end
+      p [PublishError.superclass, SemverComparator.class, ContextPublisher.superclass,
+         ContextPublisher == ContextEventHandler, DefaultContextPublisher.superclass,
+         DefaultContextEventHandler.new(Object.new).respond_to?(:publish) &&
+           DefaultContextEventHandler.instance_method(:publish).owner,
+         Absmartly::PublishError.superclass,
          ABSmartly.new("https://x/v1", api_key: "k", application: "a", environment: "e")
            .context_event_handler.class]
     RUBY
     expect([out, status.success?])
-      .to eq(["[RuntimeError, Class, false, :mine, StandardError, DefaultContextEventHandler]\n", true]), err
+      .to eq(["[RuntimeError, Class, Base, false, Object, DefaultContextEventHandler, StandardError, DefaultContextEventHandler]\n",
+              true]), err
   end
 
-  it "ContextEventHandler is still the v1.3.0 class, aliased as ContextPublisher without a warning" do
+  it "ContextEventHandler is still the v1.3.0 class, aliased as Absmartly::ContextPublisher without a warning" do
     original = Warning[:deprecated]
     Warning[:deprecated] = true
-    expect { expect(ContextPublisher).to eq(ContextEventHandler) }.not_to output.to_stderr
+    expect { expect(Absmartly::ContextPublisher).to eq(ContextEventHandler) }.not_to output.to_stderr
     expect(ContextEventHandler.name).to eq("ContextEventHandler")
   ensure
     Warning[:deprecated] = original
@@ -83,10 +92,10 @@ RSpec.describe "Backwards Compatibility" do
     end
   end
 
-  it "DefaultContextEventHandler is still the v1.3.0 class, aliased as DefaultContextPublisher without a warning" do
+  it "DefaultContextEventHandler is still the v1.3.0 class, aliased as Absmartly::DefaultContextPublisher without a warning" do
     original = Warning[:deprecated]
     Warning[:deprecated] = true
-    expect { expect(DefaultContextPublisher).to eq(DefaultContextEventHandler) }.not_to output.to_stderr
+    expect { expect(Absmartly::DefaultContextPublisher).to eq(DefaultContextEventHandler) }.not_to output.to_stderr
     expect(DefaultContextEventHandler.name).to eq("DefaultContextEventHandler")
     expect(DefaultContextEventHandler.superclass).to eq(ContextEventHandler)
   ensure
@@ -101,7 +110,7 @@ RSpec.describe "Backwards Compatibility" do
     config = ABSmartlyConfig.create
     config.client = client
     expect(ABSmartly.create(config).context_event_handler).to be_a(Object.const_get(:DefaultContextEventHandler))
-    expect(@handler).to be_a(DefaultContextPublisher)
+    expect(@handler).to be_a(Absmartly::DefaultContextPublisher)
   ensure
     Warning[:deprecated] = original
   end

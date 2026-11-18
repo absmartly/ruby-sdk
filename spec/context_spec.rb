@@ -106,7 +106,7 @@ RSpec.describe Context do
 
   let(:publish_future) { OpenStruct.new(success?: true) }
   let(:event_handler) do
-    ev = instance_double(ContextPublisher)
+    ev = instance_double(Absmartly::ContextPublisher)
     allow(ev).to receive(:publish).and_return(publish_future)
     ev
   end
@@ -354,7 +354,7 @@ RSpec.describe Context do
       end
     end.new
     publishes = 0
-    handler = instance_double(ContextPublisher)
+    handler = instance_double(Absmartly::ContextPublisher)
     allow(handler).to receive(:publish) { publishes += 1; nil }
     holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
                                       variable_parser, audience_matcher)
@@ -459,10 +459,31 @@ RSpec.describe Context do
     }.to raise_error(IllegalStateException, "Unit 'db_user_id' UID must not be blank.")
   end
 
+  it "passes a custom 1.3.0-style matcher the attribute keys the caller used" do
+    seen = []
+    matcher = Class.new do
+      define_method(:evaluate) do |_audience, attributes|
+        seen << attributes.keys
+        Struct.new(:result).new(attributes[:age].to_i >= 20)
+      end
+    end.new
+    config = ContextConfig.create
+    config.set_units(units)
+    context = Context.create(clock, config, audience_strict_data_future_ready, data_provider, event_handler,
+                             event_logger, variable_parser, matcher, application: "website", environment: "prod")
+    context.set_attribute(:age, 21)
+    context.set_attribute("environment", "staging")
+
+    expect(context.peek_treatment("exp_test_ab")).not_to eq(0)
+    expect(seen.last).to contain_exactly(:age, "application", "environment")
+  end
+
   it "set_unit returns the stored UID, as in v1.3.0" do
     context = create_ready_context
     expect(context.set_unit("extra_id", " padded ")).to eq("padded")
-    expect(context.set_unit("num_id", 42)).to eq(42)
+    expect(context.set_unit("num_id", 42)).to eq("42")
+    expect(context.set_unit("num_id", "42")).to eq("42")
+    expect(context.set_unit(:extra_id, "padded")).to eq("padded")
   end
 
   it "skips revalidation on warmed reads of an experiment with no rules or audience" do
@@ -1459,7 +1480,7 @@ RSpec.describe Context do
   end
 
   it "publishExceptionally" do
-    ev = instance_double(ContextPublisher)
+    ev = instance_double(Absmartly::ContextPublisher)
     context = create_ready_context(evt_handler: ev)
     expect(context.ready?).to be_truthy
     expect(context.failed?).to be_falsey
@@ -1631,7 +1652,7 @@ RSpec.describe Context do
 
   describe "error recovery and resilience" do
     it "context remains usable after failed publish" do
-      ev = instance_double(ContextPublisher)
+      ev = instance_double(Absmartly::ContextPublisher)
       allow(ev).to receive(:publish).and_return(failure_future)
 
       context = create_ready_context(evt_handler: ev)
@@ -1646,7 +1667,7 @@ RSpec.describe Context do
     end
 
     it "queues new events after failed publish" do
-      ev = instance_double(ContextPublisher)
+      ev = instance_double(Absmartly::ContextPublisher)
       allow(ev).to receive(:publish).and_return(failure_future)
 
       context = create_ready_context(evt_handler: ev)
@@ -1677,7 +1698,7 @@ RSpec.describe Context do
       http_client = instance_double(DefaultHttpClient)
       allow(http_client).to receive(:put)
         .and_return(DefaultHttpClient.default_response(500, "Internal Server Error", nil, nil))
-      publisher = DefaultContextPublisher.new(Client.new(client_config, http_client))
+      publisher = Absmartly::DefaultContextPublisher.new(Client.new(client_config, http_client))
       context = create_ready_context(evt_handler: publisher)
       context.track("goal1", nil)
 
@@ -2156,7 +2177,7 @@ RSpec.describe Context do
     end
 
     it "should not clear queue on failure" do
-      ev = instance_double(ContextPublisher)
+      ev = instance_double(Absmartly::ContextPublisher)
       allow(ev).to receive(:publish).and_return(failure_future)
 
       context = create_ready_context(evt_handler: ev)
@@ -2203,7 +2224,7 @@ RSpec.describe Context do
     end
 
     it "close logs a rejected final publish and seals, as in v1.3.0" do
-      ev = instance_double(ContextPublisher)
+      ev = instance_double(Absmartly::ContextPublisher)
       allow(ev).to receive(:publish).and_return(failure_future)
       context = create_ready_context(evt_handler: ev)
       context.track("goal1", nil)
@@ -2218,7 +2239,7 @@ RSpec.describe Context do
     end
 
     it "close re-raises a publisher that raises and stays open with the events queued" do
-      ev = instance_double(ContextPublisher)
+      ev = instance_double(Absmartly::ContextPublisher)
       allow(ev).to receive(:publish).and_raise(StandardError, "boom")
       context = create_ready_context(evt_handler: ev)
       context.track("goal1", nil)
@@ -2234,7 +2255,7 @@ RSpec.describe Context do
     end
 
     it "finalize raises a rejected final publish, stays open with events queued, and a second finalize seals" do
-      ev = instance_double(ContextPublisher)
+      ev = instance_double(Absmartly::ContextPublisher)
       allow(ev).to receive(:publish).and_return(failure_future)
       context = create_ready_context(evt_handler: ev)
       context.track("goal1", nil)
@@ -2251,7 +2272,7 @@ RSpec.describe Context do
     end
 
     it "finalize raises the publish failure and leaves the context open" do
-      ev = instance_double(ContextPublisher)
+      ev = instance_double(Absmartly::ContextPublisher)
       allow(ev).to receive(:publish).and_return(failure_future)
       context = create_ready_context(evt_handler: ev)
       context.track("goal1", nil)
@@ -2395,7 +2416,7 @@ RSpec.describe Context do
     end
 
     it "should call event logger on close error" do
-      ev = instance_double(ContextPublisher)
+      ev = instance_double(Absmartly::ContextPublisher)
       allow(ev).to receive(:publish).and_return(failure_future)
 
       event_logger.clear

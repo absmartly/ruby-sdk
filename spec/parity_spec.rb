@@ -114,7 +114,7 @@ RSpec.describe "JavaScript SDK parity" do
     let(:failure_future) { OpenStruct.new(exception: failure, success?: false, data_future: nil) }
     let(:ok_future) { OpenStruct.new(success?: true) }
     let(:data_provider) { instance_double(ContextDataProvider, context_data: ready_future) }
-    let(:handler) { instance_double(ContextPublisher) }
+    let(:handler) { instance_double(Absmartly::ContextPublisher) }
     let(:events) { [] }
     let(:logger) do
       log = events

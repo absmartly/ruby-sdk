@@ -211,8 +211,8 @@ class Context
       @units[unit_type.to_sym] = trimmed
       invalidate_assignments_missing_unit(unit_type.to_s)
     end
-    # Returns the UID, as in v1.3.0.
-    trimmed
+    # Returns the UID's text, as in v1.3.0.
+    trimmed.to_s
   end
 
   def set_units(units)
@@ -606,7 +606,12 @@ class Context
     # missing config leaves the key out rather than matching on "".
     def attributes_map
       attrs = @system_attributes.dup
-      @attributes.each { |attr| attrs[attr.name.to_s] = attr.value }
+      @attributes.each do |attr|
+        # Keep the caller's key (Symbol or String), as v1.3.0 passed it to
+        # custom matchers; a user value still replaces the system one.
+        attrs.delete(attr.name.to_s)
+        attrs[attr.name] = attr.value
+      end
       attrs
     end
 

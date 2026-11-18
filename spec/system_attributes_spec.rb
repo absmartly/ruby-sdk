@@ -34,7 +34,7 @@ RSpec.describe "Context system attributes" do
 
   let(:publish_future) { OpenStruct.new(success?: true) }
   let(:event_handler) do
-    ev = double("ContextPublisher")
+    ev = double("Absmartly::ContextPublisher")
     allow(ev).to receive(:publish).and_return(publish_future)
     ev
   end

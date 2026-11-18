@@ -2,7 +2,8 @@
 
 require_relative "context_event_handler"
 
-# The name the other ABsmartly SDKs use for ContextEventHandler. Defined only
-# if the application has no constant of that name, so the SDK never replaces
-# or clashes with one.
-ContextPublisher = ContextEventHandler unless Object.const_defined?(:ContextPublisher, false)
+module Absmartly
+  # The name the other ABsmartly SDKs use for ContextEventHandler. Namespaced
+  # so it can't clash with an application's own ContextPublisher.
+  ContextPublisher = ::ContextEventHandler
+end
