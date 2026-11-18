@@ -620,14 +620,14 @@ class Context
     # the cached assignment). Empty system values were skipped at init, so a
     # missing config leaves the key out rather than matching on "".
     def attributes_map
-      # User attributes keep the caller's key (Symbol or String), as v1.3.0
-      # passed them to custom matchers. A system entry is added only when no
-      # user attribute has that name in either form.
+      # User attributes keep the caller's key, as v1.3.0 passed them to custom
+      # matchers. A system entry is added only when no user attribute has that
+      # name as text, whatever the key's type.
       user = {}
       @attributes.each { |attr| user[attr.name] = attr.value }
       attrs = {}
       @system_attributes.each do |name, value|
-        attrs[name] = value unless user.key?(name) || user.key?(name.to_sym)
+        attrs[name] = value if user.each_key.none? { |key| key.to_s == name }
       end
       attrs.merge!(user)
     end

@@ -509,6 +509,40 @@ RSpec.describe Context do
 
     expect(context.peek_treatment("exp_test_ab")).not_to eq(0)
     expect(seen.last).to contain_exactly(:age, "application", "environment")
+    expect(seen.last.index("environment")).to be > seen.last.index(:age)
+  end
+
+  it "evaluates the last value set for a repeated attribute name" do
+    config = ContextConfig.create
+    config.set_units(units)
+    context = Context.create(clock, config, audience_strict_data_future_ready, data_provider, event_handler,
+                             event_logger, variable_parser, audience_matcher)
+    context.set_attribute("age", 10)
+    context.set_attribute("age", 25)
+
+    expect(context.peek_treatment("exp_test_ab")).not_to eq(0)
+  end
+
+  it "lets a user attribute named by any to_s-able key replace the system entry" do
+    seen = nil
+    matcher = Class.new do
+      define_method(:evaluate) do |_audience, attributes|
+        seen = attributes
+        Struct.new(:result).new(true)
+      end
+    end.new
+    name = Object.new
+    def name.to_s
+      "environment"
+    end
+    config = ContextConfig.create
+    config.set_units(units)
+    context = Context.create(clock, config, audience_strict_data_future_ready, data_provider, event_handler,
+                             event_logger, variable_parser, matcher, application: "website", environment: "prod")
+    context.set_attribute(name, "staging")
+    context.peek_treatment("exp_test_ab")
+
+    expect(seen).to eq("application" => "website", name => "staging")
   end
 
   it "keeps both String and Symbol user keys for a custom matcher, as in v1.3.0" do
