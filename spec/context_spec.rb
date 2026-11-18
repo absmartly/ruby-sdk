@@ -929,7 +929,7 @@ RSpec.describe Context do
     rescue StandardError => e
       e
     end
-    sleep 0.05 until b.status == "sleep"
+    Timeout.timeout(5) { sleep 0.05 until b.status == "sleep" }
     release << true
     Timeout.timeout(5) { a.join }
     expect(Timeout.timeout(5) { b.value }).to be_a(StandardError)
@@ -1077,6 +1077,67 @@ RSpec.describe Context do
     expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
   end
 
+
+  it "carries the latest request when a callback asks for finalize then close" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { events: [] }
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        holder[:events] << event
+        next unless event == ContextEventLogger::EVENT_TYPE::ERROR && !holder[:asked]
+
+        holder[:asked] = true
+        holder[:context].finalize
+        holder[:context].close
+      end
+    end.new
+    responses = [failure_future]
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish) { responses.shift || publish_future }
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+
+    Timeout.timeout(5) { holder[:context].publish }
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].closed?).to be true
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::FINALIZE)).to eq(0)
+  end
+
+  it "a close requested while a deferred finalize fails replaces that finalize" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { events: [], stage: 0 }
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        holder[:events] << event
+        if event == ContextEventLogger::EVENT_TYPE::PUBLISH && holder[:stage].zero?
+          holder[:stage] = 1
+          holder[:context].track("cb", nil)
+          holder[:context].finalize
+        elsif event == ContextEventLogger::EVENT_TYPE::ERROR && holder[:stage] == 1
+          holder[:stage] = 2
+          holder[:context].close
+        end
+      end
+    end.new
+    # Publish 1 succeeds and its callback defers finalize; that finalize's own
+    # publish is rejected and its error callback asks for close.
+    responses = [publish_future, failure_future]
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish) { responses.shift || publish_future }
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+
+    expect { Timeout.timeout(5) { holder[:context].publish } }.to raise_error(Exception, "FAILED")
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].closed?).to be true
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::FINALIZE)).to eq(0)
+  end
 
   it "a deferred close still raises a publisher error from its own publish" do
     config = ContextConfig.create
