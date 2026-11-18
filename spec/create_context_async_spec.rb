@@ -14,6 +14,7 @@ require "context_event_logger"
 require "audience_matcher"
 require "json/unit"
 require "logger"
+require "timeout"
 
 RSpec.describe "create_context_async" do
   let(:units) {
@@ -212,6 +213,34 @@ RSpec.describe "create_context_async" do
       context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
 
       expect(context.failed?).to be true
+    end
+
+    it "keeps data a refresh installed when the initial fetch then fails" do
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider,
+                                     event_handler, event_logger, variable_parser, audience_matcher)
+      context.refresh
+      context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+
+      expect(context.ready?).to be true
+      expect(context.failed?).to be_falsey
+      expect(context.experiments).to eq(data.experiments.map(&:name))
+    end
+
+    it "wakes a waiter when a refresh supplies the first data" do
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider,
+                                     event_handler, event_logger, variable_parser, audience_matcher)
+      waiter = Thread.new { context.wait_until_ready(5) }
+      Timeout.timeout(5) { sleep 0.01 until waiter.status == "sleep" }
+      started = Time.now
+      context.refresh
+      Timeout.timeout(5) { waiter.join }
+
+      expect(Time.now - started).to be < 1
+      expect(context.ready?).to be true
     end
   end
 

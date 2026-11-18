@@ -66,7 +66,9 @@ class Context
         assign_data(data_future.data_future)
         ready_data = data_future.data_future
       else
-        set_data_failed(data_future.exception)
+        # A refresh may already have installed usable data while the initial
+        # fetch was in flight; then the late failure is only logged.
+        set_data_failed(data_future.exception) unless ready?
         failure = data_future.exception
       end
       @ready_condvar.broadcast
@@ -388,7 +390,12 @@ class Context
 
     data_future = @data_provider.context_data
     if data_future.success?
-      assign_data(data_future.data_future)
+      # Under the readiness lock, so a wait_until_ready blocked on a context
+      # created asynchronously wakes when a refresh supplies the first data.
+      @ready_mutex.synchronize do
+        assign_data(data_future.data_future)
+        @ready_condvar.broadcast
+      end
       # Like v1.3.0, a successful refresh returns what the event logger returned.
       log_event(ContextEventLogger::EVENT_TYPE::REFRESH, data_future.data_future)
     else
@@ -636,16 +643,12 @@ class Context
     def attributes_map
       # User attributes keep the caller's key, as v1.3.0 passed them to custom
       # matchers. A system entry is added only when no user attribute has that
-      # name as text, whatever the key's type.
+      # name as a String or Symbol, the forms audience conditions can read.
       user = {}
       @attributes.each { |attr| user[attr.name] = attr.value }
-      other_names = nil
-      user.each_key { |name| (other_names ||= []) << name.to_s unless name.is_a?(String) || name.is_a?(Symbol) }
       attrs = {}
       @system_attributes.each do |name, value|
-        next if user.key?(name) || user.key?(name.to_sym) || other_names&.include?(name)
-
-        attrs[name] = value
+        attrs[name] = value unless user.key?(name) || user.key?(name.to_sym)
       end
       attrs.merge!(user)
     end

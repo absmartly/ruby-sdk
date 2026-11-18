@@ -523,7 +523,7 @@ RSpec.describe Context do
     expect(context.peek_treatment("exp_test_ab")).not_to eq(0)
   end
 
-  it "lets a user attribute named by any to_s-able key replace the system entry" do
+  it "keeps the system entry when a user attribute name is neither a String nor a Symbol" do
     seen = nil
     matcher = Class.new do
       define_method(:evaluate) do |_audience, attributes|
@@ -542,7 +542,7 @@ RSpec.describe Context do
     context.set_attribute(name, "staging")
     context.peek_treatment("exp_test_ab")
 
-    expect(seen).to eq("application" => "website", name => "staging")
+    expect(seen).to eq("application" => "website", "environment" => "prod", name => "staging")
   end
 
   it "keeps both String and Symbol user keys for a custom matcher, as in v1.3.0" do
@@ -937,8 +937,8 @@ RSpec.describe Context do
 
     Timeout.timeout(5) { context.publish }
     expect(context.closed?).to be true
-    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE) +
-           holder[:events].count(ContextEventLogger::EVENT_TYPE::FINALIZE)).to eq(1)
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::FINALIZE)).to eq(0)
   end
 
   it "matches the system entry's name exactly, not case-insensitively" do
@@ -953,14 +953,10 @@ RSpec.describe Context do
     config.set_units(units)
     context = Context.create(clock, config, audience_strict_data_future_ready, data_provider, event_handler,
                              event_logger, variable_parser, matcher, application: "website", environment: "prod")
-    name = Object.new
-    def name.to_s
-      "Environment"
-    end
-    context.set_attribute(name, "staging")
+    context.set_attribute("Environment", "staging")
     context.peek_treatment("exp_test_ab")
 
-    expect(seen).to eq("application" => "website", "environment" => "prod", name => "staging")
+    expect(seen).to eq("application" => "website", "environment" => "prod", "Environment" => "staging")
   end
 
   it "a close requested from the error callback of a rejected finalize seals on the next good publish" do
