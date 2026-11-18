@@ -118,7 +118,7 @@ class Context
   end
 
   def finalizing?
-    !@closed && @closing
+    !@closed && @sealing.positive?
   end
 
   attr_reader :ready_error
@@ -444,29 +444,22 @@ class Context
         return nil
       end
 
-      @closing = true
+      close = event_type == ContextEventLogger::EVENT_TYPE::CLOSE
+      @queue_mutex.synchronize { @sealing += 1 }
       begin
         # One extra pass sends events a logger callback queued during the
         # first publish; after that raise with the remaining events queued,
         # so a callback can't keep close publishing forever or lose events.
         SEAL_FLUSH_PASSES.times do |pass|
-          result = flush
+          # close drops a batch the collector rejected, as in v1.3.0, but only
+          # that batch; anything queued meanwhile is still sent or kept.
+          result = flush(sealing: true, drop_rejected: close)
           last_pass = pass == SEAL_FLUSH_PASSES - 1
-          drop_queued = false
-          if !@failed && publish_failed?(result)
-            raise_publish_failure(result) unless event_type == ContextEventLogger::EVENT_TYPE::CLOSE
-
-            drop_queued = true
-          end
+          raise_publish_failure(result) if !close && !@failed && publish_failed?(result)
 
           sealed = @queue_mutex.synchronize do
             next :done if @closed
 
-            if drop_queued
-              @exposures = []
-              @achievements = []
-              @pending_count = 0
-            end
             unless @exposures.empty? && @achievements.empty?
               # A pending request (from a callback, before or during this seal,
               # on any thread) stays pending for the next successful publish.
@@ -488,11 +481,13 @@ class Context
         end
         nil
       ensure
-        @closing = false
+        @queue_mutex.synchronize { @sealing -= 1 }
       end
     end
 
-    def flush
+    # sealing: this flush is a seal's own pass, so it neither starts another
+    # seal nor claims a deferred one. Any other publish (on any thread) may.
+    def flush(sealing: false, drop_rejected: false)
       if @failed
         @queue_mutex.synchronize do
           @exposures = []
@@ -518,7 +513,11 @@ class Context
           event_count = exposures.size + achievements.size
         end
 
-        next nil unless event_count > 0
+        # An empty publish still hands off a deferred seal.
+        if event_count.zero?
+          claimed = take_close_pending unless sealing
+          next nil
+        end
 
         event = PublishEvent.new
         event.hashed = true
@@ -538,34 +537,40 @@ class Context
           raise
         end
 
-        if response.is_a?(Exception)
-          log_error(response)
-          response
-        elsif response.respond_to?(:exception) && response.exception
-          log_error(response.exception)
-          response
-        elsif response.respond_to?(:success?) && !response.success?
-          log_error(StandardError.new("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})"))
+        if publish_failed?(response)
+          if response.is_a?(Exception)
+            log_error(response)
+          elsif response.respond_to?(:exception) && response.exception
+            log_error(response.exception)
+          else
+            log_error(StandardError.new("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})"))
+          end
+          remove_published(exposures, achievements, event_count) if drop_rejected
           response
         else
           log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
-          # Remove only the events that were published; others may have been
-          # queued concurrently while the request was in flight.
-          @queue_mutex.synchronize do
-            @exposures.shift(exposures.size)
-            @achievements.shift(achievements.size)
-            @pending_count = [@pending_count - event_count, 0].max
-          end
+          remove_published(exposures, achievements, event_count)
           # Claim a deferred close while still holding the lock, so only this
           # successful publish can carry it out; a request made by another
           # thread after a rejected publish waits for its own success.
-          claimed = take_close_pending unless @closing
+          claimed = take_close_pending unless sealing
           response
         end
       end
 
       run_deferred_seal(claimed) if claimed
       result
+    end
+
+    # Removes only the events in the batch just sent: they are at the head of
+    # the queue, since only a holder of the publish lock removes events, and
+    # others may have been queued while the request was in flight.
+    def remove_published(exposures, achievements, event_count)
+      @queue_mutex.synchronize do
+        @exposures.shift(exposures.size)
+        @achievements.shift(achievements.size)
+        @pending_count = [@pending_count - event_count, 0].max
+      end
     end
 
     def take_close_pending
@@ -981,7 +986,7 @@ class Context
       @audience_matcher = audience_matcher
       @environment = environment
       @closed = false
-      @closing = false
+      @sealing = 0
       @failed = false
       @ready_error = nil
 
