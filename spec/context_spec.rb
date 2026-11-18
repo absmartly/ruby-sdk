@@ -511,6 +511,26 @@ RSpec.describe Context do
     expect(seen.last).to contain_exactly(:age, "application", "environment")
   end
 
+  it "keeps both String and Symbol user keys for a custom matcher, as in v1.3.0" do
+    seen = nil
+    matcher = Class.new do
+      define_method(:evaluate) do |_audience, attributes|
+        seen = attributes
+        Struct.new(:result).new(attributes.fetch("age", 0) >= 20)
+      end
+    end.new
+    config = ContextConfig.create
+    config.set_units(units)
+    context = Context.create(clock, config, audience_strict_data_future_ready, data_provider, event_handler,
+                             event_logger, variable_parser, matcher, application: "website", environment: "prod")
+    context.set_attribute("age", 21)
+    context.set_attribute(:age, 22)
+    context.set_attribute(:environment, "staging")
+
+    expect(context.peek_treatment("exp_test_ab")).not_to eq(0)
+    expect(seen).to eq("application" => "website", "age" => 21, :age => 22, :environment => "staging")
+  end
+
   it "set_unit returns the stored UID, as in v1.3.0" do
     context = create_ready_context
     expect(context.set_unit("extra_id", " padded ")).to eq("padded")

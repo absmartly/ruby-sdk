@@ -614,8 +614,10 @@ class Context
       attrs = @system_attributes.dup
       @attributes.each do |attr|
         # Keep the caller's key (Symbol or String), as v1.3.0 passed it to
-        # custom matchers; a user value still replaces the system one.
-        attrs.delete(attr.name.to_s)
+        # custom matchers. Only the injected system entry of the same name is
+        # replaced; other user keys are left as set.
+        name = attr.name.to_s
+        attrs.delete(name) if @system_attributes.key?(name) && attrs[name].equal?(@system_attributes[name])
         attrs[attr.name] = attr.value
       end
       attrs
