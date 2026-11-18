@@ -39,7 +39,7 @@ module ContextHoldoutsSpec
                                       environments: [], variant: 1 }])
 
     let(:clock) { Time.at(1620000000000 / 1000) }
-    let(:now) { clock.to_i }
+    let(:now) { clock.to_i * 1000 }
     let(:variable_parser) { DefaultVariableParser.new }
     let(:audience_matcher) { AudienceMatcher.new(DefaultAudienceDeserializer.new) }
     let(:published) { [] }

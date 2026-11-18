@@ -215,7 +215,7 @@ class Context
   def set_attribute(name, value)
     check_not_closed?
 
-    @attributes.push(Attribute.new(name, value, @clock.to_i))
+    @attributes.push(Attribute.new(name, value, now_millis))
     @attrs_seq += 1
   end
 
@@ -351,7 +351,7 @@ class Context
     end
 
     achievement = GoalAchievement.new
-    achievement.achieved_at = @clock.to_i
+    achievement.achieved_at = now_millis
     achievement.name = goal_name
     achievement.properties = properties.nil? ? nil : properties.dup
 
@@ -471,7 +471,7 @@ class Context
 
         event = PublishEvent.new
         event.hashed = true
-        event.published_at = @clock.to_i
+        event.published_at = now_millis
         event.units = @units.map do |key, value|
           Unit.new(key.to_s, unit_hash(key, value))
         end
@@ -540,7 +540,7 @@ class Context
       exposure.name = name
       exposure.unit = assignment.unit_type
       exposure.variant = assignment.variant
-      exposure.exposed_at = @clock.to_i
+      exposure.exposed_at = now_millis
       exposure.assigned = assignment.assigned
       exposure.eligible = assignment.eligible
       exposure.overridden = assignment.overridden
@@ -552,6 +552,20 @@ class Context
       @pending_count += 1
       @exposures.push(exposure)
       exposure
+    end
+
+    # Epoch milliseconds, as the Collector reads every timestamp. A clock that
+    # responds to call is read on every call; a Time (or its ISO 8601 text) is
+    # a fixed instant, and an Integer is taken as milliseconds already.
+    def now_millis
+      clock = @clock
+      if clock.respond_to?(:call)
+        clock.call
+      elsif clock.is_a?(Time)
+        (clock.to_r * 1000).floor
+      else
+        clock.to_i
+      end
     end
 
     def check_not_closed?
