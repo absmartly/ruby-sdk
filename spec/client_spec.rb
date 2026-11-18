@@ -60,6 +60,18 @@ RSpec.describe Client do
     expect(client.headers[:"X-Application-Version"]).to eq("0")
   end
 
+  it "takes the X-Agent version from Absmartly::VERSION, not a fixed string" do
+    stub_const("Absmartly::VERSION", "9.8.7")
+    config = ClientConfig.create
+    config.endpoint = "https://localhost/v1"
+    config.api_key = "test-api-key"
+    config.application = "website"
+    config.environment = "dev"
+
+    expect(Client.create(config, instance_double(DefaultHttpClient)).headers[:"X-Agent"])
+      .to eq("absmartly-ruby-sdk/9.8.7")
+  end
+
   it "create with defaults" do
     config = ClientConfig.create
     config.endpoint = "https://localhost/v1"

@@ -459,6 +459,24 @@ RSpec.describe Context do
     }.to raise_error(IllegalStateException, "Unit 'db_user_id' UID must not be blank.")
   end
 
+  it "set_unit returns the stored UID, as in v1.3.0" do
+    context = create_ready_context
+    expect(context.set_unit("extra_id", " padded ")).to eq("padded")
+    expect(context.set_unit("num_id", 42)).to eq(42)
+  end
+
+  it "skips revalidation on warmed reads of an experiment with no rules or audience" do
+    context = create_ready_context
+    context.treatment("exp_test_ab")
+    context.set_attribute("age", 30)
+    calls = 0
+    allow(context).to receive(:attributes_map).and_wrap_original { |m| calls += 1; m.call }
+    allow(context).to receive(:audience_matches).and_wrap_original { |m, *args| calls += 1; m.call(*args) }
+
+    5.times { context.treatment("exp_test_ab") && context.peek_treatment("exp_test_ab") }
+    expect(calls).to eq(0)
+  end
+
   it "accepts the same unit again as a String or a number, as in v1.3.0" do
     context = create_ready_context
     context.set_unit("db_id", 123456)

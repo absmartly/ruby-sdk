@@ -207,10 +207,12 @@ class Context
       raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
     end
 
-    return previous unless previous.nil?
-
-    @units[unit_type.to_sym] = trimmed
-    invalidate_assignments_missing_unit(unit_type.to_s)
+    if previous.nil?
+      @units[unit_type.to_sym] = trimmed
+      invalidate_assignments_missing_unit(unit_type.to_s)
+    end
+    # Returns the UID, as in v1.3.0.
+    trimmed
   end
 
   def set_units(units)
