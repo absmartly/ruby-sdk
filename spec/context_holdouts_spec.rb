@@ -1251,12 +1251,10 @@ module ContextHoldoutsSpec
 
       it "allocates no holdout state for a context without holdouts" do
         context = create_context(data_of([experiment(1, "exp", holdout_ids: [11]), experiment(2, "exp_b")]))
-        other = create_context(data_of([experiment(1, "exp")], []))
         context.treatment("exp")
 
         state = context.instance_variable_get(:@state)
-        expect(state.holdouts_by_id).to be_frozen.and be_empty
-        expect(state.holdouts_by_id).to be(other.instance_variable_get(:@state).holdouts_by_id)
+        expect(state.members).to eq(%i[data index index_variables custom_fields])
         expect(state.index.values.map(&:holdouts)).to eq([nil, nil])
         expect(context.instance_variable_get(:@holdout_assignments)).to be_nil
       end

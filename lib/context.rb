@@ -16,7 +16,7 @@ require_relative "absmartly/switchback"
 class Context
   # Immutable-by-convention snapshot swapped in with a single assignment so
   # readers see either the complete old or the complete new state.
-  State = Struct.new(:data, :index, :index_variables, :custom_fields, :holdouts_by_id)
+  State = Struct.new(:data, :index, :index_variables, :custom_fields)
   NO_RULES = ""
   NO_HOLDOUTS = {}.freeze
   private_constant :NO_HOLDOUTS
@@ -1063,7 +1063,7 @@ class Context
         assign_switchback_generations(index, @state.index)
         # Stays set once a switchback was installed: its epochs must still be dropped.
         @switchbacks_active ||= index.each_value.any?(&:switchback)
-        @state = State.new(data, index, index_variables, custom_fields, holdouts_by_id)
+        @state = State.new(data, index, index_variables, custom_fields)
       end
     end
 
@@ -1342,7 +1342,7 @@ class Context
     def set_data_failed(exception)
       @data_failed = exception
       @ready_error = exception
-      @state = State.new(ContextData.new, {}, {}, {}, NO_HOLDOUTS)
+      @state = State.new(ContextData.new, {}, {}, {})
       @failed = true
     end
 
@@ -1364,7 +1364,7 @@ class Context
 
     def init_common(clock, config, data_provider, event_handler, event_logger,
                     variable_parser, audience_matcher, application = nil, environment = nil)
-      @state = State.new(nil, {}, {}, {}, NO_HOLDOUTS)
+      @state = State.new(nil, {}, {}, {})
       @achievements = []
       @assignment_cache = {}
       @holdout_assignments = nil
