@@ -531,6 +531,49 @@ RSpec.describe Context do
     expect(seen).to eq("application" => "website", "age" => 21, :age => 22, :environment => "staging")
   end
 
+  it "keeps a user String key when the same name is then set as a Symbol, as in v1.3.0" do
+    seen = nil
+    matcher = Class.new do
+      define_method(:evaluate) do |_audience, attributes|
+        seen = attributes
+        Struct.new(:result).new(true)
+      end
+    end.new
+    config = ContextConfig.create
+    config.set_units(units)
+    context = Context.create(clock, config, audience_strict_data_future_ready, data_provider, event_handler,
+                             event_logger, variable_parser, matcher, application: "website", environment: "prod")
+    context.set_attribute("environment", "a")
+    context.set_attribute(:environment, "b")
+    context.peek_treatment("exp_test_ab")
+
+    expect(seen).to eq("application" => "website", "environment" => "a", :environment => "b")
+  end
+
+  it "publish returns normally when a logger's deferred close still has events queued" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = {}
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        next unless event == ContextEventLogger::EVENT_TYPE::PUBLISH
+
+        holder[:context].track("again", nil)
+        holder[:context].close unless holder[:closing]
+        holder[:closing] = true
+      end
+    end.new
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish).and_return(nil)
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+
+    expect { Timeout.timeout(5) { holder[:context].publish } }.not_to raise_error
+    expect(holder[:context].closed?).to be false
+    expect(holder[:context].pending_count).to be > 0
+  end
+
   it "set_unit returns the stored UID, as in v1.3.0" do
     context = create_ready_context
     expect(context.set_unit("extra_id", " padded ")).to eq("padded")

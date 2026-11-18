@@ -16,24 +16,6 @@ class Hashing
     base64_url_no_padding(Digest::MD5.digest(value.to_s.b))
   end
 
-  # The text JavaScript's Number#toFixed(0) produces, which the JS SDK hashes
-  # for numeric units (hash_unit keeps v1.3.0's Float#to_s text): rounded half away from zero, "-0" for small negative
-  # fractions, and exponent notation from 1e21 on.
-  def self.number_to_fixed0(value)
-    x = value.to_f
-    return "NaN" if x.nan?
-    return (x.positive? ? "Infinity" : "-Infinity") if x.infinite?
-
-    if x.abs >= 1e21
-      mantissa, exponent = x.to_s.split("e")
-      mantissa = mantissa.delete_suffix(".0")
-      return "#{mantissa}e#{exponent}"
-    end
-
-    rounded = x.abs.round
-    x.negative? ? "-#{rounded}" : rounded.to_s
-  end
-
   def self.base64_url_no_padding(bytes)
     [bytes.to_s.b].pack("m0").delete("=").tr("+/", "-_")
   end

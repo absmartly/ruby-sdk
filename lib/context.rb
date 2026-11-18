@@ -19,6 +19,9 @@ class Context
   NO_RULES = ""
   SEAL_FLUSH_PASSES = 2
   private_constant :SEAL_FLUSH_PASSES
+  # Raised by close/finalize when events are still queued after the last pass.
+  class EventsQueuedWhileClosing < StandardError; end
+  private_constant :EventsQueuedWhileClosing
 
   attr_reader :pending_count
 
@@ -457,7 +460,7 @@ class Context
               @pending_count = 0
             end
             unless @exposures.empty? && @achievements.empty?
-              raise StandardError.new("Events queued while closing; retry close or finalize") if last_pass
+              raise EventsQueuedWhileClosing.new("Events queued while closing; retry close or finalize") if last_pass
 
               next :retry
             end
@@ -549,7 +552,13 @@ class Context
       if @close_pending
         event_type = @close_pending
         @close_pending = false
-        seal(event_type) unless @closed || publish_failed?(result)
+        begin
+          seal(event_type) unless @closed || publish_failed?(result)
+        rescue EventsQueuedWhileClosing
+          # A close requested from a logger callback stays pending-free and the
+          # events stay queued; publish itself returns as in v1.3.0.
+          nil
+        end
       end
       result
     end
@@ -881,7 +890,6 @@ class Context
 
               if !custom_field_value.value.nil?
                 custom_value = custom_field_value.value
-                # A missing or non-string type reads the value as plain text.
                 type = custom_field_value.type.is_a?(String) ? custom_field_value.type : ""
 
                 if type.start_with?("json")
