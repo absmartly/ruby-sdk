@@ -437,6 +437,9 @@ class Context
         return nil
       end
 
+      # A request carried from before this seal (e.g. from the error callback
+      # of an earlier rejected publish) is kept if this seal gives up.
+      carried = @close_pending
       @closing = true
       begin
         # One extra pass sends events a logger callback queued during the
@@ -462,9 +465,10 @@ class Context
             end
             unless @exposures.empty? && @achievements.empty?
               if last_pass
-                # The caller retries close/finalize itself; requests made by
-                # callbacks during this seal are covered by that retry.
-                @close_pending = false
+                # The caller retries close/finalize itself, which covers any
+                # request made by a callback during this seal; one carried from
+                # before the seal stays pending.
+                @close_pending = carried
                 raise EventsQueuedWhileClosing.new("Events queued while closing; retry close or finalize")
               end
 

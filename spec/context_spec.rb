@@ -946,6 +946,84 @@ RSpec.describe Context do
     expect(GC.stat(:total_allocated_objects) - before).to be < 2100
   end
 
+  it "keeps a close carried from a rejected publish when a later finalize hits the pass bound" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { produce: false }
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        (holder[:events] ||= []) << event
+        holder[:context].close if event == ContextEventLogger::EVENT_TYPE::ERROR && !holder[:asked] && (holder[:asked] = true)
+        holder[:context].track("cb", nil) if event == ContextEventLogger::EVENT_TYPE::PUBLISH && holder[:produce]
+      end
+    end.new
+    responses = [failure_future]
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish) { responses.shift || publish_future }
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+    Timeout.timeout(5) { holder[:context].publish }
+    holder[:produce] = true
+    expect { Timeout.timeout(5) { holder[:context].finalize } }.to raise_error(StandardError, /retry close/)
+    holder[:produce] = false
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].closed?).to be true
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
+  end
+
+
+  it "keeps a carried close when an explicit finalize is rejected" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { events: [] }
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        holder[:events] << event
+        holder[:context].close if event == ContextEventLogger::EVENT_TYPE::ERROR && !holder[:asked] && (holder[:asked] = true)
+      end
+    end.new
+    responses = [failure_future, failure_future]
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish) { responses.shift || publish_future }
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+    Timeout.timeout(5) { holder[:context].publish }
+    expect { Timeout.timeout(5) { holder[:context].finalize } }.to raise_error(Exception, "FAILED")
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].closed?).to be true
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
+  end
+
+
+  it "keeps a close requested from a publish callback when finalize's retry pass is rejected" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { events: [] }
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        holder[:events] << event
+        next unless event == ContextEventLogger::EVENT_TYPE::PUBLISH && !holder[:asked]
+
+        holder[:asked] = true
+        holder[:context].track("cb", nil)
+        holder[:context].close
+      end
+    end.new
+    responses = [publish_future, failure_future]
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish) { responses.shift || publish_future }
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+    expect { Timeout.timeout(5) { holder[:context].finalize } }.to raise_error(Exception, "FAILED")
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].closed?).to be true
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
+  end
+
+
   it "a deferred close still raises a publisher error from its own publish" do
     config = ContextConfig.create
     config.set_units(units)
