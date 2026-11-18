@@ -794,6 +794,18 @@ module ContextSwitchbackSpec
     end
 
     # A switchback elsewhere in the payload makes the call read the clock up front.
+    # The exposing call's reading does not outlive the call: a later direct queue_exposure (a public
+    # method) stamps its own reading.
+    it "does not leak an exposing call's instant into a later queue_exposure" do
+      context = create_context([switchback, switchback(2, "exp_other")])
+      clock.now = ANCHOR + 5
+      context.treatment("exp_other")
+      clock.now = ANCHOR + 9
+      peeked = context.send(:assignment, "exp_sb", ANCHOR + 9)
+      context.queue_exposure(peeked)
+      expect(published_exposures(context).map(&:exposed_at)).to eq([ANCHOR + 5, ANCHOR + 9])
+    end
+
     it "keeps stamping unit experiments at enqueue time" do
       context = create_context([switchback(randomizationType: "unit"), switchback(2, "exp_other")])
       clock.now = ANCHOR + HOUR
@@ -1210,6 +1222,29 @@ module ContextSwitchbackSpec
       expect(published_exposures(context).map { |e| [e.variant, e.custom] }).to eq([[2, true], [1, true]])
     end
 
+    it "shares the grid built at install with every slot" do
+      context = create_context([switchback])
+      clock.now = ANCHOR + 10
+      context.treatment("exp_sb")
+      clock.now = ANCHOR + HOUR
+      context.treatment("exp_sb")
+      grid = context.send(:experiment, "exp_sb").switchback_grid
+      slots = context.send(:assignment_cache).values
+      expect(slots.length).to eq(2)
+      expect(slots.map(&:switchback_grid)).to all(be(grid))
+    end
+
+    # The attribute map is built only for rules or an audience.
+    it "builds no attribute map for a switchback without rules or an audience" do
+      context = create_context([switchback])
+      allow(context).to receive(:attributes_map).and_call_original
+      3.times do |i|
+        clock.now = ANCHOR + i * HOUR
+        context.treatment("exp_sb")
+      end
+      expect(context).not_to have_received(:attributes_map)
+    end
+
     # The grid identity is built once per data install, so a cached read compares it by identity.
     it "builds no grid on a cached read" do
       context = create_context([switchback])
@@ -1237,6 +1272,44 @@ module ContextSwitchbackCostSpec
     include SwitchbackSpecSupport
 
     let(:clock) { SwitchbackSpecSupport::MutableClock.new(SwitchbackSpecSupport::ANCHOR) }
+
+    # With a switchback in the payload too, and the switchback exposure keeps its resolution instant.
+    it "calls a one-argument queue_exposure override when switchbacks are served" do
+      subclass = Class.new(Context) do
+        attr_reader :queued
+
+        def queue_exposure(assignment)
+          (@queued ||= []) << assignment.name
+          super
+        end
+      end
+      json = JSON.generate(experiments: [
+        { id: 1, name: "exp_unit", unitType: "store_id", iteration: 1, seedHi: 1, seedLo: 2, split: [0.5, 0.5],
+          trafficSeedHi: 1, trafficSeedLo: 2, trafficSplit: [0.0, 1.0], fullOnVariant: 0, applications: [],
+          variants: [{ name: "A", config: nil }, { name: "B", config: nil }] },
+        { id: 2, name: "exp_sb", unitType: "store_id", iteration: 1, seedHi: -5, seedLo: -7, split: [0.5, 0.5],
+          trafficSeedHi: 1, trafficSeedLo: 2, trafficSplit: [0.0, 1.0], fullOnVariant: 0, applications: [],
+          variants: [{ name: "A", config: nil }, { name: "B", config: nil }], randomizationType: "switchback",
+          switchbackClusters: { store_id: "store_key" }, switchbackStartAt: SwitchbackSpecSupport::ANCHOR,
+          switchbackPeriodMs: SwitchbackSpecSupport::HOUR }
+      ])
+      data = DefaultContextDataDeserializer.new.deserialize(json, 0, json.length)
+      config = ContextConfig.create
+      config.set_units(store_id: "s1")
+      config.set_attributes(store_key: "store-42")
+      publisher = SwitchbackSpecSupport::Publisher.new
+      context = subclass.new(clock, config, ready(data), nil, publisher, nil,
+                             DefaultVariableParser.new, AudienceMatcher.new(DefaultAudienceDeserializer.new))
+      clock.now = SwitchbackSpecSupport::ANCHOR + SwitchbackSpecSupport::HOUR
+      clock.next_read = SwitchbackSpecSupport::ANCHOR + SwitchbackSpecSupport::HOUR - 1
+      expect(context.treatment("exp_sb")).to eq(draw("store-42", 0, -5, -7, 2))
+      context.treatment("exp_unit")
+      expect(context.queued).to eq(%w[exp_sb exp_unit])
+      context.publish
+      expect(publisher.events[0].exposures.map(&:exposed_at))
+        .to eq([SwitchbackSpecSupport::ANCHOR + SwitchbackSpecSupport::HOUR - 1,
+                SwitchbackSpecSupport::ANCHOR + SwitchbackSpecSupport::HOUR])
+    end
 
     # A subclass written for v1.3.0 that overrides queue_exposure(assignment) keeps working.
     it "calls a one-argument queue_exposure override" do

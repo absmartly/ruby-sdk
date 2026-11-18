@@ -23,12 +23,14 @@ class Context
   SWITCHBACK = "switchback"
   SWITCHBACK_KEY_SEPARATOR = "\u001f"
   SWITCHBACK_RETAINED_PERIODS = 2
+  # Fiber-local key for the clock reading of the call exposing a switchback.
+  RESOLVED_AT = :__absmartly_switchback_resolved_at
   # The Collector's anchor bounds: hour aligned, in [0, 10000-01-01T00:00:00Z).
   SWITCHBACK_ANCHOR_ALIGNMENT_MS = 3_600_000
   SWITCHBACK_MAX_ANCHOR_MS = 253_402_300_800_000
   # One switchback's cache slots, all created under one generation.
   SwitchbackEpoch = Struct.new(:generation, :periods)
-  private_constant :SwitchbackEpoch, :SWITCHBACK, :SWITCHBACK_KEY_SEPARATOR, :SWITCHBACK_RETAINED_PERIODS,
+  private_constant :SwitchbackEpoch, :RESOLVED_AT, :SWITCHBACK, :SWITCHBACK_KEY_SEPARATOR, :SWITCHBACK_RETAINED_PERIODS,
                    :SWITCHBACK_ANCHOR_ALIGNMENT_MS, :SWITCHBACK_MAX_ANCHOR_MS
 
   attr_reader :pending_count
@@ -241,9 +243,7 @@ class Context
 
     now = @switchbacks_active ? now_millis : nil
     assignment = assignment(experiment_name, now)
-    # One argument unless switchbacks are served, as a subclass overriding
-    # queue_exposure(assignment) expects.
-    now.nil? ? queue_exposure(assignment) : queue_exposure(assignment, now)
+    expose_assignment(assignment, now)
     assignment.variant
   end
 
@@ -251,10 +251,10 @@ class Context
   # or rule chose its variant. The holdouts covering it then expose once each,
   # in id order, from the arms pinned when the assignment was made, so a
   # refresh in between can't publish another holdout epoch (as in JS).
-  # A switchback exposure is stamped with resolved_at, the clock reading that
-  # chose its period; a switchback the Collector records nothing for (no
-  # linked unit, an ineligible cluster, pre-anchor) exposes nothing.
-  def queue_exposure(assignment, resolved_at = nil)
+  # A switchback exposure is stamped with the clock reading that chose its
+  # period; a switchback the Collector records nothing for (no linked unit, an
+  # ineligible cluster, pre-anchor) exposes nothing.
+  def queue_exposure(assignment)
     exposure = nil
     holdout_exposures = nil
     @queue_mutex.synchronize do
@@ -266,7 +266,7 @@ class Context
         assignment.exposed = true
 
         if assignment.switchback
-          exposure = enqueue_exposure(assignment.name, assignment, resolved_at) unless assignment.switchback_silent
+          exposure = enqueue_exposure(assignment.name, assignment, Thread.current[RESOLVED_AT]) unless assignment.switchback_silent
         elsif !assignment.suppressed || assignment.overridden || assignment.rule_override
           exposure = enqueue_exposure(assignment.name, assignment)
         end
@@ -550,6 +550,21 @@ class Context
       else
         status = result.respond_to?(:status) ? result.status : "unknown"
         raise StandardError.new("Publish failed (status=#{status})")
+      end
+    end
+
+    # The exposing call's clock reading reaches queue_exposure through a
+    # fiber-local, so queue_exposure keeps its v1.3.0 signature for subclasses
+    # that override it, and concurrent callers each stamp their own reading.
+    def expose_assignment(assignment, now)
+      return queue_exposure(assignment) if now.nil?
+
+      previous = Thread.current[RESOLVED_AT]
+      Thread.current[RESOLVED_AT] = now
+      begin
+        queue_exposure(assignment)
+      ensure
+        Thread.current[RESOLVED_AT] = previous
       end
     end
 
@@ -916,7 +931,7 @@ class Context
         assignment = assignment(experiment.data.name, now)
         next if assignment.variables.nil?
 
-        (now.nil? ? queue_exposure(assignment) : queue_exposure(assignment, now)) if expose
+        expose_assignment(assignment, now) if expose
         if assignment.variables.key?(key) && (assignment.assigned || assignment.overridden || assignment.rule_override)
           return assignment.variables[key]
         end
