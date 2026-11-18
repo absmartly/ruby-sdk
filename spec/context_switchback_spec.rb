@@ -399,6 +399,35 @@ module ContextSwitchbackSpec
       expect(context.pending_count).to eq(9)
     end
 
+    # The iteration is identity: a restart re-reads the cluster key within the same period.
+    it "re-reads the cluster key when the iteration changes" do
+      context = create_context([switchback(1, "exp_sb", 3, HOUR, switchbackClusters: { UNIT_TYPE => "city" })])
+      clock.now = ANCHOR + 10
+      context.set_attribute("city", "Lisboa")
+      expect(context.treatment("exp_sb")).to eq(draw("Lisboa", 0, SEED_HI, SEED_LO, 3))
+      context.set_attribute("city", "Faro")
+      expect(context.treatment("exp_sb")).to eq(draw("Lisboa", 0, SEED_HI, SEED_LO, 3))
+
+      refresh_to(context, [switchback(1, "exp_sb", 3, HOUR, switchbackClusters: { UNIT_TYPE => "city" }, iteration: 2)])
+      expect(context.treatment("exp_sb")).to eq(draw("Faro", 0, SEED_HI, SEED_LO, 3))
+      expect(draw("Faro", 0, SEED_HI, SEED_LO, 3)).not_to eq(draw("Lisboa", 0, SEED_HI, SEED_LO, 3))
+      expect(context.pending_count).to eq(2)
+    end
+
+    # A switchback slot cached before a refresh replaced it with a unit experiment of the same name
+    # is dropped, even when the new data has no switchback left.
+    it "drops a switchback's slots when a refresh leaves no switchback" do
+      clock.now = ANCHOR - 1
+      context = create_context([switchback(fullOnVariant: 1)])
+      expect(context.treatment("exp_sb")).to eq(1)
+      expect(context.pending_count).to eq(1)
+
+      refresh_to(context, [unit_twin(switchback(fullOnVariant: 1))])
+      expect(context.treatment("exp_sb")).to eq(1)
+      expect(context.pending_count).to eq(2)
+      expect(context.instance_variable_get(:@switchback_epochs)).to be_empty
+    end
+
     it "starts the grid when a refresh sets the start" do
       context = create_context([switchback(switchbackStartAt: nil)])
       clock.now = ANCHOR + 10
@@ -942,6 +971,43 @@ module ContextSwitchbackSpec
       end
     end
 
+    # A unit experiment whose rule outcome changes after set_attribute: the cached read evaluates the
+    # rules and rejects the slot, and the rebuild evaluates them once more. Two evaluations.
+    it "evaluates the rules twice on a stale rule transition" do
+      us_rule = '{"rules":[{"type":"assign","environments":[],' \
+                '"conditions":{"and":[{"eq":[{"var":"country"},{"value":"US"}]}]},"variant":1}]}'
+      matcher = CountingAudienceMatcher.new
+      context = create_context([switchback(randomizationType: "unit", assignmentRules: us_rule)],
+                               audience_matcher: matcher)
+      context.peek_treatment("exp_sb")
+      expect(matcher.rule_evaluations).to eq(1)
+
+      context.set_attribute("country", "US")
+      matcher.rule_evaluations = 0
+      expect(context.peek_treatment("exp_sb")).to eq(1)
+      expect(matcher.rule_evaluations).to eq(2)
+      expect(context.peek_treatment("exp_sb")).to eq(1)
+      expect(matcher.rule_evaluations).to eq(2)
+    end
+
+    # The same for a switchback with an eligible cluster, whose rules are re-checked like a unit's.
+    it "evaluates a switchback's rules twice on a stale rule transition and not again after" do
+      us_rule = '{"rules":[{"type":"assign","environments":[],' \
+                '"conditions":{"and":[{"eq":[{"var":"country"},{"value":"US"}]}]},"variant":1}]}'
+      matcher = CountingAudienceMatcher.new
+      context = create_context([switchback(assignmentRules: us_rule)], audience_matcher: matcher)
+      clock.now = ANCHOR + HOUR
+      expect(context.peek_treatment("exp_sb")).to eq(EXPECTED_2_ARMS[1])
+      expect(matcher.rule_evaluations).to eq(1)
+
+      context.set_attribute("country", "US")
+      matcher.rule_evaluations = 0
+      expect(context.peek_treatment("exp_sb")).to eq(1)
+      expect(matcher.rule_evaluations).to eq(2)
+      3.times { expect(context.peek_treatment("exp_sb")).to eq(1) }
+      expect(matcher.rule_evaluations).to eq(2)
+    end
+
     # A legacy switchback serves under its declared unitType, so a unitType change is identity.
     it "treats a unitType change on a legacy switchback as identity" do
       context = create_context([switchback(switchbackClusters: nil)], units: { UNIT_TYPE => UID, "user_id" => "u1" })
@@ -1084,6 +1150,30 @@ module ContextSwitchbackSpec
       expect(worker.join(10)).not_to be_nil
       expect(worker.value).to eq(primed)
       expect(provider).to have_received(:context_data).once
+      expect(context.pending_count).to eq(1)
+    end
+
+    # The slot keeps the key read first (Lisboa) while other threads keep setting the attribute
+    # and the audience is re-evaluated; Faro draws differently in period 1.
+    it "exposes once and keeps the key under concurrent resolution and set_attribute" do
+      context = create_context([switchback(audience: '{"filter":[{"value":true}]}',
+                                           switchbackClusters: { UNIT_TYPE => "city" })])
+      clock.now = ANCHOR + HOUR + 10
+      context.set_attribute("city", "Lisboa")
+      lisboa = draw("Lisboa", 1, SEED_HI, SEED_LO, 2)
+      expect(draw("Faro", 1, SEED_HI, SEED_LO, 2)).not_to eq(lisboa)
+      expect(context.peek_treatment("exp_sb")).to eq(lisboa)
+
+      stop = false
+      writer = Thread.new do
+        context.set_attribute("city", "Faro") until stop
+      end
+      readers = Array.new(4) { Thread.new { Array.new(200) { context.treatment("exp_sb") } } }
+      variants = readers.flat_map(&:value)
+      stop = true
+      writer.join
+
+      expect(variants.uniq).to eq([lisboa])
       expect(context.pending_count).to eq(1)
     end
 

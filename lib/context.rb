@@ -26,7 +26,9 @@ class Context
   # The Collector's anchor bounds: hour aligned, in [0, 10000-01-01T00:00:00Z).
   SWITCHBACK_ANCHOR_ALIGNMENT_MS = 3_600_000
   SWITCHBACK_MAX_ANCHOR_MS = 253_402_300_800_000
-  private_constant :SWITCHBACK, :SWITCHBACK_KEY_SEPARATOR, :SWITCHBACK_RETAINED_PERIODS,
+  # One switchback's cache slots, all created under one generation.
+  SwitchbackEpoch = Struct.new(:generation, :periods)
+  private_constant :SwitchbackEpoch, :SWITCHBACK, :SWITCHBACK_KEY_SEPARATOR, :SWITCHBACK_RETAINED_PERIODS,
                    :SWITCHBACK_ANCHOR_ALIGNMENT_MS, :SWITCHBACK_MAX_ANCHOR_MS
 
   attr_reader :pending_count
@@ -980,6 +982,7 @@ class Context
           if experiment.respond_to?(:randomization_type) && experiment.randomization_type == SWITCHBACK
             clusters = experiment.switchback_clusters
             experiment_variables.switchback = true
+            experiment_variables.switchback_grid = switchback_grid(experiment)
             experiment_variables.switchback_source_types = Absmartly::Switchback::Serving.source_types(clusters)
             experiment_variables.switchback_source_paths = Absmartly::Switchback::Serving.source_paths(clusters)
           end
@@ -1071,7 +1074,7 @@ class Context
 
       a = previous.data
       b = installed.data
-      a.id == b.id && a.iteration == b.iteration && switchback_grid(a) == switchback_grid(b) &&
+      a.id == b.id && a.iteration == b.iteration && previous.switchback_grid == installed.switchback_grid &&
         ((!previous.switchback_source_paths.nil? && !installed.switchback_source_paths.nil?) ||
          a.unit_type == b.unit_type)
     end
@@ -1081,9 +1084,9 @@ class Context
        experiment.switchback_start_at, experiment.switchback_period_ms, experiment.switchback_design_type]
     end
 
-    def pin_switchback_config(assignment, experiment)
+    def pin_switchback_config(assignment, entry)
       assignment.switchback = true
-      assignment.switchback_grid = switchback_grid(experiment)
+      assignment.switchback_grid = entry.switchback_grid
     end
 
     # Whether the Collector can serve the schedule: an hour-aligned start in
@@ -1158,7 +1161,7 @@ class Context
       assignment.name = name
       assignment.eligible = true
       assignment.custom_assignment = custom
-      pin_switchback_config(assignment, entry.data)
+      pin_switchback_config(assignment, entry)
       assignment.serving = serving
       assignment.id = entry.data.id
       if override.nil?
@@ -1253,7 +1256,8 @@ class Context
     end
 
     def switchback_assignment_current?(assignment, entry, custom, override)
-      return false unless assignment.switchback_grid == switchback_grid(entry.data)
+      return false unless assignment.switchback_grid.equal?(entry.switchback_grid) ||
+                          assignment.switchback_grid == entry.switchback_grid
       return assignment.overridden && assignment.variant == override unless override.nil?
       return false if assignment.overridden
       return false unless assignment.rule_override || custom == assignment.custom_assignment
@@ -1463,7 +1467,8 @@ end
 
 class ExperimentVariables
   attr_accessor :data, :variables, :rules, :rule_key, :unconditional, :holdouts,
-                :switchback, :switchback_source_types, :switchback_source_paths, :switchback_generation
+                :switchback, :switchback_source_types, :switchback_source_paths, :switchback_generation,
+                :switchback_grid
 
   # Every field is set up front so all instances share one object shape and
   # the cached read path's attribute reads stay monomorphic.
@@ -1478,11 +1483,9 @@ class ExperimentVariables
     @switchback_source_types = nil
     @switchback_source_paths = nil
     @switchback_generation = nil
+    @switchback_grid = nil
   end
 end
-
-# One switchback's cache slots, all created under one generation.
-SwitchbackEpoch = Struct.new(:generation, :periods)
 
 class ContextCustomFieldValues
   attr_accessor :type, :value

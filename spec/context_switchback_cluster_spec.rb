@@ -139,7 +139,6 @@ module ContextSwitchbackClusterSpec
     end
 
     it "resolves nested and array paths and integer values" do
-      require "bigdecimal"
       nested = create_context(attribute_switchback("geo/city"))
       nested.set_attribute("geo", { "city" => "Porto" })
       expect(peek_schedule(nested)).to eq(expected_schedule("Porto"))
@@ -165,11 +164,14 @@ module ContextSwitchbackClusterSpec
       symbol.set_attribute("city", :c)
       expect(peek_schedule(symbol)).to eq(expected_schedule("c"))
 
-      # A BigDecimal is published as its JSON text ("0.42e2"), which the Collector keys as a string.
-      clock.now = ANCHOR
-      decimal = create_context(attribute_switchback("geo/city"))
-      decimal.set_attribute("geo", { "city" => BigDecimal("42") })
-      expect(peek_schedule(decimal)).to eq(expected_schedule("0.42e2"))
+      # A BigDecimal (a bundled gem, not in the Gemfile, from Ruby 3.4) is published as its JSON
+      # text ("0.42e2"), which the Collector keys as a string.
+      if SwitchbackSpecSupport.big_decimal?
+        clock.now = ANCHOR
+        decimal = create_context(attribute_switchback("geo/city"))
+        decimal.set_attribute("geo", { "city" => BigDecimal("42") })
+        expect(peek_schedule(decimal)).to eq(expected_schedule("0.42e2"))
+      end
 
       clock.now = ANCHOR + 10
       floating = create_context(attribute_switchback("city"))
@@ -180,7 +182,6 @@ module ContextSwitchbackClusterSpec
 
     # Values without a cluster key serve variant 0, ineligible, record nothing and never raise.
     it "makes values without a cluster key ineligible" do
-      require "bigdecimal"
       [nil, "", true, false, 1.5, 2.0, 3.0, { "a" => "b" }, ["x"]].each do |value|
         clock.now = ANCHOR
         context = create_context(attribute_switchback("city"))
@@ -268,12 +269,25 @@ module ContextSwitchbackClusterSpec
       expect(context.peek_treatment("exp_sb")).to eq(expected("Lisboa", 4))
     end
 
-    it "breaks a setAt tie with the attribute set last and trims names" do
+    # Lisboa and Faro draw different variants in period 0, so the winner is visible.
+    it "breaks a setAt tie with the attribute set last" do
+      expect(expected("Lisboa", 0)).not_to eq(expected("Faro", 0))
       context = create_context(attribute_switchback("city"))
       clock.now = ANCHOR + 5
-      context.set_attribute("city", "Porto")
-      context.set_attribute(" city ", "Lisboa")
+      context.set_attribute("city", "Faro")
+      context.set_attribute("city", "Lisboa")
       expect(context.peek_treatment("exp_sb")).to eq(expected("Lisboa", 0))
+
+      other = create_context(attribute_switchback("city"))
+      other.set_attribute("city", "Lisboa")
+      other.set_attribute("city", "Faro")
+      expect(other.peek_treatment("exp_sb")).to eq(expected("Faro", 0))
+    end
+
+    it "matches attribute names with surrounding spaces trimmed" do
+      context = create_context(attribute_switchback("city"))
+      context.set_attribute(" city ", "Faro")
+      expect(context.peek_treatment("exp_sb")).to eq(expected("Faro", 0))
     end
 
     # System attributes are not visible to cluster paths.

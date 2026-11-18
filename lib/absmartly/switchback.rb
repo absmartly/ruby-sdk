@@ -272,13 +272,22 @@ module Absmartly
       end
 
       # nil or [] admits every value, as in the Collector. Any other non-Array
-      # admits none; Integer entries match their decimal text, as Jackson
-      # coerces them into the Java SDK's String[].
+      # admits none. A scalar entry matches its JSON text, as Jackson coerces
+      # it into the Java SDK's String[] (17 as "17", true as "true", 1.5 as
+      # "1.5"); an object or array entry matches nothing.
       def self.allowed?(allowed_values, key)
         return true if allowed_values.nil? || (allowed_values.is_a?(Array) && allowed_values.empty?)
         return false unless allowed_values.is_a?(Array)
 
-        allowed_values.any? { |allowed| (allowed.is_a?(String) || allowed.is_a?(Integer)) && allowed.to_s == key }
+        allowed_values.any? { |allowed| allowed_text(allowed) == key }
+      end
+
+      def self.allowed_text(allowed)
+        case allowed
+        when String then allowed
+        when Integer, true, false then allowed.to_s
+        when Float then allowed.finite? ? allowed.to_s : nil
+        end
       end
 
       # The linked unit types of a cluster map, in declared order; nil for a

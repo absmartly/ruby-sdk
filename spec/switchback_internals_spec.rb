@@ -2,6 +2,7 @@
 
 require "json"
 require "absmartly/switchback"
+require "switchback_support"
 
 # Ports of java-sdk SwitchbackAssignerGoldenVectorsTest, SwitchbackAttributePathTest and
 # SwitchbackServingTest (core-api/src/test/java/com/absmartly/sdk/internal).
@@ -204,9 +205,10 @@ module SwitchbackInternalsSpec
     end
 
     it "gives no key for anything else" do
-      require "bigdecimal"
-      [nil, "", true, false, 3.0, 1.5, Float::INFINITY, BigDecimal("3"), Rational(3, 1), :sym, { "a" => 1 }, ["a"]]
-        .each { |value| expect(ClusterKeys.normalize(value)).to be_nil, value.inspect }
+      values = [nil, "", true, false, 3.0, 1.5, Float::INFINITY, Rational(3, 1), :sym, { "a" => 1 }, ["a"]]
+      # A bundled gem, not in the Gemfile, from Ruby 3.4.
+      values << BigDecimal("3") if SwitchbackSpecSupport.big_decimal?
+      values.each { |value| expect(ClusterKeys.normalize(value)).to be_nil, value.inspect }
     end
   end
 
@@ -247,6 +249,12 @@ module SwitchbackInternalsSpec
       expect(Serving.allowed?(%w[b a], "a")).to be(true)
       expect(Serving.allowed?([17], "17")).to be(true)
       expect(Serving.allowed?("a", "a")).to be(false)
+      # Scalars match their JSON text, as Jackson coerces them into java-sdk's String[].
+      expect(Serving.allowed?([true], "true")).to be(true)
+      expect(Serving.allowed?([1.5], "1.5")).to be(true)
+      expect(Serving.allowed?([nil, { "a" => "a" }, ["a"], Float::NAN], "a")).to be(false)
+      expect(Serving.allowed?([{ "a" => "a" }], '{"a"=>"a"}')).to be(false)
+      expect(Serving.allowed?([["a"]], '["a"]')).to be(false)
     end
 
     it "keeps the declared cluster order" do

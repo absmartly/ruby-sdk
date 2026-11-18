@@ -43,6 +43,24 @@ RSpec.describe "Context timestamps" do
     expect(event.published_at).to eq(1_767_225_601_789)
   end
 
+  it "stamps in live milliseconds through every context factory" do
+    allow(Process).to receive(:clock_gettime).and_call_original
+    readings = (1..9).map { |i| 1_767_225_600_000 + i }
+    allow(Process).to receive(:clock_gettime).with(Process::CLOCK_REALTIME, :millisecond) { readings.shift }
+    absmartly = ABSmartly.create(ABSmartlyConfig.create.tap { |config| config.client = client })
+    context_config = ContextConfig.create
+    context_config.set_unit(:session_id, "abc")
+    contexts = [absmartly.create_context_with(context_config, ContextDataResult.new(ContextData.new([]))),
+                absmartly.create_context_async(context_config).wait_until_ready(5)]
+    contexts.each do |context|
+      context.track("goal")
+      context.publish
+    end
+
+    expect(published.map { |event| event.goals.first.achieved_at }).to eq([1_767_225_600_001, 1_767_225_600_003])
+    expect(published.map(&:published_at)).to eq([1_767_225_600_002, 1_767_225_600_004])
+  end
+
   it "reads the real wall clock in milliseconds" do
     before = (Time.now.to_r * 1000).floor
     context = create_context

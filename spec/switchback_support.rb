@@ -19,6 +19,14 @@ module SwitchbackSpecSupport
   # 2026-01-01T00:00:00Z, hour aligned.
   ANCHOR = 1_767_225_600_000
 
+  # bigdecimal is a bundled gem, not in the Gemfile, from Ruby 3.4.
+  def self.big_decimal?
+    require "bigdecimal"
+    true
+  rescue LoadError
+    false
+  end
+
   # Reads `now`; when next_read is set, the next read returns it once.
   class MutableClock
     attr_accessor :now, :next_read
