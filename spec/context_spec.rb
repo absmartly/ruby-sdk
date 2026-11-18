@@ -656,11 +656,39 @@ RSpec.describe Context do
     holder[:context].track("goal1", nil)
 
     Timeout.timeout(5) { holder[:context].publish }
+    holder[:context].track("late", nil)
     Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].closed?).to be false
+    expect(holder[:context].pending_count).to eq(2)
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].closed?).to be true
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
+  end
+
+  it "a close from the error callback of a rejected publish seals on the next good publish" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { events: [] }
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        holder[:events] << event
+        holder[:context].close if event == ContextEventLogger::EVENT_TYPE::ERROR && !holder[:asked]
+        holder[:asked] = true if event == ContextEventLogger::EVENT_TYPE::ERROR
+      end
+    end.new
+    responses = [StandardError.new("rejected"), nil]
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish) { responses.shift }
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+
+    expect(Timeout.timeout(5) { holder[:context].publish }).to be_a(StandardError)
     expect(holder[:context].closed?).to be false
     expect(holder[:context].pending_count).to eq(1)
     Timeout.timeout(5) { holder[:context].publish }
     expect(holder[:context].closed?).to be true
+    expect(holder[:context].pending_count).to eq(0)
     expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
   end
 
