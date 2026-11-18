@@ -241,7 +241,9 @@ class Context
 
     now = @switchbacks_active ? now_millis : nil
     assignment = assignment(experiment_name, now)
-    queue_exposure(assignment, now)
+    # One argument unless switchbacks are served, as a subclass overriding
+    # queue_exposure(assignment) expects.
+    now.nil? ? queue_exposure(assignment) : queue_exposure(assignment, now)
     assignment.variant
   end
 
@@ -914,7 +916,7 @@ class Context
         assignment = assignment(experiment.data.name, now)
         next if assignment.variables.nil?
 
-        queue_exposure(assignment, now) if expose
+        (now.nil? ? queue_exposure(assignment) : queue_exposure(assignment, now)) if expose
         if assignment.variables.key?(key) && (assignment.assigned || assignment.overridden || assignment.rule_override)
           return assignment.variables[key]
         end
@@ -1210,8 +1212,7 @@ class Context
         return
       end
 
-      attrs = attributes_map
-      rule = entry.rule_key.empty? ? nil : resolve_rule(entry, attrs, false, serving.unit_type)
+      rule = entry.rule_key.empty? ? nil : resolve_rule(entry, attributes_map, false, serving.unit_type)
       assignment.rule_variant = rule&.first
       if rule
         assignment.assigned = false
@@ -1222,7 +1223,7 @@ class Context
       end
 
       if !data.audience.nil? && data.audience.size > 0
-        match = @audience_matcher.evaluate(data.audience, attrs)
+        match = @audience_matcher.evaluate(data.audience, attributes_map)
         assignment.audience_mismatch = true if match && !match.result
       end
       if data.audience_strict && assignment.audience_mismatch

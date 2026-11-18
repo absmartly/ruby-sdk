@@ -1177,6 +1177,49 @@ module ContextSwitchbackSpec
       expect(context.pending_count).to eq(1)
     end
 
+    # An exposed override of a switchback without a linked unit is kept when a unit is set: it
+    # published, so replacing it would publish the override again.
+    it "keeps an exposed override when a linked unit is set later" do
+      context = create_context([switchback], units: { "user_id" => "u1" }, overrides: { "exp_sb" => 1 })
+      clock.now = ANCHOR + 10
+      expect(context.treatment("exp_sb")).to eq(1)
+      context.set_unit(UNIT_TYPE, UID)
+      expect(context.treatment("exp_sb")).to eq(1)
+      expect(context.pending_count).to eq(1)
+      expect(published_exposures(context).map(&:unit)).to eq([UNIT_TYPE])
+    end
+
+    # Revalidating a split rule after set_attribute randomizes over the serving unit again, not the
+    # declared unitType (which has no unit here, and would give the no-unit variant 0).
+    it "revalidates a split rule over the serving unit" do
+      rule = '{"rules":[{"type":"split","environments":[],"percentages":"0/0/100"}]}'
+      context = create_context([switchback(1, "exp_sb", 3, HOUR, unitType: "user_id", assignmentRules: rule)])
+      clock.now = ANCHOR + 10
+      expect(context.treatment("exp_sb")).to eq(2)
+      context.set_attribute("unrelated", 1)
+      expect(context.treatment("exp_sb")).to eq(2)
+      expect(context.pending_count).to eq(1)
+    end
+
+    it "serves a custom assignment changed within the period" do
+      context = create_context([switchback(1, "exp_sb", 3)], custom: { "exp_sb" => 2 })
+      clock.now = ANCHOR + 10
+      expect(context.treatment("exp_sb")).to eq(2)
+      context.set_custom_assignment("exp_sb", 1)
+      expect(context.treatment("exp_sb")).to eq(1)
+      expect(published_exposures(context).map { |e| [e.variant, e.custom] }).to eq([[2, true], [1, true]])
+    end
+
+    # The grid identity is built once per data install, so a cached read compares it by identity.
+    it "builds no grid on a cached read" do
+      context = create_context([switchback])
+      clock.now = ANCHOR + 10
+      context.treatment("exp_sb")
+      allow(context).to receive(:switchback_grid).and_call_original
+      100.times { context.peek_treatment("exp_sb") }
+      expect(context).not_to have_received(:switchback_grid)
+    end
+
     it "exposes once when many threads resolve the same period" do
       context = create_context([switchback])
       clock.now = ANCHOR + HOUR + 10
@@ -1194,6 +1237,37 @@ module ContextSwitchbackCostSpec
     include SwitchbackSpecSupport
 
     let(:clock) { SwitchbackSpecSupport::MutableClock.new(SwitchbackSpecSupport::ANCHOR) }
+
+    # A subclass written for v1.3.0 that overrides queue_exposure(assignment) keeps working.
+    it "calls a one-argument queue_exposure override" do
+      subclass = Class.new(Context) do
+        attr_reader :queued
+
+        def queue_exposure(assignment)
+          (@queued ||= []) << assignment.name
+          super
+        end
+      end
+      json = File.read(File.join(__dir__, "fixtures", "resources", "context.json"))
+      data = DefaultContextDataDeserializer.new.deserialize(json, 0, json.length)
+      config = ContextConfig.create
+      config.set_units(session_id: "e791e240fcd3df7d238cfc285f475e8152fcc0ec")
+      context = subclass.new(clock, config, ready(data), nil, SwitchbackSpecSupport::Publisher.new, nil,
+                             DefaultVariableParser.new, AudienceMatcher.new(DefaultAudienceDeserializer.new))
+      context.treatment("exp_test_ab")
+      context.variable_value("banner.border", 0)
+      expect(context.queued).to eq(%w[exp_test_ab exp_test_ab])
+    end
+
+    # A fixed Time is converted to milliseconds once, so cached reads allocate nothing for it.
+    it "converts a fixed Time once" do
+      context = Context.create(Time.at(1_620_000_000), ContextConfig.create, ready(data_of([])), nil, nil, nil,
+                               DefaultVariableParser.new, AudienceMatcher.new(DefaultAudienceDeserializer.new))
+      clock_time = context.send(:clock)
+      allow(clock_time).to receive(:to_r).and_call_original
+      3.times { context.set_attribute("a", 1) }
+      expect(clock_time).to have_received(:to_r).once
+    end
 
     it "reads no clock on the assignment paths" do
       json = File.read(File.join(__dir__, "fixtures", "resources", "context.json"))
