@@ -78,6 +78,12 @@ RSpec.describe "Backwards Compatibility" do
     expect(experiment.custom_field_values).to eq([CustomFieldValue.new("country", "US", "string")])
   end
 
+  it "prefers the symbol key when a nested object has both key styles" do
+    experiment = Experiment.new(variants: [{ name: "sym", "name" => "str", config: nil }])
+
+    expect(experiment.variants.first.name).to eq("sym")
+  end
+
   it "DefaultContextEventHandler is a deprecated alias for DefaultContextPublisher" do
     original = Warning[:deprecated]
     Warning[:deprecated] = true

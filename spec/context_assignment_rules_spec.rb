@@ -227,7 +227,8 @@ RSpec.describe "Context assignment rules" do
 
     # Pins current behaviour: the cached read of an audience-free experiment
     # does not record the attribute change, so an audience a later refresh
-    # adds is evaluated against it. The JavaScript SDK keeps the variant here.
+    # adds is evaluated against it. JS 1.13.4 also gives 0; javascript-sdk
+    # main (311cfca, unreleased) keeps the variant.
     it "evaluates an audience a refresh adds against attributes set since the last read" do
       context = create_context(context_data(nil), attributes: { country: "US" })
       expect(context.treatment("exp_test_abc")).to eq(2)
