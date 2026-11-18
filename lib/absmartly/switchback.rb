@@ -140,7 +140,6 @@ module Absmartly
         value.between?(INT_MIN, INT_MAX) ? value : nil
       end
 
-      # The attribute name the path starts at.
       def root_key
         keys[0]
       end
@@ -157,7 +156,12 @@ module Absmartly
         return nil if root_value.nil?
 
         decoded = case root_value
-                  when String, Integer, true, false then root_value
+                  when Integer, true, false then root_value
+                  when String
+                    # As published: UTF-8 text, so a UTF-16 string keys like its UTF-8 twin.
+                    return utf8_string(root_value) if keys.length == 1
+
+                    root_value
                   else
                     return nil unless acyclic_within_depth?(root_value, {}.compare_by_identity, 0)
 
@@ -171,6 +175,15 @@ module Absmartly
       end
 
       private
+        # The string's JSON encoding decoded back, or nil when it has none.
+        def utf8_string(value)
+          return value if value.encoding == Encoding::UTF_8 && value.valid_encoding?
+
+          JSON.parse([value].to_json)[0]
+        rescue StandardError
+          nil
+        end
+
         def acyclic_within_depth?(value, path, depth)
           children = case value
                      when Hash then value.values

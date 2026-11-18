@@ -81,11 +81,18 @@ module SwitchbackInternalsSpec
       expect { Assigner.fisher_yates_permutation(0, 0) }.to raise_error(ArgumentError)
     end
 
-    # Java's floorDiv, including at the 64-bit bounds.
-    it "floors period and cycle division" do
-      expect([0, 2, 3, -1, -3, -4].map { |n| n.div(3) }).to eq([0, 0, 1, -1, -1, -2])
-      expect(LONG_MIN.div(3)).to eq(-3_074_457_345_618_258_603)
-      expect(LONG_MAX.div(10)).to eq(922_337_203_685_477_580)
+    # The cycle is Java's floorDiv(period, arms) and the slot its floorMod, including negative
+    # periods and the 64-bit bounds: every period of one cycle draws from that cycle's permutation.
+    it "floors the cycle and slot of negative and boundary periods" do
+      # [period, arms, floorDiv, floorMod], written out rather than computed.
+      [[-1, 2, -1, 1], [-4, 3, -2, 2], [-11, 10, -2, 9], [LONG_MIN, 3, -3_074_457_345_618_258_603, 1],
+       [LONG_MAX, 10, 922_337_203_685_477_580, 7]].each do |period, arms, cycle, slot|
+        permutation = Assigner.fisher_yates_permutation(arms, Assigner.base_hash("store-42", cycle, 12_345))
+        expect(Assigner.assign("store-42", period, 12_345, arms)).to eq(permutation[slot]), [period, arms].inspect
+      end
+      # Truncating toward zero would draw from cycle 0 instead of cycle -1.
+      expect(Assigner.assign("store-42", -1, 12_345, 2)).to eq(0)
+      expect(Assigner.fisher_yates_permutation(2, Assigner.base_hash("store-42", 0, 12_345))[1]).to eq(1)
     end
   end
 

@@ -180,7 +180,6 @@ module ContextSwitchbackClusterSpec
       expect(floating.pending_count).to eq(0)
     end
 
-    # Values without a cluster key serve variant 0, ineligible, record nothing and never raise.
     it "makes values without a cluster key ineligible" do
       [nil, "", true, false, 1.5, 2.0, 3.0, { "a" => "b" }, ["x"]].each do |value|
         clock.now = ANCHOR
@@ -199,6 +198,28 @@ module ContextSwitchbackClusterSpec
       expect(missing.pending_count).to eq(0)
     end
 
+    # The Collector reads the published JSON text, so a UTF-16 string keys like its UTF-8 twin, for
+    # the draw and the allow-list.
+    it "keys a string by its published UTF-8 text" do
+      [nil, ["Zürich"]].each do |allowed|
+        utf8 = create_context(attribute_switchback("city", switchbackClusterValues: allowed))
+        utf8.set_attribute("city", "Zürich")
+        utf16 = create_context(attribute_switchback("city", switchbackClusterValues: allowed))
+        utf16.set_attribute("city", "Zürich".encode("UTF-16LE"))
+        clock.now = ANCHOR + 10
+        expect(utf16.treatment("exp_sb")).to eq(expected("Zürich", 0)), allowed.inspect
+        expect(utf8.treatment("exp_sb")).to eq(expected("Zürich", 0))
+        expect(published_exposures(utf16)).to eq(published_exposures(utf8))
+        expect(utf8.pending_count).to eq(0)
+      end
+      expect(expected("Zürich", 0)).not_to eq(0)
+
+      invalid = create_context(attribute_switchback("city"))
+      invalid.set_attribute("city", "\xFF".b)
+      expect(invalid.treatment("exp_sb")).to eq(0)
+      expect(invalid.pending_count).to eq(0)
+    end
+
     it "makes values without a JSON encoding ineligible" do
       cyclic = {}
       cyclic["self"] = cyclic
@@ -210,7 +231,6 @@ module ContextSwitchbackClusterSpec
       end
     end
 
-    # Unservable configurations serve an ineligible control, never a unit draw, and record nothing.
     it "makes unservable configurations ineligible" do
       experiments = ["items/0", "items/-1/city", "", "geo.city", "'city", "\"city", nil, 7].map do |path|
         attribute_switchback("city", switchbackClusters: { UNIT_TYPE => path })
@@ -253,7 +273,6 @@ module ContextSwitchbackClusterSpec
       end
     end
 
-    # The attribute set at or before the resolution instant, latest setAt first.
     it "uses the latest attribute set at or before the resolution instant" do
       context = create_context(attribute_switchback("city"))
       clock.now = ANCHOR + 2 * HOUR
@@ -290,14 +309,12 @@ module ContextSwitchbackClusterSpec
       expect(context.peek_treatment("exp_sb")).to eq(expected("Faro", 0))
     end
 
-    # System attributes are not visible to cluster paths.
     it "never reads the application or environment system attributes" do
       context = create_context(attribute_switchback("environment"))
       expect(context.treatment("exp_sb")).to eq(0)
       expect(context.pending_count).to eq(0)
     end
 
-    # Within a period the key is fixed at first resolution; the next period reads it again.
     it "does not reassign within the period after a mid-period setAttribute" do
       context = create_context(attribute_switchback("city"))
       clock.now = ANCHOR + 10
@@ -366,8 +383,10 @@ module ContextSwitchbackClusterSpec
       refresh_to(context, attribute_switchback("city"))
       expect(expected("Faro", 0)).to eq(1)
       expect(context.treatment("exp_sb")).to eq(expected("Faro", 0))
+      # The second exposure keeps the Faro key, so it is stamped when the slot read it: at ANCHOR + 20
+      # the published city is Lisboa, which the Collector would credit instead.
       expect(published_exposures(context)).to eq([sb_exposure(0, ANCHOR + 10, false, false),
-                                                  sb_exposure(expected("Faro", 0), ANCHOR + 20, true, false)])
+                                                  sb_exposure(expected("Faro", 0), ANCHOR + 10, true, false)])
     end
 
     # An audience change re-resolves the slot (a new exposure) but keeps its key.
@@ -383,8 +402,9 @@ module ContextSwitchbackClusterSpec
       context.set_attribute("tier", "silver")
       expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
 
+      # Stamped when the slot read Lisboa: at ANCHOR + 20 the published city is Porto.
       expect(published_exposures(context)).to eq([sb_exposure(expected("Lisboa", 0), ANCHOR + 10, true, false),
-                                                  sb_exposure(expected("Lisboa", 0), ANCHOR + 20, true, true)])
+                                                  sb_exposure(expected("Lisboa", 0), ANCHOR + 10, true, true)])
     end
 
     it "keeps a missing key through an audience re-evaluation" do
@@ -405,6 +425,70 @@ module ContextSwitchbackClusterSpec
       clock.now = ANCHOR + 2 * HOUR
       expect(expected("Faro", 2)).to eq(2)
       expect(context.peek_treatment("exp_sb")).to eq(expected("Faro", 2))
+    end
+
+    # The Collector re-resolves the cluster from the published attributes at exposedAt, so an
+    # exposure must point at an instant whose attributes give the cluster the SDK served.
+    def collector_cluster(event, exposure, path)
+      selected = event.attributes.select { |a| a.name.to_s.strip == path && a.set_at <= exposure.exposed_at }
+                      .max_by.with_index { |a, i| [a.set_at, i] }
+      selected&.value
+    end
+
+    it "publishes attributes that give the served cluster at exposedAt after a peek and a change" do
+      context = create_context(attribute_switchback("city"))
+      clock.now = ANCHOR + 10
+      context.set_attribute("city", "Lisboa")
+      expect(context.peek_treatment("exp_sb")).to eq(expected("Lisboa", 0))
+      clock.now = ANCHOR + 20
+      context.set_attribute("city", "Faro")
+      expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
+      expect(expected("Faro", 0)).not_to eq(expected("Lisboa", 0))
+
+      context.publish
+      event = context.send(:event_handler).events.last
+      expect(event.exposures.length).to eq(1)
+      expect(collector_cluster(event, event.exposures[0], "city")).to eq("Lisboa")
+      expect(event.exposures[0].exposed_at).to eq(ANCHOR + 10)
+    end
+
+    # The exposing call's own instant is kept while the attributes still give the slot's cluster.
+    it "keeps the exposing call's instant when the attributes are unchanged" do
+      context = create_context(attribute_switchback("city"))
+      clock.now = ANCHOR + 10
+      context.set_attribute("city", "Lisboa")
+      context.peek_treatment("exp_sb")
+      clock.now = ANCHOR + 20
+      context.treatment("exp_sb")
+      expect(published_exposures(context).map(&:exposed_at)).to eq([ANCHOR + 20])
+    end
+
+    # The Collector breaks a setAt tie in favour of the later entry, so an attribute written in the
+    # same millisecond as an exposure is stamped after it.
+    it "keeps an exposure's cluster when the attribute changes in the same millisecond" do
+      context = create_context(attribute_switchback("city"))
+      clock.now = ANCHOR + 10
+      context.set_attribute("city", "Lisboa")
+      expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
+      context.set_attribute("city", "Faro")
+
+      context.publish
+      event = context.send(:event_handler).events.last
+      expect(event.attributes.map(&:set_at)).to eq([ANCHOR + 10, ANCHOR + 11])
+      expect(collector_cluster(event, event.exposures[0], "city")).to eq("Lisboa")
+
+      # The next period serves Faro, once the clock reaches the write.
+      clock.now = ANCHOR + HOUR
+      expect(context.treatment("exp_sb")).to eq(expected("Faro", 1))
+    end
+
+    it "stamps attributes as before without switchbacks" do
+      context = build_context(data_of([attribute_switchback("city", randomizationType: "unit")]),
+                              units: { UNIT_TYPE => UID })
+      clock.now = ANCHOR + 10
+      context.treatment("exp_sb")
+      context.set_attribute("city", "Faro")
+      expect(context.send(:attributes).map(&:set_at)).to eq([ANCHOR + 10])
     end
 
     it "re-resolves the period when the cluster path changes" do
@@ -605,7 +689,6 @@ module ContextSwitchbackClusterSpec
         attributes = { "geo" => { "city" => "Porto" }, "geo.city" => "Faro", "session_store" => "s-1" }
         # The declared unit (user_id) only identifies an ineligible control.
         expect_ineligible(attributes, USER, { SESSION => "x1", USER => "u1" })
-        # Without a unit of the declared type, there is no response at all.
         expect(sbc(attributes, { SESSION => "x1" })).to be_nil, broken
         extra.clear
       end
@@ -745,7 +828,6 @@ module ContextSwitchbackClusterSpec
       end
     end
 
-    # A valid map whose linked types are all absent does not fall back to the declared unitType.
     it "does not fall back to the experiment's unit without a linked unit" do
       links.replace([[SESSION, "session_store"]])
       key = "s-17"

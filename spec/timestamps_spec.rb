@@ -61,6 +61,22 @@ RSpec.describe "Context timestamps" do
     expect(published.map(&:published_at)).to eq([1_767_225_600_002, 1_767_225_600_004])
   end
 
+  # The Collector rejects a batch with an event after publishedAt, so a clock that stepped back
+  # between an event and the publish must not get the batch rejected; the events keep their stamps.
+  it "publishes no earlier than its latest event after the clock steps back" do
+    allow(Process).to receive(:clock_gettime).and_call_original
+    readings = [1_767_225_600_010, 1_767_225_600_012, 1_767_225_600_005]
+    allow(Process).to receive(:clock_gettime).with(Process::CLOCK_REALTIME, :millisecond) { readings.shift }
+    context = create_context
+    context.track("goal")
+    context.track("goal")
+    context.publish
+
+    event = published.first
+    expect(event.goals.map(&:achieved_at)).to eq([1_767_225_600_010, 1_767_225_600_012])
+    expect(event.published_at).to eq(1_767_225_600_012)
+  end
+
   it "reads the real wall clock in milliseconds" do
     before = (Time.now.to_r * 1000).floor
     context = create_context

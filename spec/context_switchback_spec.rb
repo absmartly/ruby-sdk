@@ -252,7 +252,6 @@ module ContextSwitchbackSpec
       expect(context.pending_count).to eq(3)
     end
 
-    # No unit of a linked type: the experiment does not apply. unitType is never a fallback.
     it "leaves a missing cluster unit unassigned without a fallback" do
       context = create_context([switchback(unitType: "user_id")], units: { "user_id" => UID })
 
@@ -264,7 +263,6 @@ module ContextSwitchbackSpec
       end
       expect(context.pending_count).to eq(0)
 
-      # Setting a linked unit later makes the experiment apply.
       context.set_unit(UNIT_TYPE, UID)
       expect(context.treatment("exp_sb")).to eq(EXPECTED_2_ARMS[2])
       expect(published_exposures(context)).to eq([sb_exposure(1, "exp_sb", EXPECTED_2_ARMS[2], ANCHOR + 2 * HOUR,
@@ -399,7 +397,6 @@ module ContextSwitchbackSpec
       expect(context.pending_count).to eq(9)
     end
 
-    # The iteration is identity: a restart re-reads the cluster key within the same period.
     it "re-reads the cluster key when the iteration changes" do
       context = create_context([switchback(1, "exp_sb", 3, HOUR, switchbackClusters: { UNIT_TYPE => "city" })])
       clock.now = ANCHOR + 10
@@ -408,10 +405,42 @@ module ContextSwitchbackSpec
       context.set_attribute("city", "Faro")
       expect(context.treatment("exp_sb")).to eq(draw("Lisboa", 0, SEED_HI, SEED_LO, 3))
 
+      clock.now = ANCHOR + 20
       refresh_to(context, [switchback(1, "exp_sb", 3, HOUR, switchbackClusters: { UNIT_TYPE => "city" }, iteration: 2)])
       expect(context.treatment("exp_sb")).to eq(draw("Faro", 0, SEED_HI, SEED_LO, 3))
       expect(draw("Faro", 0, SEED_HI, SEED_LO, 3)).not_to eq(draw("Lisboa", 0, SEED_HI, SEED_LO, 3))
       expect(context.pending_count).to eq(2)
+    end
+
+    # A call that started before a refresh installed the first switchback (so it read no clock)
+    # exposes with the reading that chose its period, not a later one across a boundary.
+    %i[treatment variable_value].each do |api|
+      it "stamps #{api} racing the first switchback's install with its period's reading" do
+        # A unit experiment declares the key, so the variable read reaches the lock too; after the
+        # refresh it is a switchback.
+        context = create_context([unit_twin(switchback)])
+        context.peek_treatment("exp_sb")
+        lock = context.instance_variable_get(:@assignment_mutex)
+        worker = nil
+        lock.synchronize do
+          worker = Thread.new do
+            value = api == :treatment ? context.treatment("exp_sb") : context.variable_value("sb.arm", -1)
+            # The reading taken for this call must not stamp the thread's next call.
+            [value, Thread.current[:__absmartly_switchback_late_reading]]
+          end
+          deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+          Thread.pass until worker.status == "sleep" || !worker.alive? ||
+                            Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+          expect(worker.status).to eq("sleep")
+          refresh_to(context, [switchback])
+          clock.now = ANCHOR + HOUR
+          clock.next_read = ANCHOR + HOUR - 1
+        end
+        expect(worker.value).to eq([EXPECTED_2_ARMS[0], nil])
+        expect(EXPECTED_2_ARMS[0]).not_to eq(EXPECTED_2_ARMS[1])
+        expect(published_exposures(context)).to eq([sb_exposure(1, "exp_sb", EXPECTED_2_ARMS[0], ANCHOR + HOUR - 1,
+                                                                true, true)])
+      end
     end
 
     # A switchback slot cached before a refresh replaced it with a unit experiment of the same name
@@ -679,7 +708,6 @@ module ContextSwitchbackSpec
       end
     end
 
-    # A traffic miss on an eligible cluster is recorded; an ineligible cluster records nothing.
     it "records a traffic miss on an eligible cluster as an ineligible exposure" do
       context = create_context([switchback(1, "exp_miss", 2, HOUR, trafficSplit: [1.0, 0.0]),
                                 switchback(2, "exp_cluster_ineligible", 2, HOUR, trafficSplit: [1.0, 0.0],
@@ -697,7 +725,6 @@ module ContextSwitchbackSpec
       expect(context.custom_field_value("exp_sb", "missing")).to be_nil
     end
 
-    # Each experiment keeps slots for at most its two most recent periods.
     it "bounds the per-period cache" do
       context = create_context([switchback])
       50.times do |i|
@@ -842,7 +869,6 @@ module ContextSwitchbackSpec
       expect(context.pending_count).to eq(3)
     end
 
-    # Rewinding the clock re-exposes each re-entered evicted period at most once.
     it "re-exposes an evicted period at most once after a clock rewind" do
       context = create_context([switchback])
       3.times do |i|
@@ -962,13 +988,11 @@ module ContextSwitchbackSpec
       2.times { expect(context.treatment("exp_sb")).to eq(EXPECTED_2_ARMS[0]) }
       expect(context.pending_count).to eq(4)
 
-      # An unchanged identity keeps the epoch.
       refresh_to(context, [switchback])
       context.treatment("exp_sb")
       expect(context.pending_count).to eq(4)
     end
 
-    # Counts assignment-rule evaluations.
     class CountingAudienceMatcher < AudienceMatcher
       attr_accessor :rule_evaluations
 
@@ -1222,18 +1246,6 @@ module ContextSwitchbackSpec
       expect(published_exposures(context).map { |e| [e.variant, e.custom] }).to eq([[2, true], [1, true]])
     end
 
-    it "shares the grid built at install with every slot" do
-      context = create_context([switchback])
-      clock.now = ANCHOR + 10
-      context.treatment("exp_sb")
-      clock.now = ANCHOR + HOUR
-      context.treatment("exp_sb")
-      grid = context.send(:experiment, "exp_sb").switchback_grid
-      slots = context.send(:assignment_cache).values
-      expect(slots.length).to eq(2)
-      expect(slots.map(&:switchback_grid)).to all(be(grid))
-    end
-
     # The attribute map is built only for rules or an audience.
     it "builds no attribute map for a switchback without rules or an audience" do
       context = create_context([switchback])
@@ -1245,7 +1257,7 @@ module ContextSwitchbackSpec
       expect(context).not_to have_received(:attributes_map)
     end
 
-    # The grid identity is built once per data install, so a cached read compares it by identity.
+    # Slots are invalidated by the generation alone, so a cached read builds no grid.
     it "builds no grid on a cached read" do
       context = create_context([switchback])
       clock.now = ANCHOR + 10

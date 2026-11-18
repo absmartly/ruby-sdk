@@ -149,7 +149,6 @@ class ABSmartly
   end
 
   private
-    # Read on every call, so timestamps follow the wall clock in milliseconds.
     def system_clock
       SYSTEM_CLOCK
     end
