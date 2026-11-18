@@ -558,6 +558,83 @@ module ContextSwitchbackClusterSpec
       expect(collector_cluster(body, body.exposures[0], "city")).to eq("Lisboa")
     end
 
+    def multi_request_context
+      context = create_context(attribute_switchback("city"))
+      clock.now = ANCHOR + 10
+      context.set_attribute("city", "Lisboa")
+      context.treatment("exp_sb")
+      context.set_unit("user_id", "u-1")
+      # A same-millisecond change forces a separate switchback body; the goal is the first body.
+      context.set_attribute("city", "Faro")
+      context.track("goal")
+      context
+    end
+
+    it "retries only the undelivered request after a later request raises" do
+      context = multi_request_context
+      publisher = context.send(:event_handler)
+      delivered = []
+      attempts = 0
+      allow(publisher).to receive(:publish) do |_ctx, event|
+        attempts += 1
+        raise "second request failed" if attempts == 2
+
+        delivered << event
+        nil
+      end
+      expect { context.publish }.to raise_error("second request failed")
+      expect(delivered.length).to eq(1)
+      expect(delivered.first.goals.map(&:name)).to eq(["goal"])
+      expect(context.pending_count).to eq(1)
+      context.publish
+      expect(delivered.length).to eq(2)
+      expect(delivered.last.exposures.map(&:name)).to eq(["exp_sb"])
+      expect(context.pending_count).to eq(0)
+    end
+
+    it "stops at the first failed request and keeps all undelivered events" do
+      context = multi_request_context
+      publisher = context.send(:event_handler)
+      failure = StandardError.new("first request failed")
+      allow(publisher).to receive(:publish).and_return(failure)
+      expect(context.publish).to equal(failure)
+      expect(publisher).to have_received(:publish).once
+      expect(context.pending_count).to eq(2)
+    end
+
+    it "logs each successful publish in order and clears switchback tracking" do
+      context = multi_request_context
+      logged = []
+      logger = double("logger")
+      allow(logger).to receive(:handle_event) { |type, event| logged << [type, event] }
+      context.send(:event_logger=, logger)
+      context.publish
+      expect(logged.map(&:first)).to eq([ContextEventLogger::EVENT_TYPE::PUBLISH] * 2)
+      expect(logged[0][1].goals.map(&:name)).to eq(["goal"])
+      expect(logged[1][1].exposures.map(&:name)).to eq(["exp_sb"])
+      expect(context.instance_variable_get(:@switchback_exposures)).to be_empty
+      allow(context).to receive(:served_at?).and_call_original
+      context.track("next")
+      context.publish
+      expect(context).not_to have_received(:served_at?)
+      expect(context.pending_count).to eq(0)
+    end
+
+    it "preserves the serving unit when a newly added higher priority unit agrees" do
+      sources = { "user_id" => "tier", UNIT_TYPE => "city" }
+      context = create_context(attribute_switchback("city", switchbackClusters: sources))
+      clock.now = ANCHOR + 10
+      context.set_attribute("tier", "Lisboa")
+      context.set_attribute("city", "Lisboa")
+      context.treatment("exp_sb")
+      context.set_unit("user_id", "u-1")
+      context.publish
+      body = context.send(:event_handler).events.last
+      expect(body.units.map(&:type)).to eq([UNIT_TYPE])
+      expect(body.exposures.map(&:unit)).to eq([UNIT_TYPE])
+      expect(collector_cluster(body, body.exposures.first, "city")).to eq("Lisboa")
+    end
+
     # Exposures the batch already attributes correctly share one body.
     it "keeps one publish body when every exposure resolves from the batch" do
       context = create_context(attribute_switchback("city"))
