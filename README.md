@@ -374,6 +374,8 @@ rescue StandardError => e
 end
 ```
 
+Both sealing methods allow one extra publish for events queued during the first request. If more events arrive during that extra request, they stay queued, the context stays open, and the method raises `StandardError` ("Events queued while closing; retry close or finalize"). Retry after the producer stops; accepted events are not silently discarded.
+
 ### Custom Event Logger
 
 The ABsmartly SDK can be instantiated with an event logger used for all contexts. In addition, an event logger can be specified when creating a particular context in the context config.

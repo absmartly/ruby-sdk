@@ -360,10 +360,43 @@ RSpec.describe Context do
                                       variable_parser, audience_matcher)
     holder[:context].track("goal1", nil)
 
-    Timeout.timeout(5) { holder[:context].close }
-    expect(holder[:context].closed?).to be true
-    expect(holder[:context].pending_count).to eq(0)
+    expect { Timeout.timeout(5) { holder[:context].close } }
+      .to raise_error(StandardError, "Events queued while closing; retry close or finalize")
+    expect(holder[:context].closed?).to be false
+    expect(holder[:context].pending_count).to eq(1)
     expect(publishes).to eq(2)
+  end
+
+  it "retains events accepted during the last seal pass for a retry" do
+    [:close, :finalize].each do |method|
+      config = ContextConfig.create
+      config.set_units(units)
+      sent = []
+      callbacks = 0
+      holder = {}
+      logger = Object.new
+      logger.define_singleton_method(:handle_event) do |event, _data|
+        if event == ContextEventLogger::EVENT_TYPE::PUBLISH && callbacks < 2
+          callbacks += 1
+          holder[:context].track("callback_#{callbacks}", nil)
+        end
+      end
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, event|
+        sent.concat(event.goals.map(&:name))
+        nil
+      end
+      context = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                               variable_parser, audience_matcher)
+      holder[:context] = context
+      context.track("initial", nil)
+      expect { Timeout.timeout(5) { context.public_send(method) } }.to raise_error(StandardError, /retry/)
+      expect(context.pending_count).to eq(1)
+      expect(context.closed?).to be false
+      Timeout.timeout(5) { context.public_send(method) }
+      expect(sent).to eq(["initial", "callback_1", "callback_2"])
+      expect(context.closed?).to be true
+    end
   end
 
   it "publishes and refreshes before the context is ready, as in v1.3.0" do

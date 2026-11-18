@@ -436,12 +436,12 @@ class Context
       @closing = true
       begin
         # One extra pass sends events a logger callback queued during the
-        # first publish; after that the context seals, so a callback that
-        # queues on every publish can't keep close publishing forever.
+        # first publish; after that raise with the remaining events queued,
+        # so a callback can't keep close publishing forever or lose events.
         SEAL_FLUSH_PASSES.times do |pass|
           result = flush
           last_pass = pass == SEAL_FLUSH_PASSES - 1
-          drop_queued = last_pass
+          drop_queued = false
           if !@failed && publish_failed?(result)
             raise_publish_failure(result) unless event_type == ContextEventLogger::EVENT_TYPE::CLOSE
 
@@ -456,7 +456,11 @@ class Context
               @achievements = []
               @pending_count = 0
             end
-            next :retry unless @exposures.empty? && @achievements.empty?
+            unless @exposures.empty? && @achievements.empty?
+              raise StandardError.new("Events queued while closing; retry close or finalize") if last_pass
+
+              next :retry
+            end
 
             @closed = true
             @sealed_by = event_type
