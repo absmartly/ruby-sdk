@@ -430,9 +430,10 @@ class Context
 
       # Called from a logger callback while a publish is in flight: defer so the
       # events queued by the callback are still sent before finalizing. A seal
-      # that is already running sends them within its own pass budget.
+      # that is already running claims nothing, so the request survives if
+      # that seal fails, and is dropped if it raises the retry error below.
       if @publish_mutex.owned?
-        @close_pending = event_type unless @closing
+        @close_pending = event_type
         return nil
       end
 
@@ -460,7 +461,12 @@ class Context
               @pending_count = 0
             end
             unless @exposures.empty? && @achievements.empty?
-              raise EventsQueuedWhileClosing.new("Events queued while closing; retry close or finalize") if last_pass
+              if last_pass
+                # The caller retries close/finalize itself; requests made by
+                # callbacks during this seal are covered by that retry.
+                @close_pending = false
+                raise EventsQueuedWhileClosing.new("Events queued while closing; retry close or finalize")
+              end
 
               next :retry
             end
@@ -549,7 +555,7 @@ class Context
           # Claim a deferred close while still holding the lock, so only this
           # successful publish can carry it out; a request made by another
           # thread after a rejected publish waits for its own success.
-          claimed = take_close_pending
+          claimed = take_close_pending unless @closing
           response
         end
       end
@@ -635,12 +641,9 @@ class Context
       # matchers. A system entry is added only when no user attribute has that
       # name as text, whatever the key's type.
       user = {}
+      @attributes.each { |attr| user[attr.name] = attr.value }
       other_names = nil
-      @attributes.each do |attr|
-        name = attr.name
-        user[name] = attr.value
-        (other_names ||= []) << name.to_s unless name.is_a?(String) || name.is_a?(Symbol)
-      end
+      user.each_key { |name| (other_names ||= []) << name.to_s unless name.is_a?(String) || name.is_a?(Symbol) }
       attrs = {}
       @system_attributes.each do |name, value|
         next if user.key?(name) || user.key?(name.to_sym) || other_names&.include?(name)

@@ -909,6 +909,43 @@ RSpec.describe Context do
     expect(seen).to eq("application" => "website", "environment" => "prod", name => "staging")
   end
 
+  it "a close requested from the error callback of a rejected finalize seals on the next good publish" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { events: [] }
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        holder[:events] << event
+        holder[:context].close if event == ContextEventLogger::EVENT_TYPE::ERROR && !holder[:asked] && (holder[:asked] = true)
+      end
+    end.new
+    responses = [failure_future, publish_future]
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish) { responses.shift }
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+
+    expect { Timeout.timeout(5) { holder[:context].finalize } }.to raise_error(Exception, "FAILED")
+    expect(holder[:context].closed?).to be false
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].closed?).to be true
+    expect(holder[:context].pending_count).to eq(0)
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
+  end
+
+  it "builds the attribute map with two allocations per call for String names" do
+    config = ContextConfig.create
+    config.set_units(units)
+    context = Context.create(clock, config, data_future_ready, data_provider, event_handler, event_logger,
+                             variable_parser, audience_matcher, application: "website", environment: "prod")
+    10.times { |i| context.set_attribute("a#{i}", i) }
+    context.send(:attributes_map)
+    before = GC.stat(:total_allocated_objects)
+    1000.times { context.send(:attributes_map) }
+    expect(GC.stat(:total_allocated_objects) - before).to be < 2100
+  end
+
   it "a deferred close still raises a publisher error from its own publish" do
     config = ContextConfig.create
     config.set_units(units)
