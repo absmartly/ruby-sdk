@@ -174,7 +174,7 @@ if context.ready?
 end
 ```
 
-A `refresh` that succeeds also recovers a context whose initial fetch failed: it installs the data, clears `failed?` and `ready_error`, and events queued meanwhile are published with the next `publish` (exposures made while the context was failed are control exposures, `assigned: false`, which the collector excludes from analysis). Calling `refresh` before the background fetch lands makes the context ready with the refreshed data; that data is kept when the initial fetch completes later, and the `"ready"` event is logged once the initial fetch completes.
+A `refresh` that successfully installs data also recovers a context whose initial fetch failed (a failed `refresh` installs nothing, so the context stays as it was): it installs the data, clears `failed?` and `ready_error`, and events queued meanwhile are published with the next `publish` (exposures made while the context was failed are control exposures, `assigned: false`, which the collector excludes from analysis). A `refresh` that succeeds before the background fetch lands makes the context ready with the refreshed data; that data is kept when the initial fetch completes later, and the `"ready"` event is logged once the initial fetch completes.
 
 Read methods (`treatment`, `peek_treatment`, `variable_value`, `peek_variable_value`, `variable_keys`, `experiments`, `custom_field_keys`, `custom_field_value`) raise `IllegalStateException` ("ABSmartly Context is not yet ready") until the context is ready, and ("ABSmartly Context is closed") after `close` or `finalize` (except `experiments`, which still works after `finalize`). Check `ready?` first. A context whose data fetch failed is ready and failed: reads return control (0) and the caller's defaults.
 

@@ -321,7 +321,7 @@ RSpec.describe "create_context_async" do
       holder = {}
       parser = Object.new
       parser.define_singleton_method(:parse) do |context, _experiment, _variant, config|
-        calls << holder[:context].wait_until_ready(0).equal?(holder[:context]) if holder[:context]
+        calls << context.wait_until_ready(0).equal?(holder[:context]) if holder[:context]
         JSON.parse(config, symbolize_names: true)
       rescue JSON::ParserError
         nil
@@ -342,9 +342,9 @@ RSpec.describe "create_context_async" do
       holder = {}
       calls = []
       parser = Object.new
-      parser.define_singleton_method(:parse) do |_context, _experiment, _variant, config|
-        calls << [holder[:context].wait_until_ready(0).equal?(holder[:context]),
-                  holder[:context].wait_until_ready.equal?(holder[:context])]
+      parser.define_singleton_method(:parse) do |context, _experiment, _variant, config|
+        calls << [context.wait_until_ready(0).equal?(holder[:context]),
+                  context.wait_until_ready.equal?(holder[:context])]
         JSON.parse(config, symbolize_names: true)
       rescue JSON::ParserError
         nil
@@ -391,6 +391,94 @@ RSpec.describe "create_context_async" do
         installer.join(5) || installer.kill
       end
       expect(context.ready?).to be true
+    end
+
+    it "a publish that saw the context failed keeps goals tracked after a refresh recovered it" do
+      published = []
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, event|
+        published.concat((event.goals || []).map(&:name))
+        OpenStruct.new(success?: true)
+      end
+      in_refresh = Queue.new
+      release_refresh = Queue.new
+      ready_data = data
+      provider = Object.new
+      provider.define_singleton_method(:context_data) do
+        in_refresh << true
+        release_refresh.pop
+        OpenStruct.new(data_future: ready_data, success?: true)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, provider,
+                                     handler, event_logger, variable_parser, audience_matcher)
+
+      # A refresh is in flight when the initial fetch fails. A publish then
+      # sees the context failed and pauses before it drops the queue; the
+      # refresh recovers and a new goal is tracked before the publish resumes.
+      seen_failed = Queue.new
+      resume = Queue.new
+      ready_mutex = context.instance_variable_get(:@ready_mutex)
+      allow(ready_mutex).to receive(:synchronize).and_wrap_original do |original, &block|
+        if Thread.current[:role] == :publisher && !Thread.current[:paused]
+          Thread.current[:paused] = true
+          seen_failed << true
+          resume.pop
+        end
+        original.call(&block)
+      end
+      refresher = Thread.new { context.refresh }
+      publisher = nil
+      begin
+        Timeout.timeout(5) { in_refresh.pop }
+        context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+        context.track("while_failed", nil)
+        publisher = Thread.new do
+          Thread.current[:role] = :publisher
+          context.publish
+        end
+        Timeout.timeout(5) { seen_failed.pop }
+        release_refresh << true
+        Timeout.timeout(5) { refresher.join }
+        expect(context.failed?).to be false
+        context.track("after_recovery", nil)
+        resume << true
+        Timeout.timeout(5) { publisher.join }
+      ensure
+        release_refresh << true
+        resume << true
+        [refresher, publisher].compact.each { |t| t.join(5) || t.kill }
+      end
+
+      context.publish
+      expect(published).to include("after_recovery")
+      expect(context.pending_count).to eq(0)
+    end
+
+    it "does not parse a late initial payload a refresh already superseded, and logs it as ready" do
+      parses = 0
+      parser = Object.new
+      parser.define_singleton_method(:parse) do |_context, _experiment, _variant, config|
+        parses += 1
+        JSON.parse(config, symbolize_names: true)
+      rescue JSON::ParserError
+        nil
+      end
+      events = []
+      logger = Class.new(ContextEventLogger) do
+        define_method(:handle_event) { |event, _data| events << event }
+      end.new
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider,
+                                     event_handler, logger, parser, audience_matcher)
+      context.refresh
+      after_refresh = parses
+      context.set_data(OpenStruct.new(data_future: data, success?: true))
+
+      expect(parses).to eq(after_refresh)
+      expect(events).to eq([ContextEventLogger::EVENT_TYPE::REFRESH, ContextEventLogger::EVENT_TYPE::READY])
     end
 
     it "wakes a waiter when a refresh supplies the first data" do

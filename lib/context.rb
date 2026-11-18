@@ -50,7 +50,7 @@ class Context
                 variable_parser, audience_matcher, application, environment)
 
     if data_future.success?
-      assign_data(data_future.data_future)
+      @state = build_state(data_future.data_future)
       log_event(ContextEventLogger::EVENT_TYPE::READY, data_future.data_future)
     else
       set_data_failed(data_future.exception)
@@ -61,13 +61,15 @@ class Context
   def set_data(data_future)
     ready_data = nil
     failure = nil
-    state = data_future.success? ? build_state(data_future.data_future) : nil
+    # Skip building a payload a refresh has already superseded; ready? is
+    # rechecked under the lock before a built snapshot is installed.
+    state = data_future.success? && !ready? ? build_state(data_future.data_future) : nil
     @ready_mutex.synchronize do
       # A refresh may already have installed data while the initial fetch was
       # in flight: keep it, so a late success doesn't replace newer data and
       # a late failure is only logged.
       if ready?
-        failure = data_future.exception unless state
+        failure = data_future.exception unless data_future.success?
       elsif state
         @state = state
       else
@@ -145,11 +147,7 @@ class Context
   end
 
   def get_attributes
-    result = {}
-    @attributes.each do |attr|
-      result[attr.name] = attr.value
-    end
-    result
+    user_attributes
   end
 
   def experiments
@@ -494,12 +492,20 @@ class Context
     # seal nor claims a deferred one. Any other publish (on any thread) may.
     def flush(sealing: false, drop_rejected: false)
       if @failed
-        @queue_mutex.synchronize do
-          @exposures = []
-          @achievements = []
-          @pending_count = 0
+        # Rechecked under the readiness lock, which a recovering refresh also
+        # holds while it clears @failed, so goals tracked after recovery are
+        # never dropped by a publish that saw the context failed.
+        dropped = @ready_mutex.synchronize do
+          next nil unless @failed
+
+          @queue_mutex.synchronize do
+            @exposures = []
+            @achievements = []
+            @pending_count = 0
+          end
+          @data_failed
         end
-        return @data_failed
+        return dropped if dropped
       end
 
       # Serialize publishes so a queued event is part of at most one in-flight
@@ -577,7 +583,6 @@ class Context
       end
     end
 
-    # Returns [event_type, request number] for the pending seal, or nil.
     def take_close_pending
       return nil unless @close_pending
 
@@ -656,12 +661,19 @@ class Context
     # when set after the context was created (the @attrs_seq bump re-evaluates
     # the cached assignment). Empty system values were skipped at init, so a
     # missing config leaves the key out rather than matching on "".
+    # The latest value per name, keyed as the caller set it. Private so an
+    # override of the public get_attributes doesn't change matcher inputs.
+    def user_attributes
+      result = {}
+      @attributes.each { |attr| result[attr.name] = attr.value }
+      result
+    end
+
     def attributes_map
       # User attributes keep the caller's key, as v1.3.0 passed them to custom
       # matchers. A system entry is added only when no user attribute has that
       # name as a String or Symbol, the forms audience conditions can read.
-      user = {}
-      @attributes.each { |attr| user[attr.name] = attr.value }
+      user = user_attributes
       attrs = {}
       @system_attributes.each do |name, value|
         attrs[name] = value unless user.key?(name) || user.key?(name.to_sym)
@@ -881,10 +893,6 @@ class Context
 
     def variant_assigner(unit_type, unit_hash)
       @assigners[unit_type] ||= VariantAssigner.new(unit_hash)
-    end
-
-    def assign_data(data)
-      @state = build_state(data)
     end
 
     # Builds the snapshot for data, calling the variable parser; callers run

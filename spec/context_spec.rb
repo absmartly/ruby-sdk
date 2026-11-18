@@ -293,7 +293,6 @@ RSpec.describe Context do
     expect { context.variable_keys }.to raise_error(IllegalStateException, closed_message)
     expect { context.custom_field_keys }.to raise_error(IllegalStateException, closed_message)
     expect { context.refresh }.to raise_error(IllegalStateException, closed_message)
-    # As in v1.3.0, close also seals experiments and overrides.
     expect { context.experiments }.to raise_error(IllegalStateException, closed_message)
     expect { context.set_override("exp_test_ab", 2) }.to raise_error(IllegalStateException, closed_message)
     expect { context.set_overrides("exp_test_ab": 2) }.to raise_error(IllegalStateException, closed_message)
@@ -1154,7 +1153,10 @@ RSpec.describe Context do
 
     after do
       Array(@gates).each { |q| 3.times { q << true } }
-      Array(@workers).each { |t| t.join(5) || t.kill }
+      stuck = Array(@workers).reject do |t|
+        t.join(5) || (t.kill && t.join(5))
+      end
+      raise "#{stuck.size} worker thread(s) did not exit" unless stuck.empty?
     end
 
     def overlap_context(responses, logger)
