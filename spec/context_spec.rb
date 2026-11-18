@@ -602,6 +602,68 @@ RSpec.describe Context do
     expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
   end
 
+  it "carries a deferred finalize as finalize, not close" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { goals: 0 }
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        holder[:events] = (holder[:events] || []) << event
+        next unless event == ContextEventLogger::EVENT_TYPE::PUBLISH && holder[:goals] < 3
+
+        holder[:goals] += 1
+        holder[:context].track("cb#{holder[:goals]}", nil)
+        holder[:context].finalize if holder[:goals] == 1
+      end
+    end.new
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish).and_return(nil)
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].closed?).to be false
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].finalized?).to be true
+    expect(holder[:context].pending_count).to eq(0)
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::FINALIZE)).to eq(1)
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(0)
+    expect { holder[:context].set_override("exp_test_ab", 1) }.not_to raise_error
+  end
+
+  it "keeps a carried close when the next publish is rejected" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { goals: 0 }
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        holder[:events] = (holder[:events] || []) << event
+        next unless event == ContextEventLogger::EVENT_TYPE::PUBLISH && holder[:goals] < 3
+
+        holder[:goals] += 1
+        holder[:context].track("cb#{holder[:goals]}", nil)
+        holder[:context].close if holder[:goals] == 1
+      end
+    end.new
+    # Publishes 1-3 run inside the first publish (the close hits the pass
+    # limit); the 4th is rejected and must not drop the carried close.
+    responses = [nil, nil, nil, failure_future, nil]
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish) { responses.shift }
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+
+    Timeout.timeout(5) { holder[:context].publish }
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].closed?).to be false
+    expect(holder[:context].pending_count).to eq(1)
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].closed?).to be true
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
+  end
+
   it "a deferred close still raises a publisher error from its own publish" do
     config = ContextConfig.create
     config.set_units(units)

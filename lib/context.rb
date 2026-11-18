@@ -549,11 +549,11 @@ class Context
         end
       end
 
-      if @close_pending
+      if @close_pending && !@closed && !publish_failed?(result)
         event_type = @close_pending
         @close_pending = false
         begin
-          seal(event_type) unless @closed || publish_failed?(result)
+          seal(event_type)
         rescue EventsQueuedWhileClosing
           # Events are still queued: keep the close request for the next
           # publish, and let this publish return as in v1.3.0.
