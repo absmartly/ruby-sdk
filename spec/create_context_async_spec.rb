@@ -310,6 +310,7 @@ RSpec.describe "create_context_async" do
       end
 
       expect(context.failed?).to be false
+      expect(context.ready_error).to be_nil
       context.track("goal1", nil)
       context.publish
       expect(published).to eq(["goal1"])
@@ -335,6 +336,61 @@ RSpec.describe "create_context_async" do
       expect { context.refresh }.not_to raise_error
       expect(calls).not_to be_empty
       expect(calls).to all(be true)
+    end
+
+    it "lets a variable parser call wait_until_ready while the initial async data is installed" do
+      holder = {}
+      calls = []
+      parser = Object.new
+      parser.define_singleton_method(:parse) do |_context, _experiment, _variant, config|
+        calls << [holder[:context].wait_until_ready(0).equal?(holder[:context]),
+                  holder[:context].wait_until_ready.equal?(holder[:context])]
+        JSON.parse(config, symbolize_names: true)
+      rescue JSON::ParserError
+        nil
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider,
+                                     event_handler, event_logger, parser, audience_matcher)
+      holder[:context] = context
+
+      expect { Timeout.timeout(5) { context.set_data(OpenStruct.new(data_future: data, success?: true)) } }
+        .not_to raise_error
+      expect(calls).not_to be_empty
+      expect(calls.flatten).to all(be true)
+      expect(context.ready?).to be true
+    end
+
+    it "does not hold the readiness lock while the variable parser runs" do
+      in_parser = Queue.new
+      release = Queue.new
+      parser = Object.new
+      parser.define_singleton_method(:parse) do |_context, _experiment, _variant, config|
+        unless Thread.current[:parsed]
+          Thread.current[:parsed] = true
+          in_parser << true
+          release.pop
+        end
+        JSON.parse(config, symbolize_names: true)
+      rescue JSON::ParserError
+        nil
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider,
+                                     event_handler, event_logger, parser, audience_matcher)
+      installer = Thread.new { context.set_data(OpenStruct.new(data_future: data, success?: true)) }
+      begin
+        Timeout.timeout(5) { in_parser.pop }
+        # Another thread can take the readiness lock while the parser runs.
+        expect(Timeout.timeout(1) { context.wait_until_ready(0) }).to equal(context)
+        expect(context.ready?).to be false
+      ensure
+        release << true
+        installer.join(5) || installer.kill
+      end
+      expect(context.ready?).to be true
     end
 
     it "wakes a waiter when a refresh supplies the first data" do

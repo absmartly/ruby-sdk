@@ -85,6 +85,10 @@ class Context
   end
 
   def wait_until_ready(timeout = nil)
+    # Called from a variable parser while this thread builds the data that
+    # would make the context ready: waiting here could never finish.
+    return self if @building_thread.equal?(Thread.current)
+
     @ready_mutex.synchronize do
       unless ready? || failed?
         if timeout
@@ -399,6 +403,7 @@ class Context
         @state = state
         @failed = false
         @data_failed = nil
+        @ready_error = nil
         @ready_condvar.broadcast
       end
       log_event(ContextEventLogger::EVENT_TYPE::REFRESH, data_future.data_future)
@@ -885,6 +890,13 @@ class Context
     # Builds the snapshot for data, calling the variable parser; callers run
     # it outside the readiness lock so a parser may call wait_until_ready.
     def build_state(data)
+      @building_thread = Thread.current
+      build_state_maps(data)
+    ensure
+      @building_thread = nil
+    end
+
+    def build_state_maps(data)
       index = {}
       index_variables = {}
       custom_fields = {}
