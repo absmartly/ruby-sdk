@@ -574,6 +574,64 @@ RSpec.describe Context do
     expect(holder[:context].pending_count).to be > 0
   end
 
+  it "closes on the next publish when a logger's deferred close hit the pass limit" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { goals: 0 }
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        holder[:events] = (holder[:events] || []) << event
+        next unless event == ContextEventLogger::EVENT_TYPE::PUBLISH && holder[:goals] < 3
+
+        holder[:goals] += 1
+        holder[:context].track("cb#{holder[:goals]}", nil)
+        holder[:context].close if holder[:goals] == 1
+      end
+    end.new
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish).and_return(nil)
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].closed?).to be false
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].closed?).to be true
+    expect(holder[:context].pending_count).to eq(0)
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
+  end
+
+  it "a deferred close still raises a publisher error from its own publish" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = {}
+    calls = 0
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        next unless event == ContextEventLogger::EVENT_TYPE::PUBLISH && !holder[:done]
+
+        holder[:done] = true
+        holder[:context].track("again", nil)
+        holder[:context].close
+      end
+    end.new
+    handler = instance_double(Absmartly::ContextPublisher)
+    allow(handler).to receive(:publish) do
+      calls += 1
+      raise IOError, "collector down" if calls > 1
+
+      nil
+    end
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+
+    expect { Timeout.timeout(5) { holder[:context].publish } }.to raise_error(IOError, "collector down")
+    expect(holder[:context].closed?).to be false
+    expect(holder[:context].pending_count).to eq(1)
+  end
+
   it "set_unit returns the stored UID, as in v1.3.0" do
     context = create_ready_context
     expect(context.set_unit("extra_id", " padded ")).to eq("padded")

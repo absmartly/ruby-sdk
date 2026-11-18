@@ -555,9 +555,9 @@ class Context
         begin
           seal(event_type) unless @closed || publish_failed?(result)
         rescue EventsQueuedWhileClosing
-          # A close requested from a logger callback stays pending-free and the
-          # events stay queued; publish itself returns as in v1.3.0.
-          nil
+          # Events are still queued: keep the close request for the next
+          # publish, and let this publish return as in v1.3.0.
+          @close_pending = event_type
         end
       end
       result
