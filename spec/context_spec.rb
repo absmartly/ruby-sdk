@@ -548,6 +548,7 @@ RSpec.describe Context do
     context.peek_treatment("exp_test_ab")
 
     expect(seen).to eq("application" => "website", "environment" => "a", :environment => "b")
+    expect(seen.keys).to eq(["application", "environment", :environment])
   end
 
   it "publish returns normally when a logger's deferred close still has events queued" do

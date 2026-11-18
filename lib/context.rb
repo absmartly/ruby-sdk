@@ -620,16 +620,16 @@ class Context
     # the cached assignment). Empty system values were skipped at init, so a
     # missing config leaves the key out rather than matching on "".
     def attributes_map
-      attrs = @system_attributes.dup
-      @attributes.each do |attr|
-        # Keep the caller's key (Symbol or String), as v1.3.0 passed it to
-        # custom matchers. Only the injected system entry of the same name is
-        # replaced; other user keys are left as set.
-        name = attr.name.to_s
-        attrs.delete(name) if @system_attributes.key?(name) && attrs[name].equal?(@system_attributes[name])
-        attrs[attr.name] = attr.value
+      # User attributes keep the caller's key (Symbol or String), as v1.3.0
+      # passed them to custom matchers. A system entry is added only when no
+      # user attribute has that name in either form.
+      user = {}
+      @attributes.each { |attr| user[attr.name] = attr.value }
+      attrs = {}
+      @system_attributes.each do |name, value|
+        attrs[name] = value unless user.key?(name) || user.key?(name.to_sym)
       end
-      attrs
+      attrs.merge!(user)
     end
 
     # A split rule resolved while its unit was missing gave the no-unit
