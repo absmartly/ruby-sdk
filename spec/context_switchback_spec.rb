@@ -430,7 +430,7 @@ module ContextSwitchbackSpec
                     else context.variable_value("sb.arm", -1)
             end
             # The reading taken for this call must not stamp the thread's next call.
-            [value, Thread.current[:__absmartly_switchback_late_reading]]
+            [value, Thread.current[Context.const_get(:LATE_READING)]]
           end
           deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
           Thread.pass until worker.status == "sleep" || !worker.alive? ||
@@ -842,7 +842,7 @@ module ContextSwitchbackSpec
       context = create_context([switchback(randomizationType: "unit"), switchback(2, "exp_other")])
       allow(Thread.current).to receive(:[]=).and_call_original
       context.treatment("exp_sb")
-      expect(Thread.current).not_to have_received(:[]=).with(:__absmartly_switchback_resolved_at, anything)
+      expect(Thread.current).not_to have_received(:[]=).with(Context.const_get(:RESOLVED_AT), anything)
     end
 
     it "keeps stamping unit experiments at enqueue time" do
