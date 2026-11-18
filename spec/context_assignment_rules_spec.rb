@@ -374,6 +374,22 @@ RSpec.describe "Context assignment rules" do
   end
 
   describe "cached reads" do
+    it "parses rules once at install, not on resolution or attribute revalidation" do
+      parses = 0
+      allow(audience_matcher).to receive(:parse_rules).and_wrap_original do |original, *args|
+        parses += 1
+        original.call(*args)
+      end
+      context = create_context(context_data([assign_rule(1)]), attributes: { country: "US" })
+      expect(parses).to eq(1)
+      expect(context.treatment("exp_test_abc")).to eq(1)
+      3.times do |i|
+        context.set_attribute("unrelated", i)
+        expect(context.peek_treatment("exp_test_abc")).to eq(1)
+      end
+      expect(parses).to eq(1)
+    end
+
     def count_rule_evaluations
       calls = 0
       allow(audience_matcher).to receive(:evaluate_parsed_rules).and_wrap_original do |original, *args|

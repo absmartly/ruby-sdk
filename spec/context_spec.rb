@@ -2271,6 +2271,20 @@ RSpec.describe Context do
       expect(ev).to have_received(:publish).twice
     end
 
+    it "finalize keeps a StandardError instance and wraps a bare Exception with its cause" do
+      [StandardError.new("rejected"), Exception.new("rejected")].each do |failure|
+        ev = instance_double(Absmartly::ContextPublisher)
+        allow(ev).to receive(:publish).and_return(failure)
+        context = create_ready_context(evt_handler: ev)
+        context.track("goal1", nil)
+        expect { context.finalize }.to raise_error(StandardError, "rejected") do |error|
+          expect(failure.is_a?(StandardError) ? error : error.cause).to equal(failure)
+        end
+        expect(context.closed?).to be false
+        expect(context.pending_count).to eq(1)
+      end
+    end
+
     it "finalize raises the publish failure and leaves the context open" do
       ev = instance_double(Absmartly::ContextPublisher)
       allow(ev).to receive(:publish).and_return(failure_future)

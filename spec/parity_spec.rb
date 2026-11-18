@@ -135,7 +135,7 @@ RSpec.describe "JavaScript SDK parity" do
       context = make_context
       context.track("goal1", nil)
 
-      expect { context.finalize }.to raise_error(failure)
+      expect { context.finalize }.to raise_error(StandardError, failure.message) { |error| expect(error.cause).to eq(failure) }
 
       expect(context.closed?).to be(false)
       expect(context.finalizing?).to be(false)

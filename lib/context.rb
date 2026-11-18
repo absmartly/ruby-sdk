@@ -557,10 +557,12 @@ class Context
     end
 
     def raise_publish_failure(result)
-      if result.is_a?(Exception)
+      if result.is_a?(StandardError)
         raise result
+      elsif result.is_a?(Exception)
+        raise StandardError.new(result.message), cause: result
       elsif result.respond_to?(:exception) && result.exception
-        raise result.exception
+        raise_publish_failure(result.exception)
       else
         status = result.respond_to?(:status) ? result.status : "unknown"
         raise StandardError.new("Publish failed (status=#{status})")
