@@ -459,9 +459,14 @@ class Context
         SEAL_FLUSH_PASSES.times do |pass|
           # close drops a batch the collector rejected, as in v1.3.0, but only
           # that batch; anything queued meanwhile is still sent or kept.
+          data_failed = @data_failed
           result = flush(sealing: true, drop_rejected: close)
           last_pass = pass == SEAL_FLUSH_PASSES - 1
-          raise_publish_failure(result) if !close && !@failed && publish_failed?(result)
+          # A failed context's flush returns its load error: that is not a
+          # publish failure (compared with the error captured before the flush,
+          # since a concurrent refresh may clear @failed meanwhile).
+          failed_load = !data_failed.nil? && result.equal?(data_failed)
+          raise_publish_failure(result) if !close && !failed_load && publish_failed?(result)
 
           sealed = @queue_mutex.synchronize do
             next :done if @closed

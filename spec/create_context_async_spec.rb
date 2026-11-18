@@ -597,6 +597,247 @@ RSpec.describe "create_context_async" do
       end
     end
 
+    it "a concurrent failing refresh does not clear the initial builder's self-wait guard" do
+      a_in = Queue.new
+      b_done = Queue.new
+      waited = Queue.new
+      holder = {}
+      parser = Object.new
+      parser.define_singleton_method(:parse) do |_context, _experiment, _variant, config|
+        case Thread.current[:role]
+        when :a
+          unless Thread.current[:once]
+            Thread.current[:once] = true
+            a_in << true
+            b_done.pop
+            holder[:context].wait_until_ready
+            waited << true
+          end
+        when :b
+          raise "boom"
+        end
+        JSON.parse(config, symbolize_names: true)
+      rescue JSON::ParserError
+        nil
+      end
+      ready_data = data
+      provider = Object.new
+      provider.define_singleton_method(:context_data) { OpenStruct.new(data_future: ready_data, success?: true) }
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, provider, event_handler, event_logger,
+                                     parser, audience_matcher)
+      holder[:context] = context
+      a = Thread.new do
+        Thread.current[:role] = :a
+        context.set_data(provider.context_data)
+      end
+      b = nil
+      begin
+        Timeout.timeout(5) { a_in.pop }
+        b = Thread.new do
+          Thread.current[:role] = :b
+          begin
+            context.refresh
+          rescue RuntimeError
+            nil
+          end
+        end
+        Timeout.timeout(5) { b.join }
+        b_done << true
+        expect(Timeout.timeout(5) { waited.pop }).to be true
+        Timeout.timeout(5) { a.join }
+        expect(context.ready?).to be true
+      ensure
+        b_done << true
+        [a, b].compact.each { |t| t.join(5) || t.kill }
+      end
+    end
+
+    it "a nested build on the same thread keeps the outer builder's membership" do
+      holder = {}
+      results = []
+      parser = Object.new
+      parser.define_singleton_method(:parse) do |_context, _experiment, _variant, config|
+        if holder[:context] && !Thread.current[:nested]
+          Thread.current[:nested] = true
+          holder[:context].refresh
+          results << holder[:context].wait_until_ready.equal?(holder[:context])
+        end
+        JSON.parse(config, symbolize_names: true)
+      rescue JSON::ParserError
+        nil
+      end
+      ready_data = data
+      provider = Object.new
+      provider.define_singleton_method(:context_data) { OpenStruct.new(data_future: ready_data, success?: true) }
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, provider, event_handler, event_logger,
+                                     parser, audience_matcher)
+      holder[:context] = context
+      Timeout.timeout(5) { context.set_data(provider.context_data) }
+
+      expect(results).to eq([true])
+      expect(context.ready?).to be true
+      expect(context.instance_variable_get(:@building_threads)).to be_empty
+    end
+
+    it "an in-flight publish removes only its own batch after a failed-context clear and recovery" do
+      publish_in = Queue.new
+      publish_out = Queue.new
+      refresh_in = Queue.new
+      refresh_out = Queue.new
+      sent = []
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, event|
+        names = (event.goals || []).map(&:name)
+        sent << names
+        if names.include?("before_failure")
+          publish_in << true
+          publish_out.pop
+        end
+        OpenStruct.new(success?: true)
+      end
+      ready_data = data
+      provider = Object.new
+      provider.define_singleton_method(:context_data) do
+        refresh_in << true
+        refresh_out.pop
+        OpenStruct.new(data_future: ready_data, success?: true)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, provider, handler, event_logger,
+                                     variable_parser, audience_matcher)
+      context.track("before_failure", nil)
+      a = Thread.new { context.publish }
+      b = nil
+      begin
+        Timeout.timeout(5) { publish_in.pop }
+        b = Thread.new { context.refresh }
+        Timeout.timeout(5) { refresh_in.pop }
+        context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+        context.publish
+        refresh_out << true
+        Timeout.timeout(5) { b.join }
+        context.track("after_recovery", nil)
+        publish_out << true
+        Timeout.timeout(5) { a.join }
+
+        expect(context.pending_count).to eq(1)
+        context.publish
+        expect(sent).to eq([["before_failure"], ["after_recovery"]])
+        expect(context.pending_count).to eq(0)
+      ensure
+        refresh_out << true
+        publish_out << true
+        [a, b].compact.each { |t| t.join(5) || t.kill }
+      end
+    end
+
+    it "a goal tracked after recovery is never dropped by a failed-context clear" do
+      sent = []
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, event|
+        sent.concat((event.goals || []).map(&:name))
+        OpenStruct.new(success?: true)
+      end
+      refresh_in = Queue.new
+      refresh_out = Queue.new
+      ready_data = data
+      provider = Object.new
+      provider.define_singleton_method(:context_data) do
+        refresh_in << true
+        refresh_out.pop
+        OpenStruct.new(data_future: ready_data, success?: true)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, provider, handler, event_logger,
+                                     variable_parser, audience_matcher)
+      # Pause the publisher at its queue-lock call inside the failed path: the
+      # clear must happen under the readiness lock, so a recovering refresh
+      # either finishes first (no clear) or waits for the clear to finish.
+      at_clear = Queue.new
+      resume = Queue.new
+      queue_mutex = context.instance_variable_get(:@queue_mutex)
+      allow(queue_mutex).to receive(:synchronize).and_wrap_original do |original, &block|
+        if Thread.current[:role] == :publisher && !Thread.current[:paused]
+          Thread.current[:paused] = true
+          at_clear << true
+          resume.pop
+        end
+        original.call(&block)
+      end
+      refresher = Thread.new { context.refresh }
+      publisher = nil
+      begin
+        Timeout.timeout(5) { refresh_in.pop }
+        context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+        publisher = Thread.new do
+          Thread.current[:role] = :publisher
+          context.publish
+        end
+        Timeout.timeout(5) { at_clear.pop }
+        refresh_out << true
+        # The refresh cannot commit recovery while the clear is in progress.
+        expect(refresher.join(0.5)).to be_nil
+        expect(context.failed?).to be true
+        context.track("probe", nil)
+        resume << true
+        Timeout.timeout(5) { publisher.join }
+        Timeout.timeout(5) { refresher.join }
+        expect(context.failed?).to be false
+        context.track("after", nil)
+        context.publish
+        expect(sent).to include("after")
+      ensure
+        refresh_out << true
+        resume << true
+        [refresher, publisher].compact.each { |t| t.join(5) || t.kill }
+      end
+    end
+
+    it "finalize does not raise the initial-fetch error when a refresh recovers during its flush" do
+      refresh_in = Queue.new
+      refresh_out = Queue.new
+      ready_data = data
+      provider = Object.new
+      provider.define_singleton_method(:context_data) do
+        refresh_in << true
+        refresh_out.pop
+        OpenStruct.new(data_future: ready_data, success?: true)
+      end
+      handler = Object.new
+      handler.define_singleton_method(:publish) { |_context, _event| OpenStruct.new(success?: true) }
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, provider, handler, event_logger,
+                                     variable_parser, audience_matcher)
+      refresher = Thread.new { context.refresh }
+      Timeout.timeout(5) { refresh_in.pop }
+      context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+
+      # The refresh recovers right after finalize's flush returned the load error.
+      original = context.method(:flush)
+      allow(context).to receive(:flush) do |**kwargs|
+        result = original.call(**kwargs)
+        if kwargs[:sealing] && !refresher.status.nil? && refresher.alive?
+          refresh_out << true
+          Timeout.timeout(5) { refresher.join }
+        end
+        result
+      end
+      begin
+        expect { Timeout.timeout(5) { context.finalize } }.not_to raise_error
+      ensure
+        refresh_out << true
+        refresher.join(5) || refresher.kill
+      end
+      expect(context.failed?).to be false
+    end
+
     it "wakes a waiter when a refresh supplies the first data" do
       context_config = ContextConfig.create
       context_config.set_units(units)
