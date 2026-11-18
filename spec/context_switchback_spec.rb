@@ -189,6 +189,17 @@ module ContextSwitchbackSpec
       end
     end
 
+    # The period index is exact 64-bit integer arithmetic, far beyond 2**53.
+    it "draws an exact period index in the far future" do
+      long_max = (2**63) - 1
+      context = create_context([switchback(1, "exp_sb", 3, 1)])
+      [2**53 + 1, 2**62 + 3, long_max].each do |now|
+        clock.now = now
+        expect(context.peek_treatment("exp_sb"))
+          .to eq(Absmartly::Switchback::Assigner.assign(CLUSTER_KEY, now - ANCHOR, seed, 3)), now.to_s
+      end
+    end
+
     it "never falls back to unit assignment with a null start" do
       context = create_context([switchback(switchbackStartAt: nil)])
       4.times do |i|
@@ -421,6 +432,13 @@ module ContextSwitchbackSpec
         sb_exposure(1, "exp_sb", EXPECTED_2_ARMS[1], ANCHOR + HOUR, true, true),
         sb_exposure(1, "exp_sb", EXPECTED_2_ARMS[2], ANCHOR + 2 * HOUR, true, true)
       ])
+    end
+
+    it "resolves no holdouts for a switchback" do
+      context = create_context([switchback(holdoutIds: [11]), unit_twin(switchback(2, "exp_unit", holdoutIds: [11]))],
+                               holdouts: [holdout([0.1, 0.9])])
+      expect(context.send(:experiment, "exp_sb").holdouts).to be_nil
+      expect(context.send(:experiment, "exp_unit").holdouts.map(&:id)).to eq([11])
     end
 
     it "would hold the unit out of the same experiment as a unit experiment" do
