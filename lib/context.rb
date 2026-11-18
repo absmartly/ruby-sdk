@@ -63,24 +63,27 @@ class Context
     failure = nil
     @ready_mutex.synchronize do
       if data_future.success?
-        assign_data(data_future.data_future)
-        ready_data = data_future.data_future
+        # A refresh may already have installed newer data while the initial
+        # fetch was in flight; keep it, and still report ready.
+        assign_data(data_future.data_future) unless ready?
+        ready_data = @state.data
       else
         # A refresh may already have installed usable data while the initial
         # fetch was in flight; then the late failure is only logged.
-        set_data_failed(data_future.exception) unless ready?
         failure = data_future.exception
+        if ready?
+          ready_data = @state.data
+        else
+          set_data_failed(failure)
+        end
       end
       @ready_condvar.broadcast
     end
 
     # User callbacks run outside the readiness lock so they may call
-    # wait_until_ready.
-    if failure.nil?
-      log_event(ContextEventLogger::EVENT_TYPE::READY, ready_data)
-    else
-      log_error(failure)
-    end
+    # wait_until_ready. A context made ready by a refresh logs "ready" too.
+    log_error(failure) unless failure.nil?
+    log_event(ContextEventLogger::EVENT_TYPE::READY, ready_data) unless ready_data.nil?
   end
 
   def wait_until_ready(timeout = nil)

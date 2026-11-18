@@ -1288,6 +1288,93 @@ RSpec.describe Context do
       expect(context.finalized?).to be true
     end
 
+
+    it "stays finalizing? while a second seal runs after the first one raised" do
+      first = Queue.new
+      gate = Queue.new
+      calls = 0
+      config = ContextConfig.create
+      config.set_units(units)
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_c, _e|
+        calls += 1
+        if calls == 1
+          first.pop
+          next OpenStruct.new(exception: Exception.new("FAILED"), success?: false)
+        end
+        gate.pop
+        OpenStruct.new(success?: true)
+      end
+      context = Context.create(clock, config, data_future_ready, data_provider, handler, nil,
+                               variable_parser, audience_matcher)
+      context.track("goal1", nil)
+      entered = Queue.new
+      original = context.method(:flush)
+      allow(context).to receive(:flush) do |**kwargs|
+        entered << Thread.current[:role] if kwargs[:sealing]
+        original.call(**kwargs)
+      end
+      a = Thread.new do
+        Thread.current[:role] = :a
+        context.finalize
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        e
+      end
+      Timeout.timeout(5) { entered.pop }
+      b = Thread.new do
+        Thread.current[:role] = :b
+        context.finalize
+      end
+      Timeout.timeout(5) { entered.pop }
+      Timeout.timeout(5) { sleep 0.01 until b.status == "sleep" }
+      first << true
+      expect(Timeout.timeout(5) { a.value }.message).to eq("FAILED")
+      expect(context.finalizing?).to be true
+      gate << true
+      Timeout.timeout(5) { b.join }
+      expect(context.finalizing?).to be false
+      expect(context.finalized?).to be true
+    end
+
+    it "a seal's own empty pass leaves a pending close for a later publish" do
+      events = []
+      holder = {}
+      logger = recording_logger(events) do |event, _data|
+        if event == ContextEventLogger::EVENT_TYPE::ERROR && !holder[:asked]
+          holder[:asked] = true
+          holder[:context].close
+        end
+      end
+      context = overlap_context([:rejected, :ok], logger)
+      holder[:context] = context
+      paused = Queue.new
+      release = Queue.new
+      pause_seal_after_flush(context, :a, paused, release)
+      context.track("goal1", nil)
+
+      # A publish is rejected and its error callback asks for close; while
+      # that close is still unwinding (paused after its own flush), the queue
+      # is delivered without handing it off, then finalize runs on an empty
+      # queue. finalize's own empty pass must not claim the pending close.
+      a = Thread.new do
+        Thread.current[:role] = :a
+        context.publish
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        e
+      end
+      Timeout.timeout(5) { a.join }
+      expect(context.closed?).to be false
+      allow(context).to receive(:take_close_pending).and_return(nil)
+      Timeout.timeout(5) { context.publish }
+      allow(context).to receive(:take_close_pending).and_call_original
+      expect(context.pending_count).to eq(0)
+
+      Timeout.timeout(5) { context.finalize }
+      expect(context.finalized?).to be true
+      expect(events.select { |e| [ContextEventLogger::EVENT_TYPE::CLOSE, ContextEventLogger::EVENT_TYPE::FINALIZE].include?(e) })
+        .to eq([ContextEventLogger::EVENT_TYPE::FINALIZE])
+    end
+
     it "a second finalize is not turned into a close by a failing first one" do
       events = []
       holder = {}

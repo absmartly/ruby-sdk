@@ -228,6 +228,40 @@ RSpec.describe "create_context_async" do
       expect(context.experiments).to eq(data.experiments.map(&:name))
     end
 
+    it "keeps newer data a refresh installed when the initial fetch then succeeds late" do
+      events = []
+      logger = Class.new(ContextEventLogger) do
+        define_method(:handle_event) { |event, data| events << [event, data] }
+      end.new
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider,
+                                     event_handler, logger, variable_parser, audience_matcher)
+      context.refresh
+      refreshed = context.data
+      stale = descr.deserialize('{"experiments":[]}', 0, 18)
+      context.set_data(OpenStruct.new(data_future: stale, success?: true))
+
+      expect(context.data).to equal(refreshed)
+      expect(events.map(&:first)).to include(ContextEventLogger::EVENT_TYPE::READY)
+    end
+
+    it "logs ready when a refresh made the context ready and the initial fetch then fails" do
+      events = []
+      logger = Class.new(ContextEventLogger) do
+        define_method(:handle_event) { |event, _data| events << event }
+      end.new
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider,
+                                     event_handler, logger, variable_parser, audience_matcher)
+      context.refresh
+      context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+
+      expect(events).to eq([ContextEventLogger::EVENT_TYPE::REFRESH, ContextEventLogger::EVENT_TYPE::ERROR,
+                            ContextEventLogger::EVENT_TYPE::READY])
+    end
+
     it "wakes a waiter when a refresh supplies the first data" do
       context_config = ContextConfig.create
       context_config.set_units(units)
