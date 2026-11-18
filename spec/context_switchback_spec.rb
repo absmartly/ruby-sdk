@@ -414,7 +414,7 @@ module ContextSwitchbackSpec
 
     # A call that started before a refresh installed the first switchback (so it read no clock)
     # exposes with the reading that chose its period, not a later one across a boundary.
-    %i[treatment variable_value].each do |api|
+    %i[treatment variable_value peek_treatment].each do |api|
       it "stamps #{api} racing the first switchback's install with its period's reading" do
         # A unit experiment declares the key, so the variable read reaches the lock too; after the
         # refresh it is a switchback.
@@ -424,7 +424,11 @@ module ContextSwitchbackSpec
         worker = nil
         lock.synchronize do
           worker = Thread.new do
-            value = api == :treatment ? context.treatment("exp_sb") : context.variable_value("sb.arm", -1)
+            value = case api
+                    when :treatment then context.treatment("exp_sb")
+                    when :peek_treatment then context.peek_treatment("exp_sb")
+                    else context.variable_value("sb.arm", -1)
+            end
             # The reading taken for this call must not stamp the thread's next call.
             [value, Thread.current[:__absmartly_switchback_late_reading]]
           end
@@ -438,8 +442,8 @@ module ContextSwitchbackSpec
         end
         expect(worker.value).to eq([EXPECTED_2_ARMS[0], nil])
         expect(EXPECTED_2_ARMS[0]).not_to eq(EXPECTED_2_ARMS[1])
-        expect(published_exposures(context)).to eq([sb_exposure(1, "exp_sb", EXPECTED_2_ARMS[0], ANCHOR + HOUR - 1,
-                                                                true, true)])
+        expected = api == :peek_treatment ? [] : [sb_exposure(1, "exp_sb", EXPECTED_2_ARMS[0], ANCHOR + HOUR - 1, true, true)]
+        expect(published_exposures(context)).to eq(expected)
       end
     end
 
@@ -1366,6 +1370,14 @@ module ContextSwitchbackCostSpec
       context.peek_variable_value("banner.border", 0)
       # Only the exposure itself reads the clock, once.
       expect(clock).to have_received(:call).once
+      %i[take_late_reading expose_assignment].each do |helper|
+        allow(context).to receive(helper).and_call_original
+      end
+      context.treatment("exp_test_ab")
+      context.peek_treatment("exp_test_ab")
+      context.variable_value("banner.border", 0)
+      expect(context).not_to have_received(:take_late_reading)
+      expect(context).not_to have_received(:expose_assignment)
       expect(context.instance_variable_get(:@switchback_epochs)).to be_empty
     end
   end

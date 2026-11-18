@@ -230,17 +230,7 @@ class Context
   def set_attribute(name, value)
     check_not_closed?
 
-    if @switchbacks_active
-      with_assignment_lock do
-        # Later than any switchback cluster read or exposure, so the Collector,
-        # which reads the attributes at exposedAt, sees what the SDK served.
-        set_at = now_millis
-        set_at = @attribute_floor + 1 if set_at <= @attribute_floor
-        @attributes.push(Attribute.new(name, value, set_at))
-      end
-    else
-      @attributes.push(Attribute.new(name, value, now_millis))
-    end
+    @attributes.push(Attribute.new(name, value, now_millis))
     @attrs_seq += 1
   end
 
@@ -253,9 +243,17 @@ class Context
   def treatment(experiment_name)
     check_ready?(true)
 
-    now = @switchbacks_active ? now_millis : nil
+    unless @switchbacks_active
+      assignment = assignment(experiment_name, nil)
+      # A refresh installed the first switchback while this call waited.
+      return expose_assignment(assignment, take_late_reading).then { assignment.variant } if assignment.switchback
+
+      queue_exposure(assignment)
+      return assignment.variant
+    end
+
+    now = now_millis
     assignment = assignment(experiment_name, now)
-    now ||= take_late_reading
     expose_assignment(assignment, now)
     assignment.variant
   end
@@ -299,9 +297,13 @@ class Context
   def peek_treatment(experiment_name)
     check_ready?(true)
 
-    assignment = assignment(experiment_name, @switchbacks_active ? now_millis : nil)
-    take_late_reading
-    assignment.variant
+    unless @switchbacks_active
+      assignment = assignment(experiment_name, nil)
+      take_late_reading if assignment.switchback
+      return assignment.variant
+    end
+
+    assignment(experiment_name, now_millis).variant
   end
 
   alias peek peek_treatment
@@ -600,8 +602,7 @@ class Context
     # The Collector resolves a switchback's cluster again at exposedAt from the
     # published attributes. The exposing call's instant is kept when they give
     # the slot's cluster there; otherwise the exposure is stamped when the slot
-    # read its cluster, in the same period. The floor keeps later attribute
-    # writes after the stamp, so the Collector's view of it never changes.
+    # read its cluster, in the same period.
     def switchback_exposure_instant(assignment, now)
       with_assignment_lock do
         view = resolve_switchback_serving(assignment.switchback_entry, now)
@@ -981,10 +982,10 @@ class Context
       (state.index_variables[key] || []).each do |experiment|
         assignment = assignment(experiment.data.name, now)
         # The rest of this call exposes with the reading that chose the first slot.
-        now ||= take_late_reading
+        now ||= take_late_reading if @switchbacks_active
         next if assignment.variables.nil?
 
-        expose_assignment(assignment, now) if expose
+        (now.nil? ? queue_exposure(assignment) : expose_assignment(assignment, now)) if expose
         if assignment.variables.key?(key) && (assignment.assigned || assignment.overridden || assignment.rule_override)
           return assignment.variables[key]
         end
@@ -1182,7 +1183,6 @@ class Context
     # cluster map takes the legacy path.
     def resolve_switchback_serving(entry, now)
       units = @units.transform_keys(&:to_s)
-      @attribute_floor = now if now > @attribute_floor
       if entry.switchback_source_paths.nil?
         return Absmartly::Switchback::Serving.legacy(entry.data.unit_type, units)
       end
@@ -1424,8 +1424,6 @@ class Context
       @data_mutex = Mutex.new
       @switchback_epochs = {}
       @switchbacks_active = false
-      # The latest switchback cluster read or exposure stamp; see set_attribute.
-      @attribute_floor = -1
       @switchback_generation = 0
       @assignments = {}
       @clock = clock.is_a?(String) ? Time.iso8601(clock) : clock

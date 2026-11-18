@@ -214,6 +214,10 @@ module ContextSwitchbackClusterSpec
       end
       expect(expected("Zürich", 0)).not_to eq(0)
 
+      binary = create_context(attribute_switchback("city"))
+      binary.set_attribute("city", "Zürich".b)
+      expect(binary.treatment("exp_sb")).to eq(expected("Zürich", 0))
+
       invalid = create_context(attribute_switchback("city"))
       invalid.set_attribute("city", "\xFF".b)
       expect(invalid.treatment("exp_sb")).to eq(0)
@@ -463,32 +467,32 @@ module ContextSwitchbackClusterSpec
       expect(published_exposures(context).map(&:exposed_at)).to eq([ANCHOR + 20])
     end
 
-    # The Collector breaks a setAt tie in favour of the later entry, so an attribute written in the
-    # same millisecond as an exposure is stamped after it.
-    it "keeps an exposure's cluster when the attribute changes in the same millisecond" do
+    # Attributes keep their real setAt, as in java-sdk: shifting a write past a same-millisecond
+    # cluster read would hide it from every other read in that millisecond (and, with a fixed
+    # clock, for good). A write in the exposure's own millisecond ties at the Collector, which
+    # takes the later entry; the next period serves the new value.
+    it "keeps the real setAt of an attribute written in an exposure's millisecond" do
       context = create_context(attribute_switchback("city"))
       clock.now = ANCHOR + 10
       context.set_attribute("city", "Lisboa")
       expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
       context.set_attribute("city", "Faro")
+      expect(context.send(:attributes).map(&:set_at)).to eq([ANCHOR + 10, ANCHOR + 10])
 
-      context.publish
-      event = context.send(:event_handler).events.last
-      expect(event.attributes.map(&:set_at)).to eq([ANCHOR + 10, ANCHOR + 11])
-      expect(collector_cluster(event, event.exposures[0], "city")).to eq("Lisboa")
-
-      # The next period serves Faro, once the clock reaches the write.
       clock.now = ANCHOR + HOUR
       expect(context.treatment("exp_sb")).to eq(expected("Faro", 1))
     end
 
-    it "stamps attributes as before without switchbacks" do
-      context = build_context(data_of([attribute_switchback("city", randomizationType: "unit")]),
-                              units: { UNIT_TYPE => UID })
+    # A read in the same millisecond as a write sees it, whatever was read before.
+    it "lets every read in a millisecond see an attribute set in it" do
+      other = attribute_switchback("city", id: 2, name: "exp_other")
+      context = build_context(data_of([attribute_switchback("zone", name: "exp_first"), other]), units: { UNIT_TYPE => UID })
       clock.now = ANCHOR + 10
-      context.treatment("exp_sb")
+      context.set_attribute("zone", "z")
+      context.peek_treatment("exp_first")
       context.set_attribute("city", "Faro")
-      expect(context.send(:attributes).map(&:set_at)).to eq([ANCHOR + 10])
+      expect(context.treatment("exp_other")).to eq(expected("Faro", 0))
+      expect(context.pending_count).to eq(1)
     end
 
     it "re-resolves the period when the cluster path changes" do

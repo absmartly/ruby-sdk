@@ -179,6 +179,12 @@ module Absmartly
         def utf8_string(value)
           return value if value.encoding == Encoding::UTF_8 && value.valid_encoding?
 
+          # Binary bytes are published as UTF-8 text when they are valid UTF-8 (Ruby 3.x's JSON).
+          if value.encoding == Encoding::BINARY
+            text = value.dup.force_encoding(Encoding::UTF_8)
+            return text.valid_encoding? ? text : nil
+          end
+
           JSON.parse([value].to_json)[0]
         rescue StandardError
           nil
