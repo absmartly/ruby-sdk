@@ -61,22 +61,20 @@ class Context
   def set_data(data_future)
     ready_data = nil
     failure = nil
+    state = data_future.success? ? build_state(data_future.data_future) : nil
     @ready_mutex.synchronize do
-      if data_future.success?
-        # A refresh may already have installed newer data while the initial
-        # fetch was in flight; keep it, and still report ready.
-        assign_data(data_future.data_future) unless ready?
-        ready_data = @state.data
+      # A refresh may already have installed data while the initial fetch was
+      # in flight: keep it, so a late success doesn't replace newer data and
+      # a late failure is only logged.
+      if ready?
+        failure = data_future.exception unless state
+      elsif state
+        @state = state
       else
-        # A refresh may already have installed usable data while the initial
-        # fetch was in flight; then the late failure is only logged.
         failure = data_future.exception
-        if ready?
-          ready_data = @state.data
-        else
-          set_data_failed(failure)
-        end
+        set_data_failed(failure)
       end
+      ready_data = @state.data unless @failed
       @ready_condvar.broadcast
     end
 
@@ -393,15 +391,18 @@ class Context
 
     data_future = @data_provider.context_data
     if data_future.success?
-      # Under the readiness lock, so a wait_until_ready blocked on a context
-      # created asynchronously wakes when a refresh supplies the first data.
+      state = build_state(data_future.data_future)
+      # Committed under the readiness lock, so a waiter on a context created
+      # asynchronously wakes, and an initial fetch that failed while this
+      # refresh was in flight no longer leaves the context failed.
       @ready_mutex.synchronize do
-        assign_data(data_future.data_future)
+        @state = state
+        @failed = false
+        @data_failed = nil
         @ready_condvar.broadcast
       end
       log_event(ContextEventLogger::EVENT_TYPE::REFRESH, data_future.data_future)
     else
-      # A failed refresh keeps the current data.
       log_error(data_future.exception)
     end
   end
@@ -442,6 +443,7 @@ class Context
       # that seal fails or gives up.
       if @publish_mutex.owned?
         @close_pending = event_type
+        @close_requests += 1
         return nil
       end
 
@@ -462,8 +464,6 @@ class Context
             next :done if @closed
 
             unless @exposures.empty? && @achievements.empty?
-              # A pending request (from a callback, before or during this seal,
-              # on any thread) stays pending for the next successful publish.
               raise EventsQueuedWhileClosing.new("Events queued while closing; retry close or finalize") if last_pass
 
               next :retry
@@ -513,7 +513,6 @@ class Context
           event_count = exposures.size + achievements.size
         end
 
-        # An empty publish still hands off a deferred seal.
         if event_count.zero?
           claimed = take_close_pending unless sealing
           next nil
@@ -573,19 +572,26 @@ class Context
       end
     end
 
+    # Returns [event_type, request number] for the pending seal, or nil.
     def take_close_pending
-      claimed = @close_pending
+      return nil unless @close_pending
+
+      claimed = [@close_pending, @close_requests]
       @close_pending = false
-      claimed || nil
+      claimed
     end
 
-    def run_deferred_seal(event_type)
+    def run_deferred_seal((event_type, request))
       seal(event_type)
     rescue StandardError => error
       # A deferred seal that did not finish (events still queued, or its own
       # publish rejected or raised) stays pending for the next successful
-      # publish. Only the "events still queued" case lets this publish return.
-      @close_pending ||= event_type unless @closed
+      # publish, unless a newer request was made meanwhile (even one another
+      # publish has already claimed). Only "events still queued" lets this
+      # publish return.
+      @publish_mutex.synchronize do
+        @close_pending = event_type unless @closed || @close_requests != request
+      end
       raise unless error.is_a?(EventsQueuedWhileClosing)
     end
 
@@ -873,6 +879,12 @@ class Context
     end
 
     def assign_data(data)
+      @state = build_state(data)
+    end
+
+    # Builds the snapshot for data, calling the variable parser; callers run
+    # it outside the readiness lock so a parser may call wait_until_ready.
+    def build_state(data)
       index = {}
       index_variables = {}
       custom_fields = {}
@@ -942,8 +954,8 @@ class Context
         end
       end
 
-      # Publish the fully built snapshot; the maps are never mutated after this.
-      @state = State.new(data, index, index_variables, custom_fields)
+      # The maps are never mutated after this.
+      State.new(data, index, index_variables, custom_fields)
     end
 
     def set_data_failed(exception)
@@ -1012,6 +1024,7 @@ class Context
       @queue_mutex = Mutex.new
       @publish_mutex = Mutex.new
       @close_pending = false
+      @close_requests = 0
 
       set_units(config.units) if config.units
       set_attributes(config.attributes) if config.attributes

@@ -1136,6 +1136,27 @@ RSpec.describe Context do
   end
 
   describe "overlapping seals and publishes" do
+    # Every gate an example opens and every worker it starts, so a failing
+    # assertion can't leave a worker blocked on a gate after the example.
+    def gate
+      (@gates ||= []) << Queue.new
+      @gates.last
+    end
+
+    def worker(role = nil, &block)
+      thread = Thread.new do
+        Thread.current[:role] = role
+        block.call
+      end
+      (@workers ||= []) << thread
+      thread
+    end
+
+    after do
+      Array(@gates).each { |q| 3.times { q << true } }
+      Array(@workers).each { |t| t.join(5) || t.kill }
+    end
+
     def overlap_context(responses, logger)
       config = ContextConfig.create
       config.set_units(units)
@@ -1178,13 +1199,13 @@ RSpec.describe Context do
 
     it "close drops only the rejected batch, not goals tracked while it was in flight" do
       events = []
-      in_flight = Queue.new
-      release = Queue.new
+      in_flight = gate
+      release = gate
       responses = [-> { in_flight << true; release.pop; :rejected }, :ok]
       context = overlap_context(responses, recording_logger(events))
       context.track("initial", nil)
 
-      closer = Thread.new { context.close }
+      closer = worker { context.close }
       Timeout.timeout(5) { in_flight.pop }
       context.track("never_sent", nil)
       release << true
@@ -1207,13 +1228,12 @@ RSpec.describe Context do
       end
       context = overlap_context([:rejected, :ok], logger)
       holder[:context] = context
-      paused = Queue.new
-      release = Queue.new
+      paused = gate
+      release = gate
       pause_seal_after_flush(context, :a, paused, release)
       context.track("goal1", nil)
 
-      a = Thread.new do
-        Thread.current[:role] = :a
+      a = worker(:a) do
         context.finalize
       rescue Exception => e # rubocop:disable Lint/RescueException
         e
@@ -1240,16 +1260,15 @@ RSpec.describe Context do
       end
       context = overlap_context([:rejected, :ok, :ok], logger)
       holder[:context] = context
-      paused = Queue.new
-      release = Queue.new
+      paused = gate
+      release = gate
       pause_seal_after_flush(context, :a, paused, release)
       context.track("goal1", nil)
 
       # finalize is rejected and its error callback asks for close; while that
       # finalize is still unwinding, another publish delivers the queue, so
       # the close it hands off has nothing left to send.
-      a = Thread.new do
-        Thread.current[:role] = :a
+      a = worker(:a) do
         context.finalize
       rescue Exception => e # rubocop:disable Lint/RescueException
         e
@@ -1270,14 +1289,13 @@ RSpec.describe Context do
 
     it "reports finalizing? only while a seal is running, across overlapping seals" do
       context = overlap_context([:ok], recording_logger([]))
-      paused = Queue.new
-      release = Queue.new
+      paused = gate
+      release = gate
       pause_seal_after_flush(context, :a, paused, release)
       context.track("goal1", nil)
       expect(context.finalizing?).to be false
 
-      a = Thread.new do
-        Thread.current[:role] = :a
+      a = worker(:a) do
         context.finalize
       end
       Timeout.timeout(5) { paused.pop }
@@ -1290,8 +1308,8 @@ RSpec.describe Context do
 
 
     it "stays finalizing? while a second seal runs after the first one raised" do
-      first = Queue.new
-      gate = Queue.new
+      first = gate
+      second = gate
       calls = 0
       config = ContextConfig.create
       config.set_units(units)
@@ -1302,27 +1320,25 @@ RSpec.describe Context do
           first.pop
           next OpenStruct.new(exception: Exception.new("FAILED"), success?: false)
         end
-        gate.pop
+        second.pop
         OpenStruct.new(success?: true)
       end
       context = Context.create(clock, config, data_future_ready, data_provider, handler, nil,
                                variable_parser, audience_matcher)
       context.track("goal1", nil)
-      entered = Queue.new
+      entered = gate
       original = context.method(:flush)
       allow(context).to receive(:flush) do |**kwargs|
         entered << Thread.current[:role] if kwargs[:sealing]
         original.call(**kwargs)
       end
-      a = Thread.new do
-        Thread.current[:role] = :a
+      a = worker(:a) do
         context.finalize
       rescue Exception => e # rubocop:disable Lint/RescueException
         e
       end
       Timeout.timeout(5) { entered.pop }
-      b = Thread.new do
-        Thread.current[:role] = :b
+      b = worker(:b) do
         context.finalize
       end
       Timeout.timeout(5) { entered.pop }
@@ -1330,7 +1346,7 @@ RSpec.describe Context do
       first << true
       expect(Timeout.timeout(5) { a.value }.message).to eq("FAILED")
       expect(context.finalizing?).to be true
-      gate << true
+      second << true
       Timeout.timeout(5) { b.join }
       expect(context.finalizing?).to be false
       expect(context.finalized?).to be true
@@ -1347,32 +1363,115 @@ RSpec.describe Context do
       end
       context = overlap_context([:rejected, :ok], logger)
       holder[:context] = context
-      paused = Queue.new
-      release = Queue.new
-      pause_seal_after_flush(context, :a, paused, release)
       context.track("goal1", nil)
 
-      # A publish is rejected and its error callback asks for close; while
-      # that close is still unwinding (paused after its own flush), the queue
-      # is delivered without handing it off, then finalize runs on an empty
-      # queue. finalize's own empty pass must not claim the pending close.
-      a = Thread.new do
-        Thread.current[:role] = :a
-        context.publish
-      rescue Exception => e # rubocop:disable Lint/RescueException
-        e
-      end
-      Timeout.timeout(5) { a.join }
-      expect(context.closed?).to be false
+      # A publish is rejected and its error callback asks for close. The queue
+      # is then delivered without handing the close off, so it stays pending.
+      Timeout.timeout(5) { context.publish }
       allow(context).to receive(:take_close_pending).and_return(nil)
       Timeout.timeout(5) { context.publish }
       allow(context).to receive(:take_close_pending).and_call_original
       expect(context.pending_count).to eq(0)
+      expect(context.instance_variable_get(:@close_pending)).to eq(ContextEventLogger::EVENT_TYPE::CLOSE)
 
-      Timeout.timeout(5) { context.finalize }
-      expect(context.finalized?).to be true
+      # A seal's own empty pass, paused before it decides: it must neither
+      # claim nor drop the pending close, which the publish below still sees.
+      paused = gate
+      release = gate
+      pause_seal_after_flush(context, :a, paused, release)
+      a = worker(:a) do
+        context.finalize
+      end
+      begin
+        Timeout.timeout(5) { paused.pop }
+        expect(context.instance_variable_get(:@close_pending)).to eq(ContextEventLogger::EVENT_TYPE::CLOSE)
+        Timeout.timeout(5) { context.publish }
+        expect(context.closed?).to be true
+        expect(context.instance_variable_get(:@sealed_by)).to eq(ContextEventLogger::EVENT_TYPE::CLOSE)
+      ensure
+        release << true
+        a.join(5) || a.kill
+      end
       expect(events.select { |e| [ContextEventLogger::EVENT_TYPE::CLOSE, ContextEventLogger::EVENT_TYPE::FINALIZE].include?(e) })
-        .to eq([ContextEventLogger::EVENT_TYPE::FINALIZE])
+        .to eq([ContextEventLogger::EVENT_TYPE::CLOSE])
+    end
+
+    it "a failed older deferred finalize does not override a newer close already handed off" do
+      events = []
+      holder = {}
+      logger = recording_logger(events) do |event, _data|
+        next unless event == ContextEventLogger::EVENT_TYPE::PUBLISH
+
+        holder[:publishes] = (holder[:publishes] || 0) + 1
+        if holder[:publishes] == 1
+          holder[:context].track("cb1", nil)
+          holder[:context].finalize
+        elsif Thread.current[:role] == :b
+          holder[:context].close
+        end
+      end
+      # Publish 1 (thread A) succeeds and defers finalize. That finalize's own
+      # publish is rejected; before it re-arms itself, thread B publishes
+      # successfully, asks for close and claims it. A's failure must not then
+      # restore the older finalize, which an empty publish would carry out
+      # before B's newer close.
+      context = overlap_context([:ok, :rejected, :ok, :ok], logger)
+      holder[:context] = context
+      paused = gate
+      release = gate
+      claimed = gate
+      resume_b = gate
+      original_seal = context.method(:seal)
+      allow(context).to receive(:seal) do |event_type|
+        original_seal.call(event_type)
+      rescue Exception # rubocop:disable Lint/RescueException
+        if Thread.current[:role] == :a && !Thread.current[:paused]
+          Thread.current[:paused] = true
+          paused << true
+          release.pop
+        end
+        raise
+      end
+      original_run = context.method(:run_deferred_seal)
+      allow(context).to receive(:run_deferred_seal) do |claim|
+        if Thread.current[:role] == :b && !Thread.current[:paused]
+          Thread.current[:paused] = true
+          claimed << true
+          resume_b.pop
+        end
+        original_run.call(claim)
+      end
+      context.track("goal1", nil)
+
+      a = worker(:a) do
+        context.publish
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        e
+      end
+      b = nil
+      begin
+        Timeout.timeout(5) { paused.pop }
+        context.track("goal_b", nil)
+        b = worker(:b) do
+          context.publish
+        end
+        Timeout.timeout(5) { claimed.pop }
+        release << true
+        expect(Timeout.timeout(5) { a.value }.message).to eq("FAILED")
+        # An empty publish before B carries out its claimed close: it must not
+        # find A's older finalize restored and seal with it.
+        Timeout.timeout(5) { context.publish }
+        resume_b << true
+        Timeout.timeout(5) { b.join }
+      ensure
+        release << true
+        resume_b << true
+        [a, b].compact.each { |t| t.join(5) || t.kill }
+      end
+
+      expect(context.closed?).to be true
+      expect(events.count(ContextEventLogger::EVENT_TYPE::CLOSE)).to eq(1)
+      expect(events.count(ContextEventLogger::EVENT_TYPE::FINALIZE)).to eq(0)
     end
 
     it "a second finalize is not turned into a close by a failing first one" do
@@ -1387,13 +1486,12 @@ RSpec.describe Context do
       end
       context = overlap_context([:rejected, :ok, :rejected], logger)
       holder[:context] = context
-      paused = Queue.new
-      release = Queue.new
+      paused = gate
+      release = gate
       pause_seal_after_flush(context, :a, paused, release)
       context.track("goal1", nil)
 
-      a = Thread.new do
-        Thread.current[:role] = :a
+      a = worker(:a) do
         context.finalize
       rescue Exception => e # rubocop:disable Lint/RescueException
         e

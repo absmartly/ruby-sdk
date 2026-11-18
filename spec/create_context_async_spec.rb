@@ -13,6 +13,7 @@ require "context_event_handler"
 require "context_event_logger"
 require "audience_matcher"
 require "json/unit"
+require "json"
 require "logger"
 require "timeout"
 
@@ -276,19 +277,89 @@ RSpec.describe "create_context_async" do
                             ContextEventLogger::EVENT_TYPE::READY])
     end
 
+    it "keeps an in-flight refresh usable when the initial fetch fails before it completes" do
+      published = []
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, event|
+        published.concat((event.goals || []).map(&:name))
+        OpenStruct.new(success?: true)
+      end
+      in_refresh = Queue.new
+      release = Queue.new
+      provider = Object.new
+      ready_data = data
+      provider.define_singleton_method(:context_data) do
+        in_refresh << true
+        release.pop
+        OpenStruct.new(data_future: ready_data, success?: true)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, provider,
+                                     handler, event_logger, variable_parser, audience_matcher)
+      refresher = Thread.new { context.refresh }
+      begin
+        Timeout.timeout(5) { in_refresh.pop }
+        context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+        expect(context.failed?).to be true
+        release << true
+        Timeout.timeout(5) { refresher.join }
+      ensure
+        release << true
+        refresher.join(5) || refresher.kill
+      end
+
+      expect(context.failed?).to be false
+      context.track("goal1", nil)
+      context.publish
+      expect(published).to eq(["goal1"])
+    end
+
+    it "lets a variable parser call wait_until_ready while a refresh installs data" do
+      calls = []
+      holder = {}
+      parser = Object.new
+      parser.define_singleton_method(:parse) do |context, _experiment, _variant, config|
+        calls << holder[:context].wait_until_ready(0).equal?(holder[:context]) if holder[:context]
+        JSON.parse(config, symbolize_names: true)
+      rescue JSON::ParserError
+        nil
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create(clock, context_config, OpenStruct.new(data_future: data, success?: true),
+                               data_provider, event_handler, event_logger, parser, audience_matcher)
+      holder[:context] = context
+      allow(data_provider).to receive(:context_data).and_return(OpenStruct.new(data_future: data, success?: true))
+
+      expect { context.refresh }.not_to raise_error
+      expect(calls).not_to be_empty
+      expect(calls).to all(be true)
+    end
+
     it "wakes a waiter when a refresh supplies the first data" do
       context_config = ContextConfig.create
       context_config.set_units(units)
       context = Context.create_async(clock, context_config, data_provider,
                                      event_handler, event_logger, variable_parser, audience_matcher)
-      waiter = Thread.new { context.wait_until_ready(5) }
-      Timeout.timeout(5) { sleep 0.01 until waiter.status == "sleep" }
-      started = Time.now
-      context.refresh
-      Timeout.timeout(5) { waiter.join }
-
-      expect(Time.now - started).to be < 1
-      expect(context.ready?).to be true
+      # Signal from the condition-variable wait itself, so the refresh runs only
+      # once the waiter is really waiting; the waiter has no timeout of its own,
+      # so only a broadcast can wake it.
+      waiting = Queue.new
+      condvar = context.instance_variable_get(:@ready_condvar)
+      allow(condvar).to receive(:wait).and_wrap_original do |original, *args|
+        waiting << true
+        original.call(*args)
+      end
+      waiter = Thread.new { context.wait_until_ready }
+      begin
+        Timeout.timeout(5) { waiting.pop }
+        context.refresh
+        expect(waiter.join(5)).to eq(waiter)
+        expect(context.ready?).to be true
+      ensure
+        waiter.kill if waiter.alive?
+      end
     end
   end
 

@@ -376,7 +376,7 @@ rescue StandardError => e
 end
 ```
 
-Both sealing methods allow one extra publish for events queued during the first request. If that extra publish succeeds and more events arrived meanwhile, they stay queued, the context stays open, and the method raises `StandardError` ("Events queued while closing; retry close or finalize"); retry after the producer stops. If the collector rejects a publish while sealing, the rules above apply instead: `close` logs the error and seals (as in v1.3.0), and `finalize` raises the rejection and stays open.
+Both sealing methods allow one extra publish for events queued during the first request. If events are still queued after that extra publish (whether it succeeded, or `close` dropped its rejected batch), they stay queued, the context stays open, and the method raises `StandardError` ("Events queued while closing; retry close or finalize"); those events are not sent in the same call, so retry after the producer stops. Otherwise a rejection follows the rules above: `close` logs the error, drops that batch and seals (as in v1.3.0), and `finalize` raises the rejection and stays open.
 
 ### Custom Event Logger
 
