@@ -844,6 +844,21 @@ RSpec.describe Context do
     expect(context.custom_field_value("exp_test_ab", "country")).to eq("US,PT,ES,DE,FR")
   end
 
+  it "reads a custom field with a missing or null type as untyped text after a refresh" do
+    raw = JSON.parse(json)
+    fields = raw["experiments"].find { |e| e["name"] == "exp_test_ab" }["customFieldValues"]
+    fields << { "name" => "untyped", "value" => "x" } << { "name" => "null_type", "value" => "y", "type" => nil }
+    payload = JSON.generate(raw)
+    untyped_provider = DefaultContextDataProvider.new(client_mock(descr.deserialize(payload, 0, payload.length)))
+    context = create_context(data_future_ready, dt_provider: untyped_provider)
+
+    expect(context.refresh).to be_nil
+    expect(context.failed?).to be false
+    expect(context.custom_field_value("exp_test_ab", "untyped")).to eq("x")
+    expect(context.custom_field_type("exp_test_ab", "untyped")).to be_nil
+    expect(context.custom_field_value("exp_test_ab", "null_type")).to eq("y")
+  end
+
   it "peek_treatmentReturnsOverrideVariant" do
     context = create_ready_context
 

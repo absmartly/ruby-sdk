@@ -82,6 +82,10 @@ RSpec.describe "Backwards Compatibility" do
     experiment = Experiment.new(variants: [{ name: "sym", "name" => "str", config: nil }])
 
     expect(experiment.variants.first.name).to eq("sym")
+
+    experiment = Experiment.new(variants: [{ name: nil, "name" => "str", config: nil }])
+
+    expect(experiment.variants.first.name).to be_nil
   end
 
   it "DefaultContextEventHandler is a deprecated alias for DefaultContextPublisher" do
