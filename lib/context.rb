@@ -398,10 +398,13 @@ class Context
       # asynchronously wakes, and an initial fetch that failed while this
       # refresh was in flight no longer leaves the context failed.
       @ready_mutex.synchronize do
+        recovered = @failed
+        @state = state
         # Assignments made while the context was failed were built without
         # the experiments; reads and exposures must use the recovered data.
-        @assignment_mutex.synchronize { @assignment_cache.clear } if @failed
-        @state = state
+        # Cleared after the new snapshot is installed, so a read still on the
+        # failed snapshot can't cache its result once this clear has run.
+        @assignment_mutex.synchronize { @assignment_cache.clear } if recovered
         @failed = false
         @data_failed = nil
         @ready_error = nil
@@ -871,7 +874,11 @@ class Context
         assignment.variables = experiment.variables[assignment.variant] || {}
       end
 
-      @assignment_cache[experiment_name.to_s] = assignment
+      # Not kept if built without the experiment from a snapshot that a
+      # refresh has since replaced with one that has it (e.g. on recovery),
+      # so the next read resolves against the new data.
+      stale = experiment.nil? && !state.equal?(@state) && !experiment(experiment_name.to_s).nil?
+      @assignment_cache[experiment_name.to_s] = assignment unless stale
       assignment
     end
 
