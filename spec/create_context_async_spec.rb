@@ -1190,7 +1190,6 @@ RSpec.describe "create_context_async" do
         release << true
         refresher.join(5) || refresher.kill
       end
-      # Recovered with data that still lacks the experiment: the read is kept.
       expect(context.failed?).to be false
       expect(context.variable_value("banner.size", "default")).to eq("default")
 
@@ -1199,6 +1198,63 @@ RSpec.describe "create_context_async" do
       expect(context.variable_value("banner.size", "default")).to eq("large")
       context.publish
 
+      expect(exposures).to eq([["exp_test_ab", 0, 1], ["exp_test_ab", 1, 1]])
+    end
+
+    it "keeps a failed assignment ineligible when an interrupt lands while its replacement is cached" do
+      exposures = []
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, event|
+        exposures.concat((event.exposures || []).map { |e| [e.name, e.id, e.variant] })
+        OpenStruct.new(success?: true)
+      end
+      in_refresh = Queue.new
+      release = Queue.new
+      ready_data = data
+      provider = Object.new
+      provider.define_singleton_method(:context_data) do
+        in_refresh << true
+        release.pop
+        OpenStruct.new(data_future: ready_data, success?: true)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, provider,
+                                     handler, event_logger, variable_parser, audience_matcher)
+      refresher = Thread.new { context.refresh }
+      begin
+        Timeout.timeout(5) { in_refresh.pop }
+        context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+        context.set_override("exp_test_ab", 1)
+        context.treatment("exp_test_ab")
+        release << true
+        Timeout.timeout(5) { refresher.join }
+      ensure
+        release << true
+        refresher.join(5) || refresher.kill
+      end
+      untagging = Queue.new
+      tags = context.instance_variable_get(:@failed_built)
+      tags.define_singleton_method(:delete) do |key|
+        result = super(key)
+        if Thread.current[:gate]
+          untagging << true
+          sleep 0.2
+        end
+        result
+      end
+      reader = Thread.new do
+        Thread.current[:gate] = true
+        context.variable_value("banner.size", "default")
+      rescue RuntimeError
+        nil
+      end
+      Timeout.timeout(5) { untagging.pop }
+      reader.raise(RuntimeError, "cancelled")
+      Timeout.timeout(5) { reader.join }
+
+      expect(context.variable_value("banner.size", "default")).to eq("large")
+      context.publish
       expect(exposures).to eq([["exp_test_ab", 0, 1], ["exp_test_ab", 1, 1]])
     end
 

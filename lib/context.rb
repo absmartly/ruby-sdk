@@ -795,8 +795,7 @@ class Context
           return assignment if assignment.overridden && assignment.variant == override
         elsif experiment.nil?
           # A rule-won assignment came from the experiment's rules, so it is
-          # rebuilt once the experiment is gone; a forced one once its
-          # override is cleared.
+          # rebuilt once the experiment is gone.
           return assignment if !assignment.assigned && !assignment.rule_override && !assignment.overridden
         elsif (custom.nil? || assignment.rule_override ||
                (custom == assignment.variant && (assignment.custom || assignment.exposed))) &&
@@ -882,10 +881,14 @@ class Context
 
         @failed_built[assignment] = true
       end
-      # Untagged when replaced, so the tags never outgrow the cache.
-      replaced = @assignment_cache[experiment_name.to_s]
-      @failed_built.delete(replaced) unless replaced.nil? || @failed_built.empty?
-      @assignment_cache[experiment_name.to_s] = assignment
+      # Untagged when replaced, so the tags never outgrow the cache. An
+      # interrupt can't land between the two, which would leave a failed
+      # assignment cached but untagged and so reusable after recovery.
+      Thread.handle_interrupt(Object => :never) do
+        replaced = @assignment_cache[experiment_name.to_s]
+        @failed_built.delete(replaced) unless replaced.nil? || @failed_built.empty?
+        @assignment_cache[experiment_name.to_s] = assignment
+      end
       assignment
     end
 
