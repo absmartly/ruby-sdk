@@ -1015,6 +1015,17 @@ RSpec.describe "create_context_async" do
       end
     end
 
+    it "skips the failed-snapshot tag lookup on cached reads of a context that never failed" do
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create(clock, context_config, OpenStruct.new(data_future: data, success?: true),
+                               data_provider, event_handler, event_logger, variable_parser, audience_matcher)
+      tags = context.instance_variable_get(:@failed_built)
+      context.peek_treatment("exp_test_ab")
+      expect(tags).not_to receive(:delete)
+      3.times { context.peek_treatment("exp_test_ab") }
+    end
+
     it "keeps one failed-snapshot tag per cached assignment" do
       context_config = ContextConfig.create
       context_config.set_units(units)
