@@ -957,6 +957,78 @@ RSpec.describe "create_context_async" do
       expect(context.pending_count).to eq(1)
     end
 
+    describe "a read still on the failed snapshot after a refresh recovered the context" do
+      let(:exposures) { [] }
+
+      def recovered_context
+        sent = exposures
+        handler = Object.new
+        handler.define_singleton_method(:publish) do |_context, event|
+          sent.concat((event.exposures || []).map { |e| [e.name, e.id, e.variant] })
+          OpenStruct.new(success?: true)
+        end
+        in_refresh = Queue.new
+        release = Queue.new
+        ready_data = data
+        provider = Object.new
+        provider.define_singleton_method(:context_data) do
+          in_refresh << true
+          release.pop
+          OpenStruct.new(data_future: ready_data, success?: true)
+        end
+        context_config = ContextConfig.create
+        context_config.set_units(units)
+        context = Context.create_async(clock, context_config, provider,
+                                       handler, event_logger, variable_parser, audience_matcher)
+        refresher = Thread.new { context.refresh }
+        begin
+          Timeout.timeout(5) { in_refresh.pop }
+          context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+          failed_state = context.instance_variable_get(:@state)
+          yield context if block_given?
+          release << true
+          Timeout.timeout(5) { refresher.join }
+        ensure
+          release << true
+          refresher.join(5) || refresher.kill
+        end
+        [context, failed_state]
+      end
+
+      it "does not cause a second exposure of a recovered assignment" do
+        context, failed_state = recovered_context
+        context.treatment("exp_test_ab")
+        context.send(:assignment, "exp_test_ab", failed_state)
+        context.treatment("exp_test_ab")
+        context.publish
+
+        expect(exposures.size).to eq(1)
+        expect(exposures.first[0..1]).to eq(["exp_test_ab", 1])
+      end
+
+      it "reuses the assignment exposed while failed" do
+        context, failed_state = recovered_context { |ctx| ctx.treatment("exp_test_ab") }
+        context.send(:queue_exposure, context.send(:assignment, "exp_test_ab", failed_state))
+        context.publish
+
+        expect(exposures).to eq([["exp_test_ab", 0, 0]])
+      end
+    end
+
+    it "keeps one failed-snapshot tag per cached assignment" do
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider,
+                                     event_handler, event_logger, variable_parser, audience_matcher)
+      context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+      50.times do |i|
+        context.set_override("exp_test_ab", i % 2)
+        context.peek_treatment("exp_test_ab")
+      end
+
+      expect(context.instance_variable_get(:@failed_built).size).to eq(1)
+    end
+
     it "lets a timeout interrupt a slow variable parser" do
       parser = DefaultVariableParser.new
       parser.define_singleton_method(:parse) do |context, experiment, variant, config|

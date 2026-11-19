@@ -787,7 +787,9 @@ class Context
 
       # Built from the empty snapshot of a failed context that a refresh has
       # since recovered: resolved again against the recovered data.
-      assignment = nil if !assignment.nil? && !state.equal?(@failed_state) && @failed_built.delete(assignment)
+      if !assignment.nil? && !@failed_built.empty? && !state.equal?(@failed_state) && @failed_built.delete(assignment)
+        assignment = nil
+      end
 
       if !assignment.nil?
         if !override.nil?
@@ -809,8 +811,6 @@ class Context
 
       assignment = Assignment.new
       assignment.name = experiment_name
-      # Deleted when the assignment is replaced, so this never outgrows the cache.
-      @failed_built[assignment] = true if state.equal?(@failed_state)
       assignment.eligible = true
 
       if !override.nil?
@@ -874,6 +874,16 @@ class Context
         assignment.variables = experiment.variables[assignment.variant] || {}
       end
 
+      if state.equal?(@failed_state)
+        # A read that finishes after a refresh recovered the context must not
+        # replace what was resolved against the recovered data.
+        return assignment unless @state.equal?(@failed_state)
+
+        @failed_built[assignment] = true
+      end
+      # Untagged when replaced, so the tags never outgrow the cache.
+      replaced = @assignment_cache[experiment_name.to_s]
+      @failed_built.delete(replaced) unless replaced.nil? || @failed_built.empty?
       @assignment_cache[experiment_name.to_s] = assignment
       assignment
     end
