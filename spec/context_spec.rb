@@ -71,7 +71,7 @@ RSpec.describe Context do
     ]
   }
   let(:clock) { Time.at(1620000000000 / 1000) }
-  let(:clock_in_millis) { clock.to_i }
+  let(:clock_in_millis) { clock.to_i * 1000 }
 
   let(:descr) { DefaultContextDataDeserializer.new }
   let(:json) { resource("context.json") }
