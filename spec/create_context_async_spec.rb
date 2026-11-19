@@ -838,6 +838,96 @@ RSpec.describe "create_context_async" do
       expect(context.failed?).to be false
     end
 
+    it "resolves assignments made while failed against the recovered data" do
+      exposures = []
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, event|
+        exposures.concat((event.exposures || []).map { |e| [e.name, e.id, e.variant] })
+        OpenStruct.new(success?: true)
+      end
+      in_refresh = Queue.new
+      release = Queue.new
+      ready_data = data
+      provider = Object.new
+      provider.define_singleton_method(:context_data) do
+        in_refresh << true
+        release.pop
+        OpenStruct.new(data_future: ready_data, success?: true)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, provider,
+                                     handler, event_logger, variable_parser, audience_matcher)
+      refresher = Thread.new { context.refresh }
+      begin
+        Timeout.timeout(5) { in_refresh.pop }
+        context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+        context.set_override("exp_test_ab", 1)
+        expect(context.peek_treatment("exp_test_ab")).to eq(1)
+        release << true
+        Timeout.timeout(5) { refresher.join }
+      ensure
+        release << true
+        refresher.join(5) || refresher.kill
+      end
+
+      expect(context.failed?).to be false
+      expect(context.variable_value("banner.size", "default")).to eq("large")
+      context.publish
+      expect(exposures).to eq([["exp_test_ab", 1, 1]])
+    end
+
+    it "lets a timeout interrupt a slow variable parser" do
+      parser = DefaultVariableParser.new
+      parser.define_singleton_method(:parse) do |context, experiment, variant, config|
+        sleep 2
+        super(context, experiment, variant, config)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider, event_handler, event_logger,
+                                     parser, audience_matcher)
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      expect { Timeout.timeout(0.1) { context.set_data(OpenStruct.new(data_future: data, success?: true)) } }
+        .to raise_error(Timeout::Error)
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1
+      expect(context.instance_variable_get(:@building_threads)).to be_empty
+    end
+
+    it "keeps a caller's interrupt mask while a refresh parses variables" do
+      parsing = Queue.new
+      parser = DefaultVariableParser.new
+      parser.define_singleton_method(:parse) do |context, experiment, variant, config|
+        parsing << true if Thread.current[:signal_parse]
+        sleep 0.05 if Thread.current[:signal_parse]
+        super(context, experiment, variant, config)
+      end
+      ready_data = data
+      provider = Object.new
+      provider.define_singleton_method(:context_data) { OpenStruct.new(data_future: ready_data, success?: true) }
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create(clock, context_config, OpenStruct.new(data_future: data, success?: true), provider,
+                               event_handler, event_logger, parser, audience_matcher)
+      log = Queue.new
+      worker = Thread.new do
+        Thread.current[:signal_parse] = true
+        Thread.handle_interrupt(Object => :never) do
+          context.refresh
+          log << :refresh_completed
+        end
+      rescue RuntimeError => e
+        log << e.message
+      end
+      Timeout.timeout(5) { parsing.pop }
+      worker.raise(RuntimeError, "async")
+      Timeout.timeout(5) { worker.join }
+
+      expect([log.pop, log.pop]).to eq([:refresh_completed, "async"])
+      expect(context.instance_variable_get(:@building_threads)).to be_empty
+    end
+
     it "keeps the timeout when it interrupts a refresh waiting to register as a builder" do
       ready_data = data
       provider = Object.new

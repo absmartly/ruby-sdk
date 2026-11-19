@@ -19,8 +19,6 @@ class Context
   NO_RULES = ""
   SEAL_FLUSH_PASSES = 2
   private_constant :SEAL_FLUSH_PASSES
-  FAILED_CONTEXT_DROP = Object.new.freeze
-  private_constant :FAILED_CONTEXT_DROP
   # Raised by close/finalize when events are still queued after the last pass.
   class EventsQueuedWhileClosing < StandardError; end
   private_constant :EventsQueuedWhileClosing
@@ -400,6 +398,9 @@ class Context
       # asynchronously wakes, and an initial fetch that failed while this
       # refresh was in flight no longer leaves the context failed.
       @ready_mutex.synchronize do
+        # Assignments made while the context was failed were built without
+        # the experiments; reads and exposures must use the recovered data.
+        @assignment_mutex.synchronize { @assignment_cache.clear } if @failed
         @state = state
         @failed = false
         @data_failed = nil
@@ -463,9 +464,7 @@ class Context
           # that batch; anything queued meanwhile is still sent or kept.
           result = flush(sealing: true, drop_rejected: close)
           last_pass = pass == SEAL_FLUSH_PASSES - 1
-          # A failed context's flush dropped its events: not a publish failure.
-          failed_load = result.equal?(FAILED_CONTEXT_DROP)
-          raise_publish_failure(result) if !close && !failed_load && publish_failed?(result)
+          raise_publish_failure(result) if !close && publish_failed?(result)
 
           sealed = @queue_mutex.synchronize do
             next :done if @closed
@@ -499,19 +498,23 @@ class Context
         # Rechecked under the readiness lock, which a recovering refresh also
         # holds while it clears @failed, so goals tracked after recovery are
         # never dropped by a publish that saw the context failed.
-        dropped = @ready_mutex.synchronize do
+        dropped = false
+        result = @ready_mutex.synchronize do
           next nil unless @failed
+
+          dropped = true
 
           @queue_mutex.synchronize do
             @exposures = []
             @achievements = []
             @pending_count = 0
           end
-          # publish returns the load error, as in v1.3.0; a seal's own pass
-          # gets a marker, decided here under the lock, not re-read later.
-          sealing ? FAILED_CONTEXT_DROP : @data_failed
+          # publish returns the load error, as in v1.3.0. A seal's own pass
+          # gets nil: dropping a failed context's events is not a publish
+          # failure. Decided here under the lock, not re-read later.
+          sealing ? nil : @data_failed
         end
-        return dropped if dropped
+        return result if dropped
       end
 
       # Serialize publishes so a queued event is part of at most one in-flight
@@ -907,17 +910,24 @@ class Context
     # it outside the readiness lock so a parser may call wait_until_ready.
     # The membership bookkeeping defers asynchronous interrupts (Timeout,
     # Thread#raise), so one landing while it waits for the lock can't leave
-    # this thread registered or unbalanced; only the parsing can be interrupted.
+    # this thread registered or unbalanced. The parsing keeps the caller's
+    # interrupt mask: interruptible by default, deferred if the caller masked.
     def build_state(data)
       thread = Thread.current
-      Thread.handle_interrupt(Object => :never) do
-        @ready_mutex.synchronize { @building_threads[thread] = (@building_threads[thread] || 0) + 1 }
-        begin
-          Thread.handle_interrupt(Object => :immediate) { build_state_maps(data) }
-        ensure
-          @ready_mutex.synchronize do
-            @building_threads[thread] -= 1
-            @building_threads.delete(thread) if @building_threads[thread].zero?
+      registered = false
+      begin
+        Thread.handle_interrupt(Object => :never) do
+          @ready_mutex.synchronize { @building_threads[thread] = (@building_threads[thread] || 0) + 1 }
+          registered = true
+        end
+        build_state_maps(data)
+      ensure
+        if registered
+          Thread.handle_interrupt(Object => :never) do
+            @ready_mutex.synchronize do
+              @building_threads[thread] -= 1
+              @building_threads.delete(thread) if @building_threads[thread].zero?
+            end
           end
         end
       end
