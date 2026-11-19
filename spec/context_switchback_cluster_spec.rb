@@ -507,6 +507,8 @@ module ContextSwitchbackClusterSpec
       context.set_attribute("tier", "gold")
       clock.now = ANCHOR + 30
       context.set_attribute("city", "Lisboa")
+      clock.now = ANCHOR + 31
+      context.set_attribute("plan", "pro")
       expect(context.peek_treatment("exp_sb")).to eq(expected("Lisboa", 0))
       clock.now = ANCHOR + 20
       expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
@@ -517,8 +519,9 @@ module ContextSwitchbackClusterSpec
       body = context.send(:event_handler).events.last
       expect(body.exposures.map(&:exposed_at)).to eq([ANCHOR + 20])
       expect(collector_cluster(body, body.exposures[0], "city")).to eq("Lisboa")
+      # An unrelated attribute keeps its own setAt, even one later than exposedAt.
       expect(body.attributes.map { |a| [a.name, a.value, a.set_at] })
-        .to eq([["tier", "gold", ANCHOR + 5], ["city", "Lisboa", ANCHOR + 20]])
+        .to eq([["tier", "gold", ANCHOR + 5], ["city", "Lisboa", ANCHOR + 20], ["plan", "pro", ANCHOR + 31]])
     end
 
     # The exposure is not moved to the slot's read instant, so a burn-in window that the exposing
