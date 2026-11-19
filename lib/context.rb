@@ -594,7 +594,10 @@ class Context
     def publish_event(published_at, units, attributes, exposures, achievements)
       event = PublishEvent.new
       event.hashed = true
-      event.published_at = [published_at, *exposures.map(&:exposed_at), *achievements.map(&:achieved_at)].max
+      latest = published_at
+      exposures.each { |e| latest = e.exposed_at if e.exposed_at > latest }
+      achievements.each { |g| latest = g.achieved_at if g.achieved_at > latest }
+      event.published_at = latest
       event.units = units.map { |key, value| Unit.new(key.to_s, unit_hash(key.to_sym, value)) }
       event.exposures = exposures unless exposures.empty?
       event.attributes = attributes unless attributes.empty?

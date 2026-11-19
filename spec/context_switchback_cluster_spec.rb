@@ -589,7 +589,74 @@ module ContextSwitchbackClusterSpec
       context.publish
       expect(delivered.length).to eq(2)
       expect(delivered.last.exposures.map(&:name)).to eq(["exp_sb"])
+      # The retried exposure keeps its own request and the cluster it was served.
+      expect(collector_cluster(delivered.last, delivered.last.exposures.first, "city")).to eq("Lisboa")
       expect(context.pending_count).to eq(0)
+    end
+
+    it "logs the error a raising publisher raises before it propagates, on both paths" do
+      [false, true].each do |multi|
+        context = multi ? multi_request_context : create_context(attribute_switchback("city"))
+        context.track("goal") unless multi
+        errors = []
+        logger = double("logger")
+        allow(logger).to receive(:handle_event) { |type, data| errors << data if type == ContextEventLogger::EVENT_TYPE::ERROR }
+        context.send(:event_logger=, logger)
+        allow(context.send(:event_handler)).to receive(:publish).and_raise(StandardError, "collector down")
+        expect { context.publish }.to raise_error("collector down")
+        expect(errors).to eq(["collector down"]), multi.to_s
+      end
+    end
+
+    # The Collector records every request attribute with an exposure, so a separate body keeps
+    # the attributes that are not cluster paths too.
+    it "keeps non-cluster attributes in a separate body" do
+      context = create_context(attribute_switchback("city"))
+      clock.now = ANCHOR + 10
+      context.set_attribute("tier", "gold")
+      context.set_attribute("city", "Lisboa")
+      context.treatment("exp_sb")
+      context.set_attribute("city", "Faro")
+      context.publish
+      body = context.send(:event_handler).events.last
+      expect(body.attributes.map(&:name)).to eq(%w[tier city])
+      expect(collector_cluster(body, body.exposures.first, "city")).to eq("Lisboa")
+    end
+
+    # A switchback is separated out of a batch that also holds an ordinary exposure.
+    it "separates a switchback out of a batch with another exposure" do
+      unit = attribute_switchback("city", id: 2, name: "exp_unit", randomizationType: nil,
+                                          switchbackClusters: nil, switchbackStartAt: nil)
+      context = build_context(data_of([attribute_switchback("city"), unit]), units: { UNIT_TYPE => UID })
+      clock.now = ANCHOR + 10
+      context.set_attribute("city", "Lisboa")
+      context.peek_treatment("exp_sb")
+      clock.now = ANCHOR + 20
+      context.set_attribute("city", "Faro")
+      clock.now = ANCHOR + 30
+      context.treatment("exp_sb")
+      context.treatment("exp_unit")
+      context.publish
+      events = context.send(:event_handler).events
+      expect(events.length).to eq(2)
+      expect(events.map { |e| e.exposures.map(&:name) }).to eq([%w[exp_unit], %w[exp_sb]])
+      expect(events.first.attributes.map(&:value)).to eq(%w[Lisboa Faro])
+      expect(collector_cluster(events.last, events.last.exposures.first, "city")).to eq("Lisboa")
+    end
+
+    # Only an eligible cluster's exposure is separated; an override with no cluster stays in the
+    # batch, with the attributes set after it, even when the clock stepped back.
+    it "keeps an overridden exposure without a cluster in the batch" do
+      context = build_context(data_of([attribute_switchback("city")]), units: { UNIT_TYPE => UID },
+                                                                      overrides: { "exp_sb" => 1 })
+      clock.now = ANCHOR + 20
+      context.treatment("exp_sb")
+      clock.now = ANCHOR + 10
+      context.set_attribute("city", "Faro")
+      context.publish
+      events = context.send(:event_handler).events
+      expect(events.length).to eq(1)
+      expect(events.first.attributes.map(&:value)).to eq(%w[Faro])
     end
 
     it "stops at the first failed request and keeps all undelivered events" do

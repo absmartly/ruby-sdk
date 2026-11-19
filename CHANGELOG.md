@@ -21,6 +21,7 @@ Behavior now matches the JavaScript SDK (the reference implementation). Each Bre
 - `Array.wrap`, `String#underscore` and `String#compare_to` core extensions removed.
 
 ### Changed
+- When `publish` sends a switchback exposure in a request of its own (see Added), the event logger receives one `publish` event per request sent, so a single `publish` call can log more than one. Payloads without switchbacks still send and log one request.
 - Switchback experiments are now served as switchbacks. Earlier versions served a switchback that has a `unitType` as an ordinary experiment on that unit (a sticky variant that ignores clusters and periods), so units in running switchbacks move to their cluster's schedule, and their exposures move to the serving unit and one per period.
 - The `X-Agent` header is now `absmartly-ruby-sdk/<version>` instead of `absmartly-ruby-sdk`, as the JavaScript SDK sends its versioned agent. Collectors and proxies that match the exact old value need updating.
 - Every exposure in the publish payload now carries `ruleOverride` (`false` unless an assignment rule chose the variant), as the JavaScript SDK sends it. Consumers that compare the exact publish body (snapshots, proxies) see the extra field.
