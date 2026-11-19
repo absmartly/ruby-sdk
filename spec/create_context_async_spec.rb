@@ -910,8 +910,11 @@ RSpec.describe "create_context_async" do
         refresher.join(5) || refresher.kill
       end
       # A reader that captured the failed snapshot before the refresh committed
-      # finishes only after the recovery cleared the cache.
+      # finishes only after the recovery installed the recovered data.
+      cache = context.instance_variable_get(:@assignment_cache)
+      expect(cache).to be_empty
       context.send(:assignment, "exp_test_ab", failed_state)
+      expect(cache).to be_empty
 
       expect(context.variable_value("banner.size", "default")).to eq("large")
       context.publish
@@ -1024,6 +1027,89 @@ RSpec.describe "create_context_async" do
       context.peek_treatment("exp_test_ab")
       expect(tags).not_to receive(:delete)
       3.times { context.peek_treatment("exp_test_ab") }
+    end
+
+    it "keeps a failed-snapshot assignment ineligible for reuse when its rebuild raises" do
+      exposures = []
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, event|
+        exposures.concat((event.exposures || []).map { |e| [e.name, e.id, e.variant] })
+        OpenStruct.new(success?: true)
+      end
+      in_refresh = Queue.new
+      release = Queue.new
+      ready_data = data
+      provider = Object.new
+      provider.define_singleton_method(:context_data) do
+        in_refresh << true
+        release.pop
+        OpenStruct.new(data_future: ready_data, success?: true)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, provider,
+                                     handler, event_logger, variable_parser, audience_matcher)
+      refresher = Thread.new { context.refresh }
+      begin
+        Timeout.timeout(5) { in_refresh.pop }
+        context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+        context.set_override("exp_test_ab", 1)
+        context.peek_treatment("exp_test_ab")
+        release << true
+        Timeout.timeout(5) { refresher.join }
+      ensure
+        release << true
+        refresher.join(5) || refresher.kill
+      end
+      context.instance_variable_get(:@overrides).delete(:exp_test_ab)
+      allow(VariantAssigner).to receive(:new).and_raise(RuntimeError, "matcher failed")
+      expect { context.treatment("exp_test_ab") }.to raise_error(RuntimeError, "matcher failed")
+      allow(VariantAssigner).to receive(:new).and_call_original
+      context.set_override("exp_test_ab", 1)
+
+      expect(context.variable_value("banner.size", "default")).to eq("large")
+      context.publish
+      expect(exposures).to eq([["exp_test_ab", 1, 1]])
+    end
+
+    it "does not expose again an experiment the recovered data still lacks" do
+      exposures = []
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, event|
+        exposures.concat((event.exposures || []).map { |e| [e.name, e.id, e.variant] })
+        OpenStruct.new(success?: true)
+      end
+      in_refresh = Queue.new
+      release = Queue.new
+      ready_data = data
+      provider = Object.new
+      provider.define_singleton_method(:context_data) do
+        in_refresh << true
+        release.pop
+        OpenStruct.new(data_future: ready_data, success?: true)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, provider,
+                                     handler, event_logger, variable_parser, audience_matcher)
+      refresher = Thread.new { context.refresh }
+      begin
+        Timeout.timeout(5) { in_refresh.pop }
+        context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+        context.treatment("not_found")
+        context.treatment("exp_test_ab")
+        release << true
+        Timeout.timeout(5) { refresher.join }
+      ensure
+        release << true
+        refresher.join(5) || refresher.kill
+      end
+      context.treatment("not_found")
+      context.treatment("exp_test_ab")
+      context.publish
+
+      # Events queued while failed are still published after recovery.
+      expect(exposures).to eq([["not_found", 0, 0], ["exp_test_ab", 0, 0], ["exp_test_ab", 1, 1]])
     end
 
     it "keeps one failed-snapshot tag per cached assignment" do

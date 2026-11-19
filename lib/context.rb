@@ -495,23 +495,19 @@ class Context
         # Rechecked under the readiness lock, which a recovering refresh also
         # holds while it clears @failed, so goals tracked after recovery are
         # never dropped by a publish that saw the context failed.
-        dropped = false
-        result = @ready_mutex.synchronize do
-          next nil unless @failed
-
-          dropped = true
-
-          @queue_mutex.synchronize do
-            @exposures = []
-            @achievements = []
-            @pending_count = 0
+        @ready_mutex.synchronize do
+          if @failed
+            @queue_mutex.synchronize do
+              @exposures = []
+              @achievements = []
+              @pending_count = 0
+            end
+            # publish returns the load error, as in v1.3.0. A seal's own pass
+            # gets nil: dropping a failed context's events is not a publish
+            # failure. Decided here under the lock, not re-read later.
+            return sealing ? nil : @data_failed
           end
-          # publish returns the load error, as in v1.3.0. A seal's own pass
-          # gets nil: dropping a failed context's events is not a publish
-          # failure. Decided here under the lock, not re-read later.
-          sealing ? nil : @data_failed
         end
-        return result if dropped
       end
 
       # Serialize publishes so a queued event is part of at most one in-flight
@@ -786,8 +782,11 @@ class Context
       experiment = experiment(experiment_name.to_s, state)
 
       # Built from the empty snapshot of a failed context that a refresh has
-      # since recovered: resolved again against the recovered data.
-      if !assignment.nil? && !@failed_built.empty? && !state.equal?(@failed_state) && @failed_built.delete(assignment)
+      # since recovered with the experiment: resolved again against the
+      # recovered data. Untagged only once a replacement is cached, so a
+      # rebuild that raises leaves it ineligible for reuse.
+      if !assignment.nil? && !experiment.nil? && !@failed_built.empty? &&
+         !state.equal?(@failed_state) && @failed_built.key?(assignment)
         assignment = nil
       end
 
