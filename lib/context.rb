@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "set"
 require_relative "hashing"
 require_relative "type_utils"
 require_relative "variant_assigner"
@@ -657,8 +658,12 @@ class Context
 
       selected = assignment.switchback_entry.switchback_source_paths.filter_map do |path|
         latest_attribute(path.root_key, assignment.serving_read_at, read)
-      end.uniq
-      clamped = selected.map { |a| Attribute.new(a.name, a.value, [a.set_at, exposed_at].min) }
+      end.to_set
+      # Every captured attribute is kept; only those the read selected for a
+      # cluster are stamped no later than exposedAt.
+      clamped = read.map do |a|
+        selected.include?(a) && a.set_at > exposed_at ? Attribute.new(a.name, a.value, exposed_at) : a
+      end
       served_at?(assignment, exposed_at, units, clamped) ? [units, clamped] : nil
     end
 
