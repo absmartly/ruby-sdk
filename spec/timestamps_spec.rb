@@ -7,6 +7,9 @@ require "context_config"
 require "json/context_data"
 require "context_data_result"
 require "audience_matcher"
+require "default_context_data_deserializer"
+require "default_variable_parser"
+require "switchback_support"
 require "default_audience_deserializer"
 
 # The Collector reads every timestamp as epoch milliseconds, and a context's
@@ -75,6 +78,24 @@ RSpec.describe "Context timestamps" do
     event = published.first
     expect(event.goals.map(&:achieved_at)).to eq([1_767_225_600_010, 1_767_225_600_012])
     expect(event.published_at).to eq(1_767_225_600_012)
+  end
+
+  it "publishes no earlier than a queued exposure after the clock steps back" do
+    clock = SwitchbackSpecSupport::MutableClock.new(1_767_225_600_050)
+    json = File.read(File.join(__dir__, "fixtures", "resources", "context.json"))
+    data = DefaultContextDataDeserializer.new.deserialize(json, 0, json.length)
+    config = ContextConfig.create
+    config.set_unit(:session_id, "e791e240fcd3df7d238cfc285f475e8152fcc0ec")
+    publisher = SwitchbackSpecSupport::Publisher.new
+    context = Context.create(clock, config, ContextDataResult.new(data), nil, publisher, nil,
+                             DefaultVariableParser.new, AudienceMatcher.new(DefaultAudienceDeserializer.new))
+    context.treatment("exp_test_ab")
+    clock.now = 1_767_225_600_010
+    context.publish
+
+    event = publisher.events.first
+    expect(event.exposures.map(&:exposed_at)).to eq([1_767_225_600_050])
+    expect(event.published_at).to eq(1_767_225_600_050)
   end
 
   it "reads the real wall clock in milliseconds" do

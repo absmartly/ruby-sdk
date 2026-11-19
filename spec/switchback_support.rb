@@ -21,10 +21,19 @@ module SwitchbackSpecSupport
 
   # bigdecimal is a bundled gem, not in the Gemfile, from Ruby 3.4.
   def self.big_decimal?
-    require "bigdecimal"
-    true
-  rescue LoadError
-    false
+    return @big_decimal unless @big_decimal.nil?
+
+    @big_decimal = begin
+      verbose = $VERBOSE
+      # Ruby 4.0 warns when a former default gem loads outside the bundle.
+      $VERBOSE = nil
+      require "bigdecimal"
+      true
+    rescue LoadError
+      false
+    ensure
+      $VERBOSE = verbose
+    end
   end
 
   # Reads `now`; when next_read is set, the next read returns it once.
