@@ -398,13 +398,7 @@ class Context
       # asynchronously wakes, and an initial fetch that failed while this
       # refresh was in flight no longer leaves the context failed.
       @ready_mutex.synchronize do
-        recovered = @failed
         @state = state
-        # Assignments made while the context was failed were built without
-        # the experiments; reads and exposures must use the recovered data.
-        # Cleared after the new snapshot is installed, so a read still on the
-        # failed snapshot can't cache its result once this clear has run.
-        @assignment_mutex.synchronize { @assignment_cache.clear } if recovered
         @failed = false
         @data_failed = nil
         @ready_error = nil
@@ -791,6 +785,10 @@ class Context
       override = @overrides[exp_key]
       experiment = experiment(experiment_name.to_s, state)
 
+      # Built from the empty snapshot of a failed context that a refresh has
+      # since recovered: resolved again against the recovered data.
+      assignment = nil if !assignment.nil? && !state.equal?(@failed_state) && @failed_built.delete(assignment)
+
       if !assignment.nil?
         if !override.nil?
           return assignment if assignment.overridden && assignment.variant == override
@@ -811,6 +809,8 @@ class Context
 
       assignment = Assignment.new
       assignment.name = experiment_name
+      # Deleted when the assignment is replaced, so this never outgrows the cache.
+      @failed_built[assignment] = true if state.equal?(@failed_state)
       assignment.eligible = true
 
       if !override.nil?
@@ -874,11 +874,7 @@ class Context
         assignment.variables = experiment.variables[assignment.variant] || {}
       end
 
-      # Not kept if built without the experiment from a snapshot that a
-      # refresh has since replaced with one that has it (e.g. on recovery),
-      # so the next read resolves against the new data.
-      stale = experiment.nil? && !state.equal?(@state) && !experiment(experiment_name.to_s).nil?
-      @assignment_cache[experiment_name.to_s] = assignment unless stale
+      @assignment_cache[experiment_name.to_s] = assignment
       assignment
     end
 
@@ -919,6 +915,9 @@ class Context
     # Thread#raise), so one landing while it waits for the lock can't leave
     # this thread registered or unbalanced. The parsing keeps the caller's
     # interrupt mask: interruptible by default, deferred if the caller masked.
+    # An interrupt landing in the few instructions between the parse and the
+    # cleanup mask can still skip the cleanup; closing that gap would need a
+    # mask around the parse, which overrides the caller's own.
     def build_state(data)
       thread = Thread.current
       registered = false
@@ -1017,7 +1016,7 @@ class Context
     def set_data_failed(exception)
       @data_failed = exception
       @ready_error = exception
-      @state = State.new(ContextData.new, {}, {}, {})
+      @state = @failed_state = State.new(ContextData.new, {}, {}, {})
       @failed = true
     end
 
@@ -1042,6 +1041,7 @@ class Context
       @state = State.new(nil, {}, {}, {})
       @achievements = []
       @assignment_cache = {}
+      @failed_built = {}.compare_by_identity
       @assignment_mutex = Mutex.new
       @assignments = {}
       @clock = clock.is_a?(String) ? Time.iso8601(clock) : clock

@@ -918,6 +918,45 @@ RSpec.describe "create_context_async" do
       expect(exposures).to eq([["exp_test_ab", 1, 1]])
     end
 
+    it "keeps one exposure for a read that raced an ordinary refresh" do
+      exposures = []
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, event|
+        exposures.concat((event.exposures || []).map { |e| [e.name, e.id, e.variant] })
+        OpenStruct.new(success?: true)
+      end
+      ready_data = data
+      provider = Object.new
+      provider.define_singleton_method(:context_data) { OpenStruct.new(data_future: ready_data, success?: true) }
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create(clock, context_config, OpenStruct.new(data_future: data, success?: true), provider,
+                               handler, event_logger, variable_parser, audience_matcher)
+      old_state = context.instance_variable_get(:@state)
+      context.refresh
+      %w[exp_test_ab not_found].each do |name|
+        context.send(:queue_exposure, context.send(:assignment, name, old_state))
+        context.treatment(name)
+      end
+      context.publish
+
+      expect(exposures.map(&:first)).to eq(%w[exp_test_ab not_found])
+      expect(exposures.last).to eq(["not_found", 0, 0])
+    end
+
+    it "reuses an assignment while the context stays failed" do
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider,
+                                     event_handler, event_logger, variable_parser, audience_matcher)
+      context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+      context.set_override("exp_test_ab", 1)
+      context.treatment("exp_test_ab")
+      context.treatment("exp_test_ab")
+
+      expect(context.pending_count).to eq(1)
+    end
+
     it "lets a timeout interrupt a slow variable parser" do
       parser = DefaultVariableParser.new
       parser.define_singleton_method(:parse) do |context, experiment, variant, config|
