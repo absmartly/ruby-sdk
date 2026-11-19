@@ -1317,11 +1317,12 @@ RSpec.describe "create_context_async" do
         index >= start && line.strip == "@failed = false"
       end.last + 1
       committing = Queue.new
+      resume_commit = Queue.new
       trace = TracePoint.new(:line) do |event|
         if event.path == source && event.lineno == commit_line && Thread.current[:gate]
           Thread.current[:gate] = false
           committing << true
-          sleep 0.2
+          resume_commit.pop
         end
       end
       trace.enable
@@ -1337,9 +1338,11 @@ RSpec.describe "create_context_async" do
         release << true
         Timeout.timeout(5) { committing.pop }
         refresher.raise(Interrupt)
+        resume_commit << true
         Timeout.timeout(5) { refresher.join }
       ensure
         trace.disable
+        resume_commit << true
         release << true
         refresher.join(5) || refresher.kill
       end
@@ -1352,6 +1355,23 @@ RSpec.describe "create_context_async" do
       expect(sent).to eq(["after_recovery"])
       context.refresh
       expect(calls).to eq(2)
+    end
+
+    it "does not mask an unrelated cache write while a failed-snapshot tag remains" do
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider,
+                                     event_handler, event_logger, variable_parser, audience_matcher)
+      context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+      context.peek_treatment("not_found")
+      context.instance_variable_set(:@state, context.send(:build_state, data))
+      masks = 0
+      allow(Thread).to receive(:handle_interrupt).and_wrap_original do |original, *args, &block|
+        masks += 1
+        original.call(*args, &block)
+      end
+      context.peek_treatment("exp_test_ab")
+      expect(masks).to eq(0)
     end
 
     it "keeps one failed-snapshot tag per cached assignment" do
