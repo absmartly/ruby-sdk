@@ -1020,7 +1020,6 @@ class Context
         end
       end
 
-      # The maps are never mutated after this.
       State.new(data, index, index_variables, custom_fields)
     end
 
