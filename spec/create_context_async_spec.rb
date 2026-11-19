@@ -1018,6 +1018,26 @@ RSpec.describe "create_context_async" do
         expect(exposures).to eq([["not_found", 0, 0]])
       end
 
+      it "keeps a forced one when the recovered data lacks the experiment too" do
+        context, failed_state = recovered_context { |ctx| ctx.set_override("not_found", 2) }
+        context.send(:queue_exposure, context.send(:assignment, "not_found", failed_state))
+        expect(context.treatment("not_found")).to eq(2)
+        context.publish
+
+        expect(exposures).to eq([["not_found", 0, 2]])
+      end
+
+      it "resolves a kept one again once a later refresh supplies the experiment" do
+        context, failed_state = recovered_context { |ctx| ctx.set_override("exp_test_ab", 1) }
+        context.instance_variable_set(:@state, context.send(:build_state, ContextData.new))
+        context.send(:queue_exposure, context.send(:assignment, "exp_test_ab", failed_state))
+        context.instance_variable_set(:@state, context.send(:build_state, data))
+        expect(context.treatment("exp_test_ab")).to eq(1)
+        context.publish
+
+        expect(exposures).to eq([["exp_test_ab", 0, 1], ["exp_test_ab", 1, 1]])
+      end
+
       it "reuses the assignment exposed while failed" do
         context, failed_state = recovered_context { |ctx| ctx.treatment("exp_test_ab") }
         context.send(:queue_exposure, context.send(:assignment, "exp_test_ab", failed_state))
