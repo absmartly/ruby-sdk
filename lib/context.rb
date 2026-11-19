@@ -19,6 +19,8 @@ class Context
   NO_RULES = ""
   SEAL_FLUSH_PASSES = 2
   private_constant :SEAL_FLUSH_PASSES
+  FAILED_CONTEXT_DROP = Object.new.freeze
+  private_constant :FAILED_CONTEXT_DROP
   # Raised by close/finalize when events are still queued after the last pass.
   class EventsQueuedWhileClosing < StandardError; end
   private_constant :EventsQueuedWhileClosing
@@ -459,13 +461,10 @@ class Context
         SEAL_FLUSH_PASSES.times do |pass|
           # close drops a batch the collector rejected, as in v1.3.0, but only
           # that batch; anything queued meanwhile is still sent or kept.
-          data_failed = @data_failed
           result = flush(sealing: true, drop_rejected: close)
           last_pass = pass == SEAL_FLUSH_PASSES - 1
-          # A failed context's flush returns its load error: that is not a
-          # publish failure (compared with the error captured before the flush,
-          # since a concurrent refresh may clear @failed meanwhile).
-          failed_load = !data_failed.nil? && result.equal?(data_failed)
+          # A failed context's flush dropped its events: not a publish failure.
+          failed_load = result.equal?(FAILED_CONTEXT_DROP)
           raise_publish_failure(result) if !close && !failed_load && publish_failed?(result)
 
           sealed = @queue_mutex.synchronize do
@@ -508,7 +507,9 @@ class Context
             @achievements = []
             @pending_count = 0
           end
-          @data_failed
+          # publish returns the load error, as in v1.3.0; a seal's own pass
+          # gets a marker, decided here under the lock, not re-read later.
+          sealing ? FAILED_CONTEXT_DROP : @data_failed
         end
         return dropped if dropped
       end
@@ -904,14 +905,21 @@ class Context
 
     # Builds the snapshot for data, calling the variable parser; callers run
     # it outside the readiness lock so a parser may call wait_until_ready.
+    # The membership bookkeeping defers asynchronous interrupts (Timeout,
+    # Thread#raise), so one landing while it waits for the lock can't leave
+    # this thread registered or unbalanced; only the parsing can be interrupted.
     def build_state(data)
       thread = Thread.current
-      @ready_mutex.synchronize { @building_threads[thread] = (@building_threads[thread] || 0) + 1 }
-      build_state_maps(data)
-    ensure
-      @ready_mutex.synchronize do
-        @building_threads[thread] -= 1
-        @building_threads.delete(thread) if @building_threads[thread].zero?
+      Thread.handle_interrupt(Object => :never) do
+        @ready_mutex.synchronize { @building_threads[thread] = (@building_threads[thread] || 0) + 1 }
+        begin
+          Thread.handle_interrupt(Object => :immediate) { build_state_maps(data) }
+        ensure
+          @ready_mutex.synchronize do
+            @building_threads[thread] -= 1
+            @building_threads.delete(thread) if @building_threads[thread].zero?
+          end
+        end
       end
     end
 

@@ -838,6 +838,129 @@ RSpec.describe "create_context_async" do
       expect(context.failed?).to be false
     end
 
+    it "keeps the timeout when it interrupts a refresh waiting to register as a builder" do
+      ready_data = data
+      provider = Object.new
+      provider.define_singleton_method(:context_data) { OpenStruct.new(data_future: ready_data, success?: true) }
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create(clock, context_config, OpenStruct.new(data_future: data, success?: true), provider,
+                               event_handler, event_logger, variable_parser, audience_matcher)
+      ready_mutex = context.instance_variable_get(:@ready_mutex)
+      held = Queue.new
+      holder = Thread.new { ready_mutex.synchronize { held << true; sleep 0.6 } }
+      Timeout.timeout(5) { held.pop }
+
+      expect { Timeout.timeout(0.2) { context.refresh } }.to raise_error(Timeout::Error)
+      Timeout.timeout(5) { holder.join }
+      expect(context.instance_variable_get(:@building_threads)).to be_empty
+    end
+
+    it "does not leave a thread registered as a builder when a timeout lands during its cleanup" do
+      holder = {}
+      grabbed = Queue.new
+      parser = DefaultVariableParser.new
+      parser.define_singleton_method(:parse) do |context, experiment, variant, config|
+        if Thread.current[:arm] && !Thread.current[:fired]
+          Thread.current[:fired] = true
+          mutex = holder[:context].instance_variable_get(:@ready_mutex)
+          holder[:locker] = Thread.new { mutex.synchronize { grabbed << true; sleep 0.6 } }
+          grabbed.pop
+        end
+        super(context, experiment, variant, config)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider, event_handler, event_logger,
+                                     parser, audience_matcher)
+      holder[:context] = context
+      Thread.current[:arm] = true
+      begin
+        Timeout.timeout(0.2) { context.set_data(OpenStruct.new(data_future: data, success?: true)) }
+      rescue Timeout::Error
+        nil
+      ensure
+        Thread.current[:arm] = nil
+        Thread.current[:fired] = nil
+      end
+      Timeout.timeout(5) { holder[:locker].join }
+
+      expect(context.instance_variable_get(:@building_threads)).to be_empty
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      context.wait_until_ready(0.3)
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be >= 0.25
+    end
+
+    it "finalize still raises a real rejection when recovery lands as its flush starts" do
+      refresh_in = Queue.new
+      refresh_out = Queue.new
+      ready_data = data
+      provider = Object.new
+      provider.define_singleton_method(:context_data) do
+        refresh_in << true
+        refresh_out.pop
+        OpenStruct.new(data_future: ready_data, success?: true)
+      end
+      # Only the first send is rejected: finalize must raise it rather than let
+      # its second pass send the batch and seal.
+      sends = 0
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, _event|
+        sends += 1
+        sends == 1 ? OpenStruct.new(exception: Exception.new("REJECTED"), success?: false) : OpenStruct.new(success?: true)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, provider, handler, event_logger,
+                                     variable_parser, audience_matcher)
+      refresher = Thread.new { context.refresh }
+      Timeout.timeout(5) { refresh_in.pop }
+      context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+      context.track("goal1", nil)
+      # The context is failed when finalize starts; the refresh recovers just as
+      # its flush begins, so that flush sends the goal and is rejected.
+      original = context.method(:flush)
+      allow(context).to receive(:flush) do |**kwargs|
+        if kwargs[:sealing] && refresher.alive?
+          refresh_out << true
+          Timeout.timeout(5) { refresher.join }
+        end
+        original.call(**kwargs)
+      end
+      begin
+        expect(context.failed?).to be true
+        expect { Timeout.timeout(5) { context.finalize } }.to raise_error(StandardError, "REJECTED")
+      ensure
+        refresh_out << true
+        refresher.join(5) || refresher.kill
+      end
+      expect(context.finalized?).to be false
+      expect(context.pending_count).to eq(1)
+    end
+
+    it "finalize does not raise the load error when the initial fetch fails during its flush" do
+      handler = Object.new
+      handler.define_singleton_method(:publish) { |_context, _event| OpenStruct.new(success?: true) }
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider, handler, event_logger,
+                                     variable_parser, audience_matcher)
+      context.track("before", nil)
+      original = context.method(:flush)
+      allow(context).to receive(:flush) do |**kwargs|
+        unless Thread.current[:failed_once]
+          Thread.current[:failed_once] = true
+          Thread.new { context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil)) }.join(5)
+        end
+        original.call(**kwargs)
+      end
+
+      expect { Timeout.timeout(5) { context.finalize } }.not_to raise_error
+      expect(context.finalized?).to be true
+    ensure
+      Thread.current[:failed_once] = nil
+    end
+
     it "wakes a waiter when a refresh supplies the first data" do
       context_config = ContextConfig.create
       context_config.set_units(units)
