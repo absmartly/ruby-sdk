@@ -545,6 +545,28 @@ module ContextSwitchbackClusterSpec
       expect(body.attributes.map { |a| [a.name, a.value, a.set_at] }).to eq([["city", "Lisboa", ANCHOR + 10]])
     end
 
+    # The drop rule matches cluster-source names trimmed, as the Collector does, and covers every
+    # declared source: a later " city " value and a later zone value are both left out.
+    it "drops later values of every cluster source, matched by trimmed name, from the fallback body" do
+      sources = { UNIT_TYPE => "city", "user_id" => "zone" }
+      context = create_context(attribute_switchback("city", switchbackClusters: sources),
+                               units: { UNIT_TYPE => UID, "user_id" => "u-1" })
+      clock.now = ANCHOR + 10
+      context.set_attribute("city", "Lisboa")
+      context.set_attribute("zone", "Lisboa")
+      clock.now = ANCHOR + 50
+      context.set_attribute(" city ", "Faro")
+      context.set_attribute("zone", "Porto")
+      clock.now = ANCHOR + 30
+      expect(context.peek_treatment("exp_sb")).to eq(expected("Lisboa", 0))
+      clock.now = ANCHOR + 60
+      expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
+
+      context.publish
+      body = context.send(:event_handler).events.last
+      expect(body.attributes.map { |a| [a.name.strip, a.value] }).to eq([%w[city Lisboa], %w[zone Lisboa]])
+    end
+
     # The exposure is not moved to the slot's read instant, so a burn-in window that the exposing
     # call is outside of keeps it in the analysis.
     it "keeps an exposure outside burn-in after a mid-period change" do
