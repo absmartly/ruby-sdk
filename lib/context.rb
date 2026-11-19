@@ -397,12 +397,14 @@ class Context
       # Committed under the readiness lock, so a waiter on a context created
       # asynchronously wakes, and an initial fetch that failed while this
       # refresh was in flight no longer leaves the context failed.
-      @ready_mutex.synchronize do
-        @state = state
-        @failed = false
-        @data_failed = nil
-        @ready_error = nil
-        @ready_condvar.broadcast
+      Thread.handle_interrupt(Object => :never) do
+        @ready_mutex.synchronize do
+          @state = state
+          @failed = false
+          @data_failed = nil
+          @ready_error = nil
+          @ready_condvar.broadcast
+        end
       end
       log_event(ContextEventLogger::EVENT_TYPE::REFRESH, data_future.data_future)
     else
@@ -881,12 +883,12 @@ class Context
         return assignment
       end
 
-      if failed_built || !@failed_built.empty?
+      replaced = @assignment_cache[experiment_name.to_s]
+      if failed_built || (!@failed_built.empty? && @failed_built.key?(replaced))
         # Tagged and untagged together with the cache write, so an interrupt
         # can't leave a failed assignment cached but untagged (reusable after
         # recovery) or a tag without its entry; the tags never outgrow the cache.
         Thread.handle_interrupt(Object => :never) do
-          replaced = @assignment_cache[experiment_name.to_s]
           @failed_built.delete(replaced) unless replaced.nil?
           @failed_built[assignment] = true if failed_built
           @assignment_cache[experiment_name.to_s] = assignment

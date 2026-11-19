@@ -1288,6 +1288,72 @@ RSpec.describe "create_context_async" do
       expect(tags.keys).to all(satisfy { |tagged| cache.values.any? { |cached| cached.equal?(tagged) } })
     end
 
+    it "completes recovery when an interrupt lands after installing the recovered snapshot" do
+      sent = []
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, event|
+        sent.concat((event.goals || []).map(&:name))
+        OpenStruct.new(success?: true)
+      end
+      in_refresh = Queue.new
+      release = Queue.new
+      ready_data = data
+      calls = 0
+      provider = Object.new
+      provider.define_singleton_method(:context_data) do
+        calls += 1
+        if calls == 1
+          in_refresh << true
+          release.pop
+        end
+        OpenStruct.new(data_future: ready_data, success?: true)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, provider,
+                                     handler, event_logger, variable_parser, audience_matcher)
+      source, start = Context.instance_method(:refresh).source_location
+      commit_line = File.readlines(source).each_with_index.find do |line, index|
+        index >= start && line.strip == "@failed = false"
+      end.last + 1
+      committing = Queue.new
+      trace = TracePoint.new(:line) do |event|
+        if event.path == source && event.lineno == commit_line && Thread.current[:gate]
+          Thread.current[:gate] = false
+          committing << true
+          sleep 0.2
+        end
+      end
+      trace.enable
+      refresher = Thread.new do
+        Thread.current[:gate] = true
+        context.refresh
+      rescue Interrupt
+        nil
+      end
+      begin
+        Timeout.timeout(5) { in_refresh.pop }
+        context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+        release << true
+        Timeout.timeout(5) { committing.pop }
+        refresher.raise(Interrupt)
+        Timeout.timeout(5) { refresher.join }
+      ensure
+        trace.disable
+        release << true
+        refresher.join(5) || refresher.kill
+      end
+
+      expect(context.failed?).to be false
+      expect(context.ready_error).to be_nil
+      expect(context.data).to equal(data)
+      context.track("after_recovery", nil)
+      context.publish
+      expect(sent).to eq(["after_recovery"])
+      context.refresh
+      expect(calls).to eq(2)
+    end
+
     it "keeps one failed-snapshot tag per cached assignment" do
       context_config = ContextConfig.create
       context_config.set_units(units)
