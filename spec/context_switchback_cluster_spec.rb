@@ -524,6 +524,27 @@ module ContextSwitchbackClusterSpec
         .to eq([["tier", "gold", ANCHOR + 5], ["city", "Lisboa", ANCHOR + 20], ["plan", "pro", ANCHOR + 31]])
     end
 
+    # A later value of a cluster-source attribute that the read skipped (it was in the read's future
+    # after a rewind) is left out of the fallback body, so the Collector keeps the served cluster.
+    # A selected attribute already earlier than exposedAt keeps its setAt.
+    it "drops a later cluster-source value the read skipped from the fallback body" do
+      context = create_context(attribute_switchback("city"))
+      clock.now = ANCHOR + 10
+      context.set_attribute("city", "Lisboa")
+      clock.now = ANCHOR + 50
+      context.set_attribute("city", "Faro")
+      clock.now = ANCHOR + 30
+      expect(context.peek_treatment("exp_sb")).to eq(expected("Lisboa", 0))
+      clock.now = ANCHOR + 60
+      expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
+
+      context.publish
+      body = context.send(:event_handler).events.last
+      expect(body.exposures.map(&:exposed_at)).to eq([ANCHOR + 60])
+      expect(collector_cluster(body, body.exposures[0], "city")).to eq("Lisboa")
+      expect(body.attributes.map { |a| [a.name, a.value, a.set_at] }).to eq([["city", "Lisboa", ANCHOR + 10]])
+    end
+
     # The exposure is not moved to the slot's read instant, so a burn-in window that the exposing
     # call is outside of keeps it in the analysis.
     it "keeps an exposure outside burn-in after a mid-period change" do
@@ -637,6 +658,8 @@ module ContextSwitchbackClusterSpec
     # the attributes that are not cluster paths too.
     it "keeps non-cluster attributes in a separate body" do
       context = create_context(attribute_switchback("city"))
+      clock.now = ANCHOR + 5
+      context.set_attribute("city", "Porto")
       clock.now = ANCHOR + 10
       context.set_attribute("tier", "gold")
       context.set_attribute("city", "Lisboa")
@@ -644,7 +667,8 @@ module ContextSwitchbackClusterSpec
       context.set_attribute("city", "Faro")
       context.publish
       body = context.send(:event_handler).events.last
-      expect(body.attributes.map(&:name)).to eq(%w[tier city])
+      # Without a rewind the body is every attribute the read saw, earlier cluster values included.
+      expect(body.attributes.map { |a| [a.name, a.value] }).to eq([%w[city Porto], %w[tier gold], %w[city Lisboa]])
       expect(collector_cluster(body, body.exposures.first, "city")).to eq("Lisboa")
     end
 

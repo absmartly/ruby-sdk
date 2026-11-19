@@ -659,10 +659,16 @@ class Context
       selected = assignment.switchback_entry.switchback_source_paths.filter_map do |path|
         latest_attribute(path.root_key, assignment.serving_read_at, read)
       end.to_set
-      # Every captured attribute is kept; only those the read selected for a
-      # cluster are stamped no later than exposedAt.
-      clamped = read.map do |a|
-        selected.include?(a) && a.set_at > exposed_at ? Attribute.new(a.name, a.value, exposed_at) : a
+      # Attributes that are not cluster sources are kept as they are. Of the
+      # cluster-source attributes only those the read selected stay, stamped no
+      # later than exposedAt, so a later value of the same name can't win.
+      roots = assignment.switchback_entry.switchback_source_paths.map(&:root_key)
+      clamped = read.filter_map do |a|
+        if selected.include?(a)
+          a.set_at > exposed_at ? Attribute.new(a.name, a.value, exposed_at) : a
+        elsif !roots.include?(a.name.to_s.strip)
+          a
+        end
       end
       served_at?(assignment, exposed_at, units, clamped) ? [units, clamped] : nil
     end
