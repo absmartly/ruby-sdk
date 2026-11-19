@@ -873,20 +873,25 @@ class Context
         assignment.variables = experiment.variables[assignment.variant] || {}
       end
 
-      if state.equal?(@failed_state)
-        # A read that finishes after a refresh recovered the context must not
-        # replace what was resolved against the recovered data, unless that
-        # data lacks the experiment too and would resolve it the same way.
-        return assignment unless @state.equal?(@failed_state) || experiment(experiment_name.to_s).nil?
-
-        @failed_built[assignment] = true
+      failed_built = state.equal?(@failed_state)
+      # A read that finishes after a refresh recovered the context must not
+      # replace what was resolved against the recovered data, unless that
+      # data lacks the experiment too and would resolve it the same way.
+      if failed_built && !@state.equal?(@failed_state) && !experiment(experiment_name.to_s).nil?
+        return assignment
       end
-      # Untagged when replaced, so the tags never outgrow the cache. An
-      # interrupt can't land between the two, which would leave a failed
-      # assignment cached but untagged and so reusable after recovery.
-      Thread.handle_interrupt(Object => :never) do
-        replaced = @assignment_cache[experiment_name.to_s]
-        @failed_built.delete(replaced) unless replaced.nil? || @failed_built.empty?
+
+      if failed_built || !@failed_built.empty?
+        # Tagged and untagged together with the cache write, so an interrupt
+        # can't leave a failed assignment cached but untagged (reusable after
+        # recovery) or a tag without its entry; the tags never outgrow the cache.
+        Thread.handle_interrupt(Object => :never) do
+          replaced = @assignment_cache[experiment_name.to_s]
+          @failed_built.delete(replaced) unless replaced.nil?
+          @failed_built[assignment] = true if failed_built
+          @assignment_cache[experiment_name.to_s] = assignment
+        end
+      else
         @assignment_cache[experiment_name.to_s] = assignment
       end
       assignment

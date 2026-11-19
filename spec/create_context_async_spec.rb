@@ -1246,16 +1246,46 @@ RSpec.describe "create_context_async" do
       reader = Thread.new do
         Thread.current[:gate] = true
         context.variable_value("banner.size", "default")
-      rescue RuntimeError
+      rescue Interrupt
         nil
       end
       Timeout.timeout(5) { untagging.pop }
-      reader.raise(RuntimeError, "cancelled")
+      reader.raise(Interrupt)
       Timeout.timeout(5) { reader.join }
 
       expect(context.variable_value("banner.size", "default")).to eq("large")
       context.publish
       expect(exposures).to eq([["exp_test_ab", 0, 1], ["exp_test_ab", 1, 1]])
+    end
+
+    it "never keeps a tag without its cache entry when an interrupt lands while a failed read is cached" do
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider,
+                                     event_handler, event_logger, variable_parser, audience_matcher)
+      context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+      tagging = Queue.new
+      tags = context.instance_variable_get(:@failed_built)
+      tags.define_singleton_method(:[]=) do |key, value|
+        result = super(key, value)
+        if Thread.current[:gate]
+          tagging << true
+          sleep 0.2
+        end
+        result
+      end
+      reader = Thread.new do
+        Thread.current[:gate] = true
+        context.peek_treatment("exp_test_ab")
+      rescue Interrupt
+        nil
+      end
+      Timeout.timeout(5) { tagging.pop }
+      reader.raise(Interrupt)
+      Timeout.timeout(5) { reader.join }
+
+      cache = context.instance_variable_get(:@assignment_cache)
+      expect(tags.keys).to all(satisfy { |tagged| cache.values.any? { |cached| cached.equal?(tagged) } })
     end
 
     it "keeps one failed-snapshot tag per cached assignment" do
