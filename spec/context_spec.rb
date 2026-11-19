@@ -1663,6 +1663,17 @@ RSpec.describe Context do
     expect(context.pending_count).to eq(2 + overrides.size * 2)
   end
 
+  it "returns control once the override of an unknown experiment is cleared" do
+    context = create_ready_context
+    context.set_override("exp_test_new", 3)
+    expect(context.treatment("exp_test_new")).to eq(3)
+
+    context.set_override("exp_test_new", nil)
+    expect(context.treatment("exp_test_new")).to eq(0)
+    expect(context.treatment("exp_test_new")).to eq(0)
+    expect(context.pending_count).to eq(2)
+  end
+
   it "set override before ready" do
     context = create_context(data_future)
     expect(context.ready?).to be_falsey

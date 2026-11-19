@@ -785,8 +785,8 @@ class Context
       # since recovered with the experiment: resolved again against the
       # recovered data. Untagged only once a replacement is cached, so a
       # rebuild that raises leaves it ineligible for reuse.
-      if !assignment.nil? && !experiment.nil? && !@failed_built.empty? &&
-         !state.equal?(@failed_state) && @failed_built.key?(assignment)
+      # (The failed snapshot has no experiments, so a read on it never matches.)
+      if !assignment.nil? && !experiment.nil? && !@failed_built.empty? && @failed_built.key?(assignment)
         assignment = nil
       end
 
@@ -795,8 +795,9 @@ class Context
           return assignment if assignment.overridden && assignment.variant == override
         elsif experiment.nil?
           # A rule-won assignment came from the experiment's rules, so it is
-          # rebuilt once the experiment is gone.
-          return assignment if !assignment.assigned && !assignment.rule_override
+          # rebuilt once the experiment is gone; a forced one once its
+          # override is cleared.
+          return assignment if !assignment.assigned && !assignment.rule_override && !assignment.overridden
         elsif (custom.nil? || assignment.rule_override ||
                (custom == assignment.variant && (assignment.custom || assignment.exposed))) &&
               experiment_matches(experiment.data, assignment) &&
@@ -875,8 +876,9 @@ class Context
 
       if state.equal?(@failed_state)
         # A read that finishes after a refresh recovered the context must not
-        # replace what was resolved against the recovered data.
-        return assignment unless @state.equal?(@failed_state)
+        # replace what was resolved against the recovered data, unless that
+        # data lacks the experiment too and would resolve it the same way.
+        return assignment unless @state.equal?(@failed_state) || experiment(experiment_name.to_s).nil?
 
         @failed_built[assignment] = true
       end

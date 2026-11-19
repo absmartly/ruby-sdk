@@ -1009,6 +1009,15 @@ RSpec.describe "create_context_async" do
         expect(exposures.first[0..1]).to eq(["exp_test_ab", 1])
       end
 
+      it "keeps it when the recovered data lacks the experiment too" do
+        context, failed_state = recovered_context
+        context.send(:queue_exposure, context.send(:assignment, "not_found", failed_state))
+        context.treatment("not_found")
+        context.publish
+
+        expect(exposures).to eq([["not_found", 0, 0]])
+      end
+
       it "reuses the assignment exposed while failed" do
         context, failed_state = recovered_context { |ctx| ctx.treatment("exp_test_ab") }
         context.send(:queue_exposure, context.send(:assignment, "exp_test_ab", failed_state))
@@ -1108,8 +1117,38 @@ RSpec.describe "create_context_async" do
       context.treatment("exp_test_ab")
       context.publish
 
-      # Events queued while failed are still published after recovery.
       expect(exposures).to eq([["not_found", 0, 0], ["exp_test_ab", 0, 0], ["exp_test_ab", 1, 1]])
+    end
+
+    it "honors a cleared override after recovery still lacks the experiment" do
+      in_refresh = Queue.new
+      release = Queue.new
+      ready_data = data
+      provider = Object.new
+      provider.define_singleton_method(:context_data) do
+        in_refresh << true
+        release.pop
+        OpenStruct.new(data_future: ready_data, success?: true)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, provider,
+                                     event_handler, event_logger, variable_parser, audience_matcher)
+      refresher = Thread.new { context.refresh }
+      begin
+        Timeout.timeout(5) { in_refresh.pop }
+        context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+        context.set_override("not_found", 1)
+        expect(context.treatment("not_found")).to eq(1)
+        release << true
+        Timeout.timeout(5) { refresher.join }
+      ensure
+        release << true
+        refresher.join(5) || refresher.kill
+      end
+      context.set_override("not_found", nil)
+
+      expect(context.treatment("not_found")).to eq(0)
     end
 
     it "keeps one failed-snapshot tag per cached assignment" do

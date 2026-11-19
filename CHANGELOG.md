@@ -43,6 +43,7 @@ A non-breaking release of 1.3.0. Code written against 1.3.0 keeps compiling and 
 - A raising event logger no longer breaks the operation that logs (initialization, treatment, publish).
 - `ABSmartly.new(config)` accepts a duck-typed config that responds to `to_hash` on Ruby 2.7.
 - An exposure or goal can no longer be queued after `close` sealed the context.
+- Clearing the override of an experiment the context data doesn't have returns control again; 1.3.0 kept returning the cleared forced variant.
 
 ## [1.3.0] - 2026-01-26
 
