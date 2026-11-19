@@ -1234,12 +1234,14 @@ RSpec.describe "create_context_async" do
         refresher.join(5) || refresher.kill
       end
       untagging = Queue.new
+      resume = Queue.new
       tags = context.instance_variable_get(:@failed_built)
       tags.define_singleton_method(:delete) do |key|
         result = super(key)
         if Thread.current[:gate]
+          Thread.current[:gate] = false
           untagging << true
-          sleep 0.2
+          resume.pop
         end
         result
       end
@@ -1251,6 +1253,7 @@ RSpec.describe "create_context_async" do
       end
       Timeout.timeout(5) { untagging.pop }
       reader.raise(Interrupt)
+      resume << true
       Timeout.timeout(5) { reader.join }
 
       expect(context.variable_value("banner.size", "default")).to eq("large")
@@ -1265,12 +1268,14 @@ RSpec.describe "create_context_async" do
                                      event_handler, event_logger, variable_parser, audience_matcher)
       context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
       tagging = Queue.new
+      resume = Queue.new
       tags = context.instance_variable_get(:@failed_built)
       tags.define_singleton_method(:[]=) do |key, value|
         result = super(key, value)
         if Thread.current[:gate]
+          Thread.current[:gate] = false
           tagging << true
-          sleep 0.2
+          resume.pop
         end
         result
       end
@@ -1282,6 +1287,7 @@ RSpec.describe "create_context_async" do
       end
       Timeout.timeout(5) { tagging.pop }
       reader.raise(Interrupt)
+      resume << true
       Timeout.timeout(5) { reader.join }
 
       cache = context.instance_variable_get(:@assignment_cache)
@@ -1314,8 +1320,8 @@ RSpec.describe "create_context_async" do
                                      handler, event_logger, variable_parser, audience_matcher)
       source, start = Context.instance_method(:refresh).source_location
       commit_line = File.readlines(source).each_with_index.find do |line, index|
-        index >= start && line.strip == "@failed = false"
-      end.last + 1
+        index >= start && line.strip == "@state = state"
+      end.last + 2
       committing = Queue.new
       resume_commit = Queue.new
       trace = TracePoint.new(:line) do |event|
@@ -1358,18 +1364,41 @@ RSpec.describe "create_context_async" do
     end
 
     it "does not mask an unrelated cache write while a failed-snapshot tag remains" do
+      in_refresh = Queue.new
+      release = Queue.new
+      ready_data = data
+      provider = Object.new
+      provider.define_singleton_method(:context_data) do
+        in_refresh << true
+        release.pop
+        OpenStruct.new(data_future: ready_data, success?: true)
+      end
       context_config = ContextConfig.create
       context_config.set_units(units)
-      context = Context.create_async(clock, context_config, data_provider,
+      context = Context.create_async(clock, context_config, provider,
                                      event_handler, event_logger, variable_parser, audience_matcher)
-      context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
-      context.peek_treatment("not_found")
-      context.instance_variable_set(:@state, context.send(:build_state, data))
+      refresher = Thread.new { context.refresh }
+      begin
+        Timeout.timeout(5) { in_refresh.pop }
+        context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+        context.peek_treatment("not_found")
+        release << true
+        Timeout.timeout(5) { refresher.join }
+      ensure
+        release << true
+        refresher.join(5) || refresher.kill
+      end
+      expect(context.failed?).to be false
+      expect(context.instance_variable_get(:@failed_built)).not_to be_empty
+
       masks = 0
       allow(Thread).to receive(:handle_interrupt).and_wrap_original do |original, *args, &block|
         masks += 1
         original.call(*args, &block)
       end
+      context.peek_treatment("exp_test_ab")
+      expect(masks).to eq(0)
+      context.set_override("exp_test_ab", 2)
       context.peek_treatment("exp_test_ab")
       expect(masks).to eq(0)
     end
