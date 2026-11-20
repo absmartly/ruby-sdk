@@ -618,7 +618,7 @@ class Context
     def holdout_set_matches(entry, assignment)
       fresh = entry.holdouts
       pinned = assignment.holdouts
-      return true if fresh.equal?(pinned) || fresh.equal?(assignment.matched_holdouts)
+      return true if fresh.equal?(pinned) || (!fresh.nil? && fresh.equal?(assignment.matched_holdouts))
       return false if fresh.nil? || pinned.nil?
       return false unless fresh.length == pinned.length
 

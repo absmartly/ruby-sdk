@@ -449,6 +449,14 @@ module ContextHoldoutsSpec
         end
       end
 
+      it "matches a negative holdout id given as text" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [-5])],
+                                         [holdout(11, "holdout_a", HOLDOUT_A).merge(id: "-5")]))
+
+        expect(context.treatment("exp")).to eq(0)
+        expect(context.pending_count).to eq(1)
+      end
+
       it "treats a non-array holdouts value or holdoutIds as no coverage" do
         json = JSON.generate(experiments: [experiment(1, "exp", holdout_ids: "11")], holdouts: { id: 11 })
         context = create_context(DefaultContextDataDeserializer.new.deserialize(json, 0, json.length))
@@ -817,6 +825,29 @@ module ContextHoldoutsSpec
         expect(context.treatment("exp_override_late_holdout")).to eq(3)
         own = own_exposure(1, "exp_override_late_holdout", 3, assigned: false, overridden: true)
         expect(exposures_of(context)).to eq([own, own, holdout_exposure(11, "holdout_late", 0)])
+      end
+
+      it "re-resolves a peeked overridden experiment when a refresh removes its coverage" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
+                                         [holdout(11, "holdout_a", HOLDOUT_A)]), overrides: { "exp" => 3 })
+        expect(context.peek_treatment("exp")).to eq(3)
+
+        refresh(context, data_of([experiment(1, "exp")], [holdout(11, "holdout_a", HOLDOUT_A)]))
+
+        expect(context.treatment("exp")).to eq(3)
+        expect(exposures_of(context)).to eq([own_exposure(1, "exp", 3, assigned: false, overridden: true)])
+      end
+
+      it "exposes an overridden experiment again when a refresh removes its coverage" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
+                                         [holdout(11, "holdout_a", HOLDOUT_A)]), overrides: { "exp" => 3 })
+        expect(context.treatment("exp")).to eq(3)
+
+        refresh(context, data_of([experiment(1, "exp")], [holdout(11, "holdout_a", HOLDOUT_A)]))
+
+        expect(context.treatment("exp")).to eq(3)
+        own = own_exposure(1, "exp", 3, assigned: false, overridden: true)
+        expect(exposures_of(context)).to eq([own, holdout_exposure(11, "holdout_a", 0), own])
       end
 
       it "re-resolves an experiment when a refresh removes its coverage" do
