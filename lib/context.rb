@@ -1006,7 +1006,7 @@ class Context
 
               if !custom_field_value.value.nil?
                 custom_value = custom_field_value.value
-                type = custom_field_value.type.is_a?(String) ? custom_field_value.type : ""
+                type = custom_field_value.type.to_s
 
                 if type.start_with?("json")
                   value.value = @variable_parser.parse(self, experiment.name, custom_field_value.name, custom_value)
