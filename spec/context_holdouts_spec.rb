@@ -1409,6 +1409,17 @@ module ContextHoldoutsSpec
         expect(context.treatment("exp")).to eq(NORMAL_VARIANT)
       end
 
+      it "assigns normally an experiment object that predates holdoutIds when the payload has holdouts" do
+        legacy_experiment = Class.new(Experiment) { undef_method :holdout_ids }
+        data = Struct.new(:experiments, :holdouts).new([legacy_experiment.new(experiment(1, "exp"))],
+                                                       [Experiment.new(holdout(11, "holdout_a", HOLDOUT_A))])
+        context = create_context(data)
+
+        expect(context.ready?).to be(true)
+        expect(context.treatment("exp")).to eq(NORMAL_VARIANT)
+        expect(exposures_of(context)).to eq([own_exposure(1, "exp", NORMAL_VARIANT)])
+      end
+
       it "publishes the same body without holdouts as with an empty holdouts array" do
         bodies = [nil, []].map do |holdouts|
           published.clear
