@@ -1752,6 +1752,26 @@ RSpec.describe "create_context_async" do
       expect(calls).to eq(2)
     end
 
+    it "lets an exposure waiter time out while the owning clock is blocked" do
+      entered = Queue.new
+      resume = Queue.new
+      custom_clock = Object.new
+      custom_clock.define_singleton_method(:to_i) { entered << true; resume.pop; 123 }
+      config = ContextConfig.create
+      config.set_units(units)
+      context = Context.create(custom_clock, config, OpenStruct.new(data_future: data, success?: true),
+                               data_provider, event_handler, event_logger, variable_parser, audience_matcher)
+      owner = Thread.new { context.treatment("exp_test_ab") }
+      begin
+        Timeout.timeout(5) { entered.pop }
+        expect { Timeout.timeout(0.1) { context.treatment("exp_test_ab") } }.to raise_error(Timeout::Error)
+      ensure
+        resume << true
+        owner.join(2) || owner.kill
+      end
+      expect(context.pending_count).to eq(1)
+    end
+
     it "keeps one failed-snapshot tag per cached assignment" do
       context_config = ContextConfig.create
       context_config.set_units(units)

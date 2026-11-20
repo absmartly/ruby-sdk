@@ -253,16 +253,23 @@ class Context
 
     claimed = false
     begin
-      Thread.handle_interrupt(Object => :never) do
-        @queue_mutex.synchronize do
-          check_not_closed?
-          while @exposing.key?(assignment) && @exposing[assignment] != Thread.current
-            @exposure_condvar.wait(@queue_mutex)
+      loop do
+        waiting = false
+        Thread.handle_interrupt(Object => :never) do
+          @queue_mutex.synchronize do
             check_not_closed?
+            waiting = @exposing.key?(assignment) && @exposing[assignment] != Thread.current
+            unless waiting || assignment.exposed || @exposing.key?(assignment)
+              @exposing[assignment] = Thread.current
+              claimed = true
+            end
           end
-          unless assignment.exposed || @exposing.key?(assignment)
-            @exposing[assignment] = Thread.current
-            claimed = true
+        end
+        break unless waiting
+
+        @queue_mutex.synchronize do
+          if @exposing.key?(assignment) && @exposing[assignment] != Thread.current
+            @exposure_condvar.wait(@queue_mutex)
           end
         end
       end
