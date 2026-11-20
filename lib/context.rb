@@ -533,6 +533,12 @@ class Context
           next nil
         end
 
+        # Captured before the handler runs, so a handler that mutates the
+        # payload it was given can't change which queued events are removed.
+        sent = {}.compare_by_identity
+        exposures.each { |sent_event| sent[sent_event] = true }
+        achievements.each { |sent_event| sent[sent_event] = true }
+
         event = PublishEvent.new
         event.hashed = true
         event.published_at = @clock.to_i
@@ -559,11 +565,11 @@ class Context
           else
             log_error(StandardError.new("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})"))
           end
-          remove_published(exposures, achievements, event_count) if drop_rejected
+          remove_published(sent) if drop_rejected
           response
         else
           log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
-          remove_published(exposures, achievements, event_count)
+          remove_published(sent)
           # Claim a deferred close while still holding the lock, so only this
           # successful publish can carry it out; a request made by another
           # thread after a rejected publish waits for its own success.
@@ -578,10 +584,7 @@ class Context
 
     # A failed-context publish can clear the queue while a request is in flight.
     # Remove only the actual objects sent, never newer events at their positions.
-    def remove_published(exposures, achievements, _event_count)
-      sent = {}.compare_by_identity
-      exposures.each { |event| sent[event] = true }
-      achievements.each { |event| sent[event] = true }
+    def remove_published(sent)
       @queue_mutex.synchronize do
         @exposures.delete_if { |event| sent.key?(event) }
         @achievements.delete_if { |event| sent.key?(event) }

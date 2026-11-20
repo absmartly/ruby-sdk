@@ -2491,6 +2491,41 @@ RSpec.describe Context do
     expect(context.pending_count).to eq(3)
   end
 
+  describe "a handler that mutates the payload it accepted" do
+    def mutating_handler(sent, response)
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, event|
+        sent << [(event.goals || []).map(&:name), (event.exposures || []).map(&:name)]
+        event.goals&.clear
+        event.exposures&.clear
+        response
+      end
+      handler
+    end
+
+    it "does not leave accepted events queued or send them again" do
+      sent = []
+      context = create_ready_context(evt_handler: mutating_handler(sent, OpenStruct.new(success?: true)))
+      context.track("order", nil)
+      context.treatment("exp_test_ab")
+      context.publish
+
+      expect(context.pending_count).to eq(0)
+      context.publish
+      expect(sent).to eq([[["order"], ["exp_test_ab"]]])
+    end
+
+    it "close still drops only the rejected batch it sent" do
+      sent = []
+      context = create_ready_context(evt_handler: mutating_handler(sent, OpenStruct.new(success?: false)))
+      context.track("order", nil)
+      context.close
+
+      expect(context.pending_count).to eq(0)
+      expect(sent).to eq([[["order"], []]])
+    end
+  end
+
   it "publish does not call event handler when queue is empty" do
     context = create_ready_context
     expect(context.pending_count).to eq(0)
