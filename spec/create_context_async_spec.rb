@@ -1650,9 +1650,9 @@ RSpec.describe "create_context_async" do
       begin
         Timeout.timeout(5) { entered.pop }
         second = Thread.new { context.treatment("exp_test_ab") }
-        Timeout.timeout(2) { second.value }
+        expect(second.join(0.1)).to be_nil
         resume << true
-        Timeout.timeout(5) { first.value }
+        Timeout.timeout(5) { first.value; second.value }
       ensure
         resume << true
         first.join(2) || first.kill
@@ -1715,6 +1715,41 @@ RSpec.describe "create_context_async" do
       expect { context.treatment("exp_test_ab") }.to raise_error(IllegalStateException)
       expect(context.pending_count).to eq(0)
       expect(context.instance_variable_get(:@exposing)).to be_empty
+    end
+
+    it "lets a competing exposure retry when the first clock fails" do
+      entered = Queue.new
+      resume = Queue.new
+      calls = 0
+      custom_clock = Object.new
+      custom_clock.define_singleton_method(:to_i) do
+        calls += 1
+        if calls == 1
+          entered << true
+          resume.pop
+          raise "clock failed"
+        end
+        123
+      end
+      config = ContextConfig.create
+      config.set_units(units)
+      context = Context.create(custom_clock, config, OpenStruct.new(data_future: data, success?: true),
+                               data_provider, event_handler, event_logger, variable_parser, audience_matcher)
+      first = Thread.new { context.treatment("exp_test_ab") rescue nil }
+      second = nil
+      begin
+        Timeout.timeout(5) { entered.pop }
+        second = Thread.new { context.treatment("exp_test_ab") }
+        expect(second.join(0.1)).to be_nil
+        resume << true
+        Timeout.timeout(5) { first.value; second.value }
+      ensure
+        resume << true
+        first.join(2) || first.kill
+        second&.join(2) || second&.kill
+      end
+      expect(context.pending_count).to eq(1)
+      expect(calls).to eq(2)
     end
 
     it "keeps one failed-snapshot tag per cached assignment" do

@@ -256,8 +256,12 @@ class Context
       Thread.handle_interrupt(Object => :never) do
         @queue_mutex.synchronize do
           check_not_closed?
+          while @exposing.key?(assignment) && @exposing[assignment] != Thread.current
+            @exposure_condvar.wait(@queue_mutex)
+            check_not_closed?
+          end
           unless assignment.exposed || @exposing.key?(assignment)
-            @exposing[assignment] = true
+            @exposing[assignment] = Thread.current
             claimed = true
           end
         end
@@ -297,7 +301,10 @@ class Context
     ensure
       if claimed
         Thread.handle_interrupt(Object => :never) do
-          @queue_mutex.synchronize { @exposing.delete(assignment) }
+          @queue_mutex.synchronize do
+            @exposing.delete(assignment)
+            @exposure_condvar.broadcast
+          end
         end
       end
     end
@@ -1101,6 +1108,7 @@ class Context
       @failed_built = {}.compare_by_identity
       @assignment_mutex = Mutex.new
       @exposing = {}.compare_by_identity
+      @exposure_condvar = ConditionVariable.new
       @assignments = {}
       @clock = clock.is_a?(String) ? Time.iso8601(clock) : clock
       @publish_delay = config.publish_delay
