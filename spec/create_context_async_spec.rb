@@ -1616,6 +1616,18 @@ RSpec.describe "create_context_async" do
       end
     end
 
+    it "calls the supplied exposure clock only for a new exposure" do
+      calls = 0
+      custom_clock = Object.new
+      custom_clock.define_singleton_method(:to_i) { calls += 1; 123 }
+      config = ContextConfig.create
+      config.set_units(units)
+      context = Context.create(custom_clock, config, OpenStruct.new(data_future: data, success?: true),
+                               data_provider, event_handler, event_logger, variable_parser, audience_matcher)
+      3.times { context.treatment("exp_test_ab") }
+      expect(calls).to eq(1)
+    end
+
     it "keeps one failed-snapshot tag per cached assignment" do
       context_config = ContextConfig.create
       context_config.set_units(units)
