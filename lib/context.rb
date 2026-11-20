@@ -249,14 +249,24 @@ class Context
   end
 
   def queue_exposure(assignment)
-    # A clock callback may read treatment reentrantly; the outer call owns
-    # its exposure and must not recurse into the clock.
-    return if @exposure_mutex.owned?
+    return if assignment.exposed
 
-    exposure = @exposure_mutex.synchronize do
-      # A supplied clock may call back into the context; never invoke it while
-      # holding the queue lock. The exposed flag is rechecked under that lock.
-      exposed_at = @clock.to_i unless assignment.exposed
+    claimed = false
+    begin
+      Thread.handle_interrupt(Object => :never) do
+        @queue_mutex.synchronize do
+          check_not_closed?
+          unless assignment.exposed || @exposing.key?(assignment)
+            @exposing[assignment] = true
+            claimed = true
+          end
+        end
+      end
+      return unless claimed
+
+      # Only this assignment is claimed, without holding a lock over the
+      # supplied clock; distinct nested or concurrent exposures can proceed.
+      exposed_at = @clock.to_i
       exposure = nil
       @queue_mutex.synchronize do
         # Checked under the queue lock so an exposure cannot slip in after close
@@ -284,7 +294,12 @@ class Context
           @exposures.push(exposure)
         end
       end
-      exposure
+    ensure
+      if claimed
+        Thread.handle_interrupt(Object => :never) do
+          @queue_mutex.synchronize { @exposing.delete(assignment) }
+        end
+      end
     end
     # User callbacks run outside the lock so they can call publish/track.
     log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposure) unless exposure.nil?
@@ -1085,7 +1100,7 @@ class Context
       @assignment_cache = {}
       @failed_built = {}.compare_by_identity
       @assignment_mutex = Mutex.new
-      @exposure_mutex = Mutex.new
+      @exposing = {}.compare_by_identity
       @assignments = {}
       @clock = clock.is_a?(String) ? Time.iso8601(clock) : clock
       @publish_delay = config.publish_delay

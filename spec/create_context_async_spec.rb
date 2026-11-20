@@ -1650,9 +1650,9 @@ RSpec.describe "create_context_async" do
       begin
         Timeout.timeout(5) { entered.pop }
         second = Thread.new { context.treatment("exp_test_ab") }
-        expect(second.join(0.1)).to be_nil
+        Timeout.timeout(2) { second.value }
         resume << true
-        Timeout.timeout(5) { first.value; second.value }
+        Timeout.timeout(5) { first.value }
       ensure
         resume << true
         first.join(2) || first.kill
@@ -1679,6 +1679,42 @@ RSpec.describe "create_context_async" do
       expect(context.pending_count).to eq(0)
       context.treatment("exp_test_ab")
       expect(context.pending_count).to eq(1)
+    end
+
+    it "allows a clock to wait for a distinct concurrent treatment and preserves both exposures" do
+      custom_clock = Object.new
+      context = nil
+      custom_clock.define_singleton_method(:to_i) do
+        if Thread.current[:outer_clock]
+          Thread.current[:outer_clock] = false
+          Timeout.timeout(2) { Thread.new { context.treatment("exp_test_abc") }.value }
+        end
+        123
+      end
+      config = ContextConfig.create
+      config.set_units(units)
+      context = Context.create(custom_clock, config, OpenStruct.new(data_future: data, success?: true),
+                               data_provider, event_handler, event_logger, variable_parser, audience_matcher)
+      begin
+        Thread.current[:outer_clock] = true
+        context.treatment("exp_test_ab")
+      ensure
+        Thread.current[:outer_clock] = nil
+      end
+      expect(context.pending_count).to eq(2)
+    end
+
+    it "does not enqueue an exposure after close seals during its clock callback" do
+      custom_clock = Object.new
+      context = nil
+      custom_clock.define_singleton_method(:to_i) { context.close; 123 }
+      config = ContextConfig.create
+      config.set_units(units)
+      context = Context.create(custom_clock, config, OpenStruct.new(data_future: data, success?: true),
+                               data_provider, event_handler, event_logger, variable_parser, audience_matcher)
+      expect { context.treatment("exp_test_ab") }.to raise_error(IllegalStateException)
+      expect(context.pending_count).to eq(0)
+      expect(context.instance_variable_get(:@exposing)).to be_empty
     end
 
     it "keeps one failed-snapshot tag per cached assignment" do
