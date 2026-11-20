@@ -2492,10 +2492,11 @@ RSpec.describe Context do
   end
 
   describe "a handler that mutates the payload it accepted" do
-    def mutating_handler(sent, response)
+    def mutating_handler(sent, response, during_first: nil)
       handler = Object.new
-      handler.define_singleton_method(:publish) do |_context, event|
+      handler.define_singleton_method(:publish) do |context, event|
         sent << [(event.goals || []).map(&:name), (event.exposures || []).map(&:name)]
+        during_first&.call(context) if sent.size == 1
         event.goals&.clear
         event.exposures&.clear
         response
@@ -2517,12 +2518,15 @@ RSpec.describe Context do
 
     it "close still drops only the rejected batch it sent" do
       sent = []
-      context = create_ready_context(evt_handler: mutating_handler(sent, OpenStruct.new(success?: false)))
+      queue_later = ->(context) { context.track("queued_meanwhile", nil) }
+      context = create_ready_context(evt_handler: mutating_handler(sent, OpenStruct.new(success?: false),
+                                                                   during_first: queue_later))
       context.track("order", nil)
       context.close
 
+      # The goal queued during the rejected publish is sent by close's next pass.
+      expect(sent).to eq([[["order"], []], [["queued_meanwhile"], []]])
       expect(context.pending_count).to eq(0)
-      expect(sent).to eq([[["order"], []]])
     end
   end
 

@@ -19,7 +19,6 @@ class Context
   NO_RULES = ""
   SEAL_FLUSH_PASSES = 2
   private_constant :SEAL_FLUSH_PASSES
-  # Raised by close/finalize when events are still queued after the last pass.
   class EventsQueuedWhileClosing < StandardError; end
   private_constant :EventsQueuedWhileClosing
 
