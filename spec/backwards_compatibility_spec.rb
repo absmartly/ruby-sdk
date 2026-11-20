@@ -104,6 +104,30 @@ RSpec.describe "Backwards Compatibility" do
     expect(experiment.custom_field_values).to eq([CustomFieldValue.new("country", "US", "string")])
   end
 
+  it "parses custom field values whose type is given as a Symbol, as in v1.3.0" do
+    out, err, status = run_ruby(<<~RUBY)
+      require "absmartly"
+      data = ContextData.new([{ id: 1, name: "exp", unitType: "session_id", iteration: 1, split: [1],
+                                trafficSplit: [1], fullOnVariant: 0, seedHi: 0, seedLo: 0,
+                                trafficSeedHi: 0, trafficSeedLo: 0,
+                                variants: [{ name: "A", config: nil }],
+                                customFieldValues: [{ name: "j", value: '{"a":1}', type: :json },
+                                                    { name: "n", value: "7", type: :number },
+                                                    { name: "b", value: "true", type: :boolean }] }])
+      config = ContextConfig.create
+      config.set_unit("session_id", "u1")
+      context = Context.create(Time.at(0), config, Struct.new(:data_future, :success?).new(data, true), nil,
+                               nil, nil, DefaultVariableParser.new,
+                               AudienceMatcher.new(DefaultAudienceDeserializer.new))
+      print Marshal.dump([context.custom_field_value("exp", "j"), context.custom_field_value("exp", "n"),
+                          context.custom_field_value("exp", "b")]).unpack1("H*")
+    RUBY
+
+    expect(err).to eq("")
+    expect(status).to be_success
+    expect(Marshal.load([out].pack("H*"))).to eq([{ a: 1 }, 7, true])
+  end
+
   it "prefers the symbol key when a nested object has both key styles" do
     experiment = Experiment.new(variants: [{ name: "sym", "name" => "str", config: nil }])
 
