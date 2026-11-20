@@ -618,13 +618,17 @@ class Context
     def holdout_set_matches(entry, assignment)
       fresh = entry.holdouts
       pinned = assignment.holdouts
-      return true if fresh.equal?(pinned)
+      return true if fresh.equal?(pinned) || fresh.equal?(assignment.matched_holdouts)
       return false if fresh.nil? || pinned.nil?
       return false unless fresh.length == pinned.length
 
-      fresh.each_with_index.all? do |holdout, i|
+      matches = fresh.each_with_index.all? do |holdout, i|
         holdout_id(holdout.id) == holdout_id(pinned[i].id) && holdout.iteration == pinned[i].iteration
       end
+      # The pinned list still names the exposures, so an equivalent list from a
+      # refresh is remembered apart and later reads compare it by identity.
+      assignment.matched_holdouts = fresh if matches
+      matches
     end
 
     # The arm is computed with the covered experiment's unit type, cached per
@@ -677,7 +681,10 @@ class Context
           assignment.rule_missing_unit = rule ? rule.last : false
         end
 
-        if !assignment.rule_override && !experiment.audience.nil? && experiment.audience.size > 0
+        # A held-out unit skipped the audience when assigned, so it is not
+        # evaluated here either; only a rule can take it out of suppression.
+        if !assignment.rule_override && !assignment.suppressed &&
+           !experiment.audience.nil? && experiment.audience.size > 0
           match = @audience_matcher.evaluate(experiment.audience, attrs)
           # An indeterminate result (no filter, bad JSON) keeps the cached flag.
           new_audience_mismatch = match.nil? ? assignment.audience_mismatch : !match.result
@@ -1109,7 +1116,7 @@ class Assignment
                 :traffic_split, :variant, :assigned, :overridden, :eligible,
                 :full_on, :custom, :audience_mismatch, :variables, :exposed, :attrs_seq,
                 :rule_override, :rule_variant, :rule_missing_unit, :rule_key,
-                :suppressed, :holdouts, :holdout_assignments, :holdout_arm_count
+                :suppressed, :holdouts, :matched_holdouts, :holdout_assignments, :holdout_arm_count
 
   def initialize
     @variant = 0
@@ -1126,6 +1133,7 @@ class Assignment
     @rule_missing_unit = false
     @attrs_seq = 0
     @holdouts = nil
+    @matched_holdouts = nil
   end
 end
 
