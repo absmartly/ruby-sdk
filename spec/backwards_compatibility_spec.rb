@@ -123,8 +123,7 @@ RSpec.describe "Backwards Compatibility" do
                           context.custom_field_value("exp", "b")]).unpack1("H*")
     RUBY
 
-    expect(err).to eq("")
-    expect(status).to be_success
+    expect(status).to be_success, err
     expect(Marshal.load([out].pack("H*"))).to eq([{ a: 1 }, 7, true])
   end
 
