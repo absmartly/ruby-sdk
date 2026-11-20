@@ -1531,6 +1531,53 @@ RSpec.describe "create_context_async" do
       expect(exposures).to eq(["exp_test_ab"])
     end
 
+    %i[publish finalize].each do |operation|
+      it "keeps failure installation outside #{operation}'s batch-selection boundary" do
+        sent = []
+        handler = Object.new
+        handler.define_singleton_method(:publish) do |_context, event|
+          sent.concat((event.goals || []).map(&:name))
+          OpenStruct.new(success?: true)
+        end
+        config = ContextConfig.create
+        config.set_units(units)
+        context = Context.create_async(clock, config, data_provider,
+                                       handler, event_logger, variable_parser, audience_matcher)
+        context.track("before_failure", nil)
+        selecting = Queue.new
+        resume = Queue.new
+        queue_mutex = context.instance_variable_get(:@queue_mutex)
+        allow(queue_mutex).to receive(:synchronize).and_wrap_original do |original, &block|
+          if Thread.current[:gate_selection] && context.instance_variable_get(:@ready_mutex).owned?
+            Thread.current[:gate_selection] = false
+            selecting << true
+            resume.pop
+          end
+          original.call(&block)
+        end
+        publisher = Thread.new do
+          Thread.current[:gate_selection] = true
+          context.public_send(operation)
+        end
+        failing = nil
+        begin
+          Timeout.timeout(5) { selecting.pop }
+          failing = Thread.new do
+            context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+          end
+          expect(failing.join(0.1)).to be_nil
+          resume << true
+          Timeout.timeout(5) { publisher.value }
+          Timeout.timeout(5) { failing.value }
+        ensure
+          resume << true
+          publisher.join(5) || publisher.kill
+          failing&.join(5) || failing&.kill
+        end
+        expect(sent).to eq(["before_failure"])
+      end
+    end
+
     it "keeps one failed-snapshot tag per cached assignment" do
       context_config = ContextConfig.create
       context_config.set_units(units)

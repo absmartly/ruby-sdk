@@ -503,18 +503,22 @@ class Context
 
       claimed = nil
       result = @publish_mutex.synchronize do
-        # The initial fetch may have failed while this publish waited for the
-        # one in flight: decided again before taking a batch.
-        dropped, failure = drop_if_failed(sealing)
-        next failure if dropped
-
         exposures = achievements = nil
         event_count = 0
-        @queue_mutex.synchronize do
-          exposures = @exposures.dup
-          achievements = @achievements.dup
-          event_count = exposures.size + achievements.size
+        # Failure installation and recovery both take this lock. Keep the
+        # decision and snapshot together, but never hold it across publishing.
+        dropped, failure = @ready_mutex.synchronize do
+          failed_result = drop_if_failed(sealing, ready_locked: true)
+          unless failed_result.first
+            @queue_mutex.synchronize do
+              exposures = @exposures.dup
+              achievements = @achievements.dup
+              event_count = exposures.size + achievements.size
+            end
+          end
+          failed_result
         end
+        next failure if dropped
 
         if event_count.zero?
           claimed = take_close_pending unless sealing
@@ -575,19 +579,16 @@ class Context
     # goals tracked after recovery are never dropped by a publish that saw the
     # context failed. publish gets the load error, as in v1.3.0; a seal's own
     # pass gets nil, since dropping them is not a publish failure.
-    def drop_if_failed(sealing)
+    def drop_if_failed(sealing, ready_locked: false)
       return [false, nil] unless @failed
+      return @ready_mutex.synchronize { drop_if_failed(sealing, ready_locked: true) } unless ready_locked
 
-      @ready_mutex.synchronize do
-        next [false, nil] unless @failed
-
-        @queue_mutex.synchronize do
-          @exposures = []
-          @achievements = []
-          @pending_count = 0
-        end
-        [true, sealing ? nil : @data_failed]
+      @queue_mutex.synchronize do
+        @exposures = []
+        @achievements = []
+        @pending_count = 0
       end
+      [true, sealing ? nil : @data_failed]
     end
 
     # A failed-context publish can clear the queue while a request is in flight.
