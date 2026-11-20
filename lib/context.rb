@@ -492,24 +492,8 @@ class Context
     # sealing: this flush is a seal's own pass, so it neither starts another
     # seal nor claims a deferred one. Any other publish (on any thread) may.
     def flush(sealing: false, drop_rejected: false)
-      if @failed
-        # Rechecked under the readiness lock, which a recovering refresh also
-        # holds while it clears @failed, so goals tracked after recovery are
-        # never dropped by a publish that saw the context failed.
-        @ready_mutex.synchronize do
-          if @failed
-            @queue_mutex.synchronize do
-              @exposures = []
-              @achievements = []
-              @pending_count = 0
-            end
-            # publish returns the load error, as in v1.3.0. A seal's own pass
-            # gets nil: dropping a failed context's events is not a publish
-            # failure. Decided here under the lock, not re-read later.
-            return sealing ? nil : @data_failed
-          end
-        end
-      end
+      dropped, failure = drop_if_failed(sealing)
+      return failure if dropped
 
       # Serialize publishes so a queued event is part of at most one in-flight
       # request; on failure the events stay queued for the next attempt.
@@ -519,6 +503,11 @@ class Context
 
       claimed = nil
       result = @publish_mutex.synchronize do
+        # The initial fetch may have failed while this publish waited for the
+        # one in flight: decided again before taking a batch.
+        dropped, failure = drop_if_failed(sealing)
+        next failure if dropped
+
         exposures = achievements = nil
         event_count = 0
         @queue_mutex.synchronize do
@@ -579,6 +568,26 @@ class Context
 
       run_deferred_seal(claimed) if claimed
       result
+    end
+
+    # A failed context drops its queued events. Rechecked under the readiness
+    # lock, which a recovering refresh also holds while it clears @failed, so
+    # goals tracked after recovery are never dropped by a publish that saw the
+    # context failed. publish gets the load error, as in v1.3.0; a seal's own
+    # pass gets nil, since dropping them is not a publish failure.
+    def drop_if_failed(sealing)
+      return [false, nil] unless @failed
+
+      @ready_mutex.synchronize do
+        next [false, nil] unless @failed
+
+        @queue_mutex.synchronize do
+          @exposures = []
+          @achievements = []
+          @pending_count = 0
+        end
+        [true, sealing ? nil : @data_failed]
+      end
     end
 
     # A failed-context publish can clear the queue while a request is in flight.

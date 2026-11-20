@@ -1411,6 +1411,47 @@ RSpec.describe "create_context_async" do
       expect(masks).to eq(0)
     end
 
+    it "a publish waiting for an in-flight one does not send events after the initial fetch failed" do
+      sent = []
+      in_publish = Queue.new
+      release = Queue.new
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, event|
+        sent << (event.goals || []).map(&:name)
+        if sent.size == 1
+          in_publish << true
+          release.pop
+          next OpenStruct.new(success?: false, status: 503)
+        end
+        OpenStruct.new(success?: true)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider,
+                                     handler, event_logger, variable_parser, audience_matcher)
+      context.track("before_failure", nil)
+      first = Thread.new { context.publish }
+      second = nil
+      begin
+        Timeout.timeout(5) { in_publish.pop }
+        second = Thread.new { context.publish }
+        Timeout.timeout(5) { Thread.pass until second.status == "sleep" }
+        context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+        context.track("after_failure", nil)
+        release << true
+        Timeout.timeout(5) { first.join }
+        expect(Timeout.timeout(5) { second.value }).to equal(failure)
+      ensure
+        release << true
+        first.join(5) || first.kill
+        second&.join(5) || second&.kill
+      end
+
+      expect(sent).to eq([["before_failure"]])
+      expect(context.failed?).to be true
+      expect(context.pending_count).to eq(0)
+    end
+
     it "keeps one failed-snapshot tag per cached assignment" do
       context_config = ContextConfig.create
       context_config.set_units(units)

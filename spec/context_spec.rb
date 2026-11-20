@@ -2554,7 +2554,6 @@ RSpec.describe Context do
       context.track("order", nil)
       context.close
 
-      # The goal queued during the rejected publish is sent by close's next pass.
       expect(sent).to eq([[["order"], []], [["queued_meanwhile"], []]])
       expect(context.pending_count).to eq(0)
     end
