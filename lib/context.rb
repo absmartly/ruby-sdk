@@ -249,6 +249,9 @@ class Context
   end
 
   def queue_exposure(assignment)
+    # A supplied clock may call back into the context; never invoke it while
+    # holding the queue lock. The exposed flag is rechecked under that lock.
+    exposed_at = @clock.to_i unless assignment.exposed
     exposure = nil
     @queue_mutex.synchronize do
       # Checked under the queue lock so an exposure cannot slip in after close
@@ -263,7 +266,7 @@ class Context
         exposure.name = assignment.name
         exposure.unit = assignment.unit_type
         exposure.variant = assignment.variant
-        exposure.exposed_at = @clock.to_i
+        exposure.exposed_at = exposed_at
         exposure.assigned = assignment.assigned
         exposure.eligible = assignment.eligible
         exposure.overridden = assignment.overridden

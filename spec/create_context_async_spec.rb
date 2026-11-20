@@ -1578,6 +1578,44 @@ RSpec.describe "create_context_async" do
       end
     end
 
+    it "lets a supplied exposure clock wait for readiness during concurrent batch selection" do
+      entered = Queue.new
+      resume = Queue.new
+      custom_clock = Object.new
+      custom_clock.define_singleton_method(:to_i) do
+        if Thread.current[:clock_gate]
+          Thread.current[:clock_gate] = false
+          entered << true
+          resume.pop
+          context.wait_until_ready(0)
+        end
+        123
+      end
+      config = ContextConfig.create
+      config.set_units(units)
+      context = Context.create(custom_clock, config, OpenStruct.new(data_future: data, success?: true),
+                               data_provider, event_handler, event_logger, variable_parser, audience_matcher)
+      custom_clock.define_singleton_method(:context) { context }
+      exposure = Thread.new do
+        Thread.current[:clock_gate] = true
+        context.treatment("exp_test_ab")
+      end
+      publisher = nil
+      begin
+        Timeout.timeout(5) { entered.pop }
+        context.track("goal", nil)
+        publisher = Thread.new { context.publish }
+        # Publish must complete without waiting for the clock callback.
+        Timeout.timeout(2) { publisher.value }
+        resume << true
+        Timeout.timeout(2) { exposure.value }
+      ensure
+        resume << true
+        exposure.join(2) || exposure.kill
+        publisher&.join(2) || publisher&.kill
+      end
+    end
+
     it "keeps one failed-snapshot tag per cached assignment" do
       context_config = ContextConfig.create
       context_config.set_units(units)
