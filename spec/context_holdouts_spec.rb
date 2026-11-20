@@ -438,6 +438,17 @@ module ContextHoldoutsSpec
         end
       end
 
+      # "09" and "-0" are not the text of any integer, so no JavaScript key matches them.
+      [["09", [9]], ["-0", [0]], [9, ["09"]], [0, ["-0"]]].each do |id, ids|
+        it "does not match holdout id #{id.inspect} with holdoutIds #{ids.inspect}" do
+          context = create_context(data_of([experiment(1, "exp", holdout_ids: ids)],
+                                           [holdout(11, "holdout_a", HOLDOUT_A).merge(id: id)]))
+
+          expect(context.treatment("exp")).to eq(NORMAL_VARIANT)
+          expect(exposures_of(context)).to eq([own_exposure(1, "exp", NORMAL_VARIANT)])
+        end
+      end
+
       it "treats a non-array holdouts value or holdoutIds as no coverage" do
         json = JSON.generate(experiments: [experiment(1, "exp", holdout_ids: "11")], holdouts: { id: 11 })
         context = create_context(DefaultContextDataDeserializer.new.deserialize(json, 0, json.length))

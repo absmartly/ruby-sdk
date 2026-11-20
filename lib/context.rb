@@ -993,12 +993,12 @@ class Context
     end
 
     # Like a JavaScript object key, an id matches as an integer, an integral
-    # float or its decimal text.
+    # float or its canonical decimal text ("09" and "-0" match nothing).
     def holdout_id(id)
       case id
       when Integer then id
       when Float then id.to_i if id.finite? && id == id.floor
-      when String then Integer(id, 10) if id.match?(/\A-?\d+\z/)
+      when String then Integer(id, 10) if id.match?(/\A(?:0|-?[1-9]\d*)\z/)
       end
     end
 
