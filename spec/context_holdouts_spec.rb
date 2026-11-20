@@ -446,7 +446,6 @@ module ContextHoldoutsSpec
         end
       end
 
-      # IDs accept only integers and their canonical decimal spellings.
       [["09", [9]], ["-0", [0]], [9, ["09"]], [0, ["-0"]]].each do |id, ids|
         it "does not match holdout id #{id.inspect} with holdoutIds #{ids.inspect}" do
           context = create_context(data_of([experiment(1, "exp", holdout_ids: ids)],
