@@ -324,6 +324,7 @@ Experiments can be covered by holdouts set up on the Web Console. A holdout keep
 - A holdout with three arms holds full-on experiments out only in its first arm, and other experiments in its first two arms.
 - `set_override` and a matching assignment rule still win over a holdout; the holdout's exposure is still sent.
 - Peeking (`peek_treatment`, `peek_variable_value`) never sends exposures.
+- Set the unit before reading a covered experiment. An experiment read with `treatment` or `variable_value` before its unit type is set gets no holdout arm; it keeps its variant after `set_unit`, so the user never switches variant, and the holdout is not exposed for it.
 
 ### Custom Assignments
 
