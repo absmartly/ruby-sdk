@@ -322,7 +322,7 @@ Experiments can be covered by holdouts set up on the Web Console. A holdout keep
 - The holdout queues its own exposure, once per unit type, the first time the unit sees a covered experiment, whether it is held out or not. Like every exposure, it reaches the collector on `publish` or `close`.
 - A unit held out by any of the holdouts covering an experiment is held out of it.
 - A holdout with three arms holds full-on experiments out only in its first arm, and other experiments in its first two arms.
-- `set_override` and a matching assignment rule still win over a holdout; the holdout's exposure is still sent.
+- `set_override` and a matching assignment rule still win over a holdout; the holdout's exposure is still queued.
 - Peeking (`peek_treatment`, `peek_variable_value`) never queues exposures.
 - Set the unit before reading a covered experiment. An experiment read with `treatment` or `variable_value` before its unit type is set gets no holdout arm; `set_unit` alone does not change that exposed assignment or expose the holdout for it. A later refresh that changes the experiment or its coverage can rebuild the assignment.
 
