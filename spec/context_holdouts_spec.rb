@@ -438,7 +438,7 @@ module ContextHoldoutsSpec
         end
       end
 
-      # "09" and "-0" are not the text of any integer, so no JavaScript key matches them.
+      # IDs accept only integers and their canonical decimal spellings.
       [["09", [9]], ["-0", [0]], [9, ["09"]], [0, ["-0"]]].each do |id, ids|
         it "does not match holdout id #{id.inspect} with holdoutIds #{ids.inspect}" do
           context = create_context(data_of([experiment(1, "exp", holdout_ids: ids)],
@@ -973,6 +973,10 @@ module ContextHoldoutsSpec
         refresh(context, data_of([experiment(1, "exp", holdout_ids: [11])], [holdout(11, "holdout_renamed", HOLDOUT_A)]))
         expect(context.treatment("exp")).to eq(0)
 
+        fresh = context.instance_variable_get(:@state).index[:exp].holdouts
+        expect(fresh).not_to receive(:each_with_index)
+        fresh.each { |holdout| expect(holdout).not_to receive(:iteration) }
+        cached.holdouts.each { |holdout| expect(holdout).not_to receive(:iteration) }
         expect(context).not_to receive(:holdout_id)
         expect(context.treatment("exp")).to eq(0)
         expect(context.instance_variable_get(:@assignment_cache)["exp"]).to equal(cached)

@@ -993,8 +993,8 @@ class Context
       @state = State.new(data, index, index_variables, custom_fields)
     end
 
-    # Like a JavaScript object key, an id matches as an integer, an integral
-    # float or its canonical decimal text ("09" and "-0" match nothing).
+    # Collector IDs are integers; integral floats and canonical decimal text
+    # are accepted too. Other text is ignored, even when identical on both sides.
     def holdout_id(id)
       case id
       when Integer then id
