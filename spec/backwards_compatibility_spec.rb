@@ -66,6 +66,28 @@ RSpec.describe "Backwards Compatibility" do
     end
   end
 
+  it "reads string-keyed nested objects passed to Experiment.new" do
+    experiment = Experiment.new(
+      "variants" => [{ "name" => "A", "config" => "{\"a\":1}" }],
+      "applications" => [{ "name" => "website" }],
+      "customFieldValues" => [{ "type" => "string", "value" => "US", "name" => "country" }]
+    )
+
+    expect(experiment.variants).to eq([ExperimentVariant.new("A", "{\"a\":1}")])
+    expect(experiment.applications).to eq([ExperimentApplication.new("website")])
+    expect(experiment.custom_field_values).to eq([CustomFieldValue.new("country", "US", "string")])
+  end
+
+  it "prefers the symbol key when a nested object has both key styles" do
+    experiment = Experiment.new(variants: [{ name: "sym", "name" => "str", config: nil }])
+
+    expect(experiment.variants.first.name).to eq("sym")
+
+    experiment = Experiment.new(variants: [{ name: nil, "name" => "str", config: nil }])
+
+    expect(experiment.variants.first.name).to be_nil
+  end
+
   it "DefaultContextEventHandler is a deprecated alias for DefaultContextPublisher" do
     original = Warning[:deprecated]
     Warning[:deprecated] = true

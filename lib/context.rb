@@ -963,14 +963,15 @@ class Context
 
               if !custom_field_value.value.nil?
                 custom_value = custom_field_value.value
+                type = custom_field_value.type.to_s
 
-                if custom_field_value.type.start_with?("json")
+                if type.start_with?("json")
                   value.value = @variable_parser.parse(self, experiment.name, custom_field_value.name, custom_value)
 
-                elsif custom_field_value.type.start_with?("boolean")
+                elsif type.start_with?("boolean")
                   value.value = custom_value == "true"
 
-                elsif custom_field_value.type.start_with?("number")
+                elsif type.start_with?("number")
                   value.value = custom_value.to_i
 
                 else
