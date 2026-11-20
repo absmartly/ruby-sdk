@@ -298,6 +298,14 @@ module ContextHoldoutsSpec
         expect(exposures_of(context).last).to eq(holdout_exposure(21, "holdout_four_arm", 1))
       end
 
+      it "applies a holdout whose holdoutType this SDK does not know" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
+                                         [holdout(11, "holdout_a", HOLDOUT_A, holdout_type: "future")]))
+
+        expect(context.treatment("exp")).to eq(0)
+        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0)])
+      end
+
       it "takes the arity from the split, not holdoutType" do
         mislabelled = three_arm_holdout(21, "holdout_three_arm", THREE_ARM_1).merge(holdoutType: "full")
         context = create_context(data_of([experiment(1, "non_fullon", holdout_ids: [21])], [mislabelled]))
