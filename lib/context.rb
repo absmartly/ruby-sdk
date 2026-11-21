@@ -251,9 +251,13 @@ class Context
     end
   end
 
-  # experiment_name: the claim is taken only while the assignment is still
-  # the cached one for that experiment (under the assignment lock, which
-  # set_unit also takes to evict); otherwise :evicted is returned.
+  # Kept public as in 1.3.0, but meant for the SDK's own read paths. Queues
+  # an exposure for assignment unless it is already exposed. With
+  # experiment_name, the claim is taken only while the assignment is still
+  # the cached one for that experiment (checked under the assignment lock,
+  # which set_unit also takes to evict); otherwise nothing is queued and
+  # :evicted is returned so the caller resolves it again. A no-unit split
+  # assignment whose unit has since been set is likewise not queued.
   def queue_exposure(assignment, experiment_name = nil)
     return if assignment.exposed
 

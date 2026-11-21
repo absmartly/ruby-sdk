@@ -8,8 +8,13 @@ require "default_context_data_deserializer"
 require "default_context_event_serializer"
 require "default_variable_parser"
 require "json/context_data"
+require "timeout"
 
 RSpec.describe "Context assignment rules" do
+  # Reads retry when an assignment is evicted before its exposure claim; a
+  # regression that never stops retrying fails here instead of hanging CI.
+  around { |example| Timeout.timeout(10) { example.run } }
+
   let(:clock) { Time.at(1620000000000 / 1000) }
   let(:session_id) { "e791e240fcd3df7d238cfc285f475e8152fcc0ec" }
   let(:variable_parser) { DefaultVariableParser.new }
@@ -599,6 +604,30 @@ RSpec.describe "Context assignment rules" do
       allow(matcher).to receive(:evaluate_parsed_rules).and_call_original
       3.times { context.peek_treatment("exp_test_abc") }
       expect(matcher).not_to have_received(:evaluate_parsed_rules)
+    end
+
+    # Another read rebuilds the cached entry right after this read's lookup;
+    # the exposure claim must then resolve again rather than expose the old one.
+    %i[treatment variable_value].each do |read|
+      it "re-resolves a #{read} whose cached assignment another read rebuilt after its lookup" do
+        context = create_context(context_data([assign_rule(1)]), attributes: { country: "US" })
+        armed = true
+        allow(context).to receive(:assignment).and_wrap_original do |original, *args|
+          result = original.call(*args)
+          if armed
+            armed = false
+            context.set_override("exp_test_abc", 0)
+            context.peek_treatment("exp_test_abc")
+          end
+          result
+        end
+        call = read == :treatment ? -> { context.treatment("exp_test_abc") } : -> { context.variable_value("button.color", "d") }
+        expected = read == :treatment ? 0 : "d"
+
+        expect(call.call).to eq(expected)
+        expect(call.call).to eq(expected)
+        expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
+      end
     end
 
     it "uses the latest String or Symbol spelling of an attribute in the built-in evaluator" do
