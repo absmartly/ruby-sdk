@@ -1216,6 +1216,7 @@ RSpec.describe Context do
     second = nil
     begin
       Timeout.timeout(5) { handoff.pop }
+      expect(context.instance_variable_get(:@close_pending)).to be false
       second = Thread.new { context.publish }
       Timeout.timeout(5) { second_send.pop }
       expect(first.join(1)).not_to be_nil
