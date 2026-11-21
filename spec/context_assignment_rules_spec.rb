@@ -8,8 +8,22 @@ require "default_context_data_deserializer"
 require "default_context_event_serializer"
 require "default_variable_parser"
 require "json/context_data"
+require "timeout"
 
 RSpec.describe "Context assignment rules" do
+  # Reads retry when an assignment is evicted before its exposure claim; a
+  # regression that never stops retrying fails here instead of hanging CI.
+  # Threads an example started are killed afterwards, so a timed-out example
+  # can't leave one spinning and slow the rest of the suite.
+  around do |example|
+    before = Thread.list
+    begin
+      Timeout.timeout(10) { example.run }
+    ensure
+      (Thread.list - before).each(&:kill).each { |thread| thread.join(1) }
+    end
+  end
+
   let(:clock) { Time.at(1620000000000 / 1000) }
   let(:session_id) { "e791e240fcd3df7d238cfc285f475e8152fcc0ec" }
   let(:variable_parser) { DefaultVariableParser.new }
@@ -17,7 +31,7 @@ RSpec.describe "Context assignment rules" do
   let(:publish_future) { OpenStruct.new(success?: true) }
   let(:published) { [] }
   let(:event_handler) do
-    handler = double("ContextPublisher")
+    handler = double("Absmartly::ContextPublisher")
     allow(handler).to receive(:publish) do |_ctx, event|
       published << event
       publish_future
@@ -328,6 +342,514 @@ RSpec.describe "Context assignment rules" do
       expect(context.pending_count).to eq(1)
     end
 
+    def clocked_context(data, clock_object, units: {}, attributes: {})
+      config = ContextConfig.create
+      config.set_units(units)
+      config.set_attributes(attributes)
+      Context.create(clock_object, config, OpenStruct.new(data_future: data, success?: true), data_provider,
+                     event_handler, nil, variable_parser, audience_matcher,
+                     application: "website", environment: "production")
+    end
+
+    it "keeps the no-unit variant when the unit is set during that exposure's clock" do
+      holder = {}
+      sid = session_id
+      clock_object = Object.new
+      clock_object.define_singleton_method(:to_i) do
+        if holder[:arm]
+          holder[:arm] = false
+          holder[:context].set_unit("session_id", sid)
+        end
+        123
+      end
+      context = clocked_context(context_data([split_rule("0/100/0")]), clock_object, attributes: { country: "US" })
+      holder[:context] = context
+      holder[:arm] = true
+
+      expect(context.treatment("exp_test_abc")).to eq(0)
+      expect(context.treatment("exp_test_abc")).to eq(0)
+      expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
+    end
+
+    it "rebuilds the no-unit variant if its exposure fails after the unit was set during the clock" do
+      holder = {}
+      sid = session_id
+      clock_object = Object.new
+      clock_object.define_singleton_method(:to_i) do
+        if holder[:arm]
+          holder[:arm] = false
+          holder[:context].set_unit("session_id", sid)
+          raise "clock failed"
+        end
+        123
+      end
+      context = clocked_context(context_data([split_rule("0/100/0")]), clock_object, attributes: { country: "US" })
+      holder[:context] = context
+      holder[:arm] = true
+
+      expect { context.treatment("exp_test_abc") }.to raise_error("clock failed")
+      expect(context.treatment("exp_test_abc")).to eq(1)
+      expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 1]])
+    end
+
+    it "re-resolves a no-unit assignment evicted by set_unit between its lookup and exposure" do
+      context = create_context(context_data([split_rule("0/100/0")]), units: {}, attributes: { country: "US" })
+      sid = session_id
+      armed = true
+      allow(context).to receive(:claim_and_queue_exposure).and_wrap_original do |original, assignment, *rest|
+        if armed
+          armed = false
+          context.set_unit("session_id", sid)
+        end
+        original.call(assignment, *rest)
+      end
+
+      first = context.treatment("exp_test_abc")
+      expect(context.treatment("exp_test_abc")).to eq(first)
+      expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", first]])
+    end
+
+    it "re-resolves a variable read whose assignment set_unit evicted before its exposure" do
+      context = create_context(context_data([split_rule("0/100/0")]), units: {}, attributes: { country: "US" })
+      sid = session_id
+      armed = true
+      allow(context).to receive(:claim_and_queue_exposure).and_wrap_original do |original, assignment, *rest|
+        if armed
+          armed = false
+          context.set_unit("session_id", sid)
+        end
+        original.call(assignment, *rest)
+      end
+
+      first = context.variable_value("button.color", "default")
+      expect(context.variable_value("button.color", "default")).to eq(first)
+      variants = published_exposures(context).map { |e| [e.name, e.variant] }
+      expect(variants.map(&:first)).to eq(["exp_test_abc"])
+    end
+
+    # The refresh and set_unit land right after the lookup returns, before
+    # the caller decides which assignment its exposure claim must match.
+    %i[treatment variable_value].each do |read|
+      it "re-resolves a #{read} when a refresh and set_unit land right after its lookup" do
+        data = context_data([split_rule("0/100/0")])
+        allow(data_provider).to receive(:context_data).and_return(OpenStruct.new(data_future: data, success?: true))
+        context = create_context(data, units: {}, attributes: { country: "US" })
+        sid = session_id
+        armed = true
+        allow(context).to receive(:assignment).and_wrap_original do |original, *args|
+          result = original.call(*args)
+          if armed
+            armed = false
+            context.refresh
+            context.set_unit("session_id", sid)
+          end
+          result
+        end
+        call = read == :treatment ? -> { context.treatment("exp_test_abc") } : -> { context.variable_value("button.color", "d") }
+
+        first = call.call
+        expect(call.call).to eq(first)
+        expect(published_exposures(context).map(&:name)).to eq(["exp_test_abc"])
+      end
+    end
+
+    it "does not claim an exposure that set_unit is evicting" do
+      context = create_context(context_data([split_rule("0/100/0")]), units: {}, attributes: { country: "US" })
+      sid = session_id
+      assignment = context.send(:assignment, "exp_test_abc")
+      cache = context.instance_variable_get(:@assignment_cache)
+      in_eviction = Queue.new
+      resume = Queue.new
+      # Park set_unit inside its eviction, holding the assignment lock, after
+      # it has read which exposures are in progress.
+      allow(cache).to receive(:delete_if).and_wrap_original do |original, &block|
+        if Thread.current[:gate]
+          Thread.current[:gate] = false
+          in_eviction << true
+          resume.pop
+        end
+        original.call(&block)
+      end
+      setter = Thread.new do
+        Thread.current[:gate] = true
+        context.set_unit("session_id", sid)
+      end
+      reader = nil
+      begin
+        Timeout.timeout(5) { in_eviction.pop }
+        reader = Thread.new { context.send(:claim_and_queue_exposure, assignment, "exp_test_abc") }
+        expect(reader.join(0.2)).to be_nil
+        resume << true
+        Timeout.timeout(5) { setter.join }
+        expect(Timeout.timeout(5) { reader.value }).to eq(:evicted)
+      ensure
+        resume << true
+        setter.join(1) || setter.kill
+        reader&.join(1) || reader&.kill
+      end
+
+      expect(context.treatment("exp_test_abc")).to eq(1)
+      expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 1]])
+    end
+
+    it "lets a timeout interrupt an exposure's cleanup waiting for the assignment lock" do
+      holder = {}
+      sid = session_id
+      in_clock = Queue.new
+      clock_object = Object.new
+      clock_object.define_singleton_method(:to_i) do
+        if holder[:arm]
+          holder[:arm] = false
+          holder[:context].set_unit("session_id", sid)
+          in_clock << true
+          sleep
+        end
+        123
+      end
+      context = clocked_context(context_data([split_rule("0/100/0")]), clock_object, attributes: { country: "US" })
+      holder[:context] = context
+      lock = context.instance_variable_get(:@assignment_mutex)
+      locked = Queue.new
+      release = Queue.new
+      reader = Thread.new do
+        holder[:arm] = true
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        begin
+          Timeout.timeout(0.3) { context.treatment("exp_test_abc") }
+        rescue Timeout::Error
+          nil
+        end
+        Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+      end
+      locker = nil
+      begin
+        Timeout.timeout(5) { in_clock.pop }
+        # Held when the timeout unwinds the clock, so cleanup must wait for it.
+        locker = Thread.new { lock.synchronize { locked << true; Timeout.timeout(1.5) { release.pop } rescue nil } }
+        Timeout.timeout(5) { locked.pop }
+        expect(Timeout.timeout(5) { reader.value }).to be < 1
+      ensure
+        release << true
+        locker&.join(1) || locker&.kill
+        reader.join(1) || reader.kill
+      end
+      expect(context.treatment("exp_test_abc")).to eq(1)
+      expect(context.instance_variable_get(:@exposing)).to be_empty
+    end
+
+    def unit_setting_clock(holder, sid, raise_after: false)
+      clock_object = Object.new
+      clock_object.define_singleton_method(:to_i) do
+        if Thread.current[:arm]
+          Thread.current[:arm] = false
+          holder[:context].set_unit("session_id", sid)
+          holder[:in_clock] << true
+          holder[:resume].pop
+          raise "clock failed" if raise_after
+        end
+        123
+      end
+      clock_object
+    end
+
+    %i[treatment variable_value].each do |read|
+      it "a #{read} waiting on a failed no-unit exposure resolves the unit set during it" do
+        holder = { in_clock: Queue.new, resume: Queue.new }
+        clock_object = unit_setting_clock(holder, session_id, raise_after: true)
+        context = clocked_context(context_data([split_rule("0/100/0")]), clock_object, attributes: { country: "US" })
+        holder[:context] = context
+        call = read == :treatment ? -> { context.treatment("exp_test_abc") } : -> { context.variable_value("button.color", "d") }
+        owner = Thread.new do
+          Thread.current[:arm] = true
+          call.call
+        rescue RuntimeError
+          nil
+        end
+        waiter = nil
+        begin
+          Timeout.timeout(5) { holder[:in_clock].pop }
+          waiter = Thread.new { call.call }
+          expect(waiter.join(0.1)).to be_nil
+          holder[:resume] << true
+          Timeout.timeout(5) { owner.join }
+          expected = read == :treatment ? 1 : "blue"
+          expect(Timeout.timeout(5) { waiter.value }).to eq(expected)
+        ensure
+          holder[:resume] << true
+          owner.join(1) || owner.kill
+          waiter&.join(1) || waiter&.kill
+        end
+        expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 1]])
+      end
+    end
+
+    it "a concurrent read during a no-unit exposure that sets the unit serves the variant being exposed" do
+      holder = { in_clock: Queue.new, resume: Queue.new }
+      clock_object = unit_setting_clock(holder, session_id)
+      context = clocked_context(context_data([split_rule("0/100/0")]), clock_object, attributes: { country: "US" })
+      holder[:context] = context
+      owner = Thread.new do
+        Thread.current[:arm] = true
+        context.treatment("exp_test_abc")
+      end
+      begin
+        Timeout.timeout(5) { holder[:in_clock].pop }
+        expect(context.peek_treatment("exp_test_abc")).to eq(0)
+        holder[:resume] << true
+        expect(Timeout.timeout(5) { owner.value }).to eq(0)
+      ensure
+        holder[:resume] << true
+        owner.join(1) || owner.kill
+      end
+      expect(context.treatment("exp_test_abc")).to eq(0)
+      expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
+    end
+
+    it "reuses a no-unit split assignment while its unit is still missing" do
+      context = create_context(context_data([split_rule("0/100/0")]), units: {}, attributes: { country: "US" })
+      context.peek_treatment("exp_test_abc")
+      matcher = context.send(:rule_matcher)
+      allow(matcher).to receive(:evaluate_parsed_rules).and_call_original
+      3.times { context.peek_treatment("exp_test_abc") }
+      expect(matcher).not_to have_received(:evaluate_parsed_rules)
+    end
+
+    # Another read rebuilds the cached entry right after this read's lookup;
+    # the exposure claim must then resolve again rather than expose the old one.
+    %i[treatment variable_value].each do |read|
+      it "re-resolves a #{read} whose cached assignment another read rebuilt after its lookup" do
+        context = create_context(context_data([assign_rule(1)]), attributes: { country: "US" })
+        armed = true
+        allow(context).to receive(:assignment).and_wrap_original do |original, *args|
+          result = original.call(*args)
+          if armed
+            armed = false
+            context.set_override("exp_test_abc", 0)
+            context.peek_treatment("exp_test_abc")
+          end
+          result
+        end
+        call = read == :treatment ? -> { context.treatment("exp_test_abc") } : -> { context.variable_value("button.color", "d") }
+        expected = read == :treatment ? 0 : "d"
+
+        expect(call.call).to eq(expected)
+        expect(call.call).to eq(expected)
+        expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
+      end
+    end
+
+    it "takes no exposure claim or stale check on a warm read of an exposed experiment" do
+      context = create_context(context_data([assign_rule(1)]), attributes: { country: "US" })
+      context.treatment("exp_test_abc")
+      context.variable_value("button.color", "d")
+      allow(context).to receive(:claim_and_queue_exposure).and_call_original
+      allow(context).to receive(:stale_missing_unit?).and_call_original
+
+      context.variable_value("button.color", "d")
+      context.peek_treatment("exp_test_abc")
+
+      expect(context).not_to have_received(:claim_and_queue_exposure)
+      expect(context).not_to have_received(:stale_missing_unit?)
+    end
+
+    it "keeps the no-unit variant when its clock sets the unit and an attribute, then reads" do
+      holder = {}
+      sid = session_id
+      clock_object = Object.new
+      clock_object.define_singleton_method(:to_i) do
+        if holder[:arm]
+          holder[:arm] = false
+          holder[:context].set_unit("session_id", sid)
+          holder[:context].set_attribute("age", 30)
+          holder[:peeked] = holder[:context].peek_treatment("exp_test_abc")
+        end
+        123
+      end
+      context = clocked_context(context_data([split_rule("0/100/0")]), clock_object, attributes: { country: "US" })
+      holder[:context] = context
+      holder[:arm] = true
+
+      expect(context.treatment("exp_test_abc")).to eq(0)
+      expect(holder[:peeked]).to eq(0)
+      expect(context.treatment("exp_test_abc")).to eq(0)
+      expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
+    end
+
+    %i[evicted logged].each do |returned|
+      it "serves and exposes the same when the exposure logger returns #{returned.inspect}" do
+        holder = { calls: 0 }
+        logger = Class.new(ContextEventLogger) do
+          define_method(:handle_event) do |event, _data|
+            next unless event == ContextEventLogger::EVENT_TYPE::EXPOSURE
+
+            holder[:calls] += 1
+            next unless holder[:calls] == 1
+
+            holder[:context].set_override("exp_test_abc", 0)
+            returned
+          end
+        end.new
+        config = ContextConfig.create
+        config.set_units(session_id: session_id)
+        config.set_attributes(country: "US")
+        context = Context.create(clock, config, OpenStruct.new(data_future: context_data(nil), success?: true),
+                                 data_provider, event_handler, logger, variable_parser, audience_matcher,
+                                 application: "website", environment: "production")
+        holder[:context] = context
+
+        expect(context.variable_value("button.color", "default")).to eq("red")
+        expect(context.treatment("exp_test_abc")).to eq(0)
+        expect(published_exposures(context).map { |e| [e.name, e.variant] })
+          .to eq([["exp_test_abc", 2], ["exp_test_abc", 0]])
+      end
+    end
+
+    %i[evicted logged].each do |returned|
+      it "a first treatment serves and exposes the same when the exposure logger returns #{returned.inspect}" do
+        holder = { calls: 0 }
+        logger = Class.new(ContextEventLogger) do
+          define_method(:handle_event) do |event, _data|
+            next unless event == ContextEventLogger::EVENT_TYPE::EXPOSURE
+
+            holder[:calls] += 1
+            next unless holder[:calls] == 1
+
+            holder[:context].set_override("exp_test_abc", 0)
+            returned
+          end
+        end.new
+        config = ContextConfig.create
+        config.set_units(session_id: session_id)
+        config.set_attributes(country: "US")
+        context = Context.create(clock, config, OpenStruct.new(data_future: context_data(nil), success?: true),
+                                 data_provider, event_handler, logger, variable_parser, audience_matcher,
+                                 application: "website", environment: "production")
+        holder[:context] = context
+
+        expect(context.treatment("exp_test_abc")).to eq(2)
+        expect(context.treatment("exp_test_abc")).to eq(0)
+        expect(published_exposures(context).map { |e| [e.name, e.variant] })
+          .to eq([["exp_test_abc", 2], ["exp_test_abc", 0]])
+      end
+    end
+
+    it "the public queue_exposure queues any assignment it is given, as in 1.3.0" do
+      context = create_context(context_data([split_rule("0/100/0")]), units: {}, attributes: { country: "US" })
+      no_unit = context.send(:assignment, "exp_test_abc")
+      context.set_unit("session_id", session_id)
+
+      context.queue_exposure(no_unit)
+      expect(context.pending_count).to eq(1)
+      expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
+    end
+
+    # A concurrent read checks an assignment just as its exposure completes:
+    # it must not see it as neither exposed nor being exposed.
+    [[false, 1], [true, 1], [true, 2]].each do |with_attribute, gate_at|
+      it "keeps the no-unit variant when a read overlaps its exposure completing#{" after an attribute update" if with_attribute} at check #{gate_at}" do
+        holder = { in_clock: Queue.new, resume: Queue.new }
+        sid = session_id
+        clock_object = Object.new
+        clock_object.define_singleton_method(:to_i) do
+          if Thread.current[:arm]
+            Thread.current[:arm] = false
+            holder[:context].set_unit("session_id", sid)
+            holder[:context].set_attribute("age", 30) if with_attribute
+            holder[:in_clock] << true
+            holder[:resume].pop
+          end
+          123
+        end
+        context = clocked_context(context_data([split_rule("0/100/0")]), clock_object, attributes: { country: "US" })
+        holder[:context] = context
+        queue_mutex = context.instance_variable_get(:@queue_mutex)
+        checking = Queue.new
+        proceed = Queue.new
+        # Park the reader as it takes the queue lock to check the assignment's
+        # exposure state, until the owner has completed its exposure.
+        allow(queue_mutex).to receive(:synchronize).and_wrap_original do |original, &block|
+          if Thread.current[:gate]
+            Thread.current[:checks] = (Thread.current[:checks] || 0) + 1
+            if Thread.current[:checks] == gate_at
+              Thread.current[:gate] = false
+              checking << true
+              proceed.pop
+            end
+          end
+          original.call(&block)
+        end
+        owner = Thread.new do
+          Thread.current[:arm] = true
+          context.treatment("exp_test_abc")
+        end
+        reader = nil
+        begin
+          Timeout.timeout(5) { holder[:in_clock].pop }
+          reader = Thread.new do
+            Thread.current[:gate] = true
+            context.peek_treatment("exp_test_abc")
+          end
+          Timeout.timeout(5) { checking.pop }
+          holder[:resume] << true
+          expect(Timeout.timeout(5) { owner.value }).to eq(0)
+          proceed << true
+          expect(Timeout.timeout(5) { reader.value }).to eq(0)
+        ensure
+          holder[:resume] << true
+          proceed << true
+          owner.join(1) || owner.kill
+          reader&.join(1) || reader&.kill
+        end
+        expect(context.treatment("exp_test_abc")).to eq(0)
+        expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
+      end
+    end
+
+    it "does not take the queue lock to check a no-unit assignment already exposed" do
+      context = create_context(context_data([split_rule("0/100/0")]), units: {}, attributes: { country: "US" })
+      context.treatment("exp_test_abc")
+      context.set_unit("session_id", session_id)
+      context.set_attribute("age", 30)
+      assignment = context.send(:assignment, "exp_test_abc")
+      mutex = context.instance_variable_get(:@queue_mutex)
+      expect(mutex).not_to receive(:synchronize)
+      expect(context.send(:exposed_or_exposing?, assignment)).to be true
+    end
+
+    it "does not reinstall an old variable assignment after refresh exposes the new one" do
+      old_data = context_data([assign_rule(2)])
+      new_data = context_data([assign_rule(1)])
+      allow(data_provider).to receive(:context_data).and_return(OpenStruct.new(data_future: new_data, success?: true))
+      context = create_context(old_data, attributes: { country: "US" })
+      armed = true
+      allow(context).to receive(:assignment).and_wrap_original do |original, *args|
+        result = original.call(*args)
+        if armed
+          armed = false
+          context.refresh
+          expect(context.variable_value("button.color", "d")).to eq("blue")
+        end
+        result
+      end
+      context.variable_value("button.color", "d")
+      expect(context.variable_value("button.color", "d")).to eq("blue")
+      variants = published_exposures(context).select { |e| e.name == "exp_test_abc" }.map(&:variant)
+      expect(variants.count(1)).to eq(1)
+    end
+
+    it "uses the latest String or Symbol spelling of an attribute in the built-in evaluator" do
+      staging = { and: [{ eq: [{ var: "environment" }, { value: "staging" }] }] }
+      context = create_context(context_data([assign_rule(1, conditions: staging)]))
+      context.set_attribute("environment", "prod")
+      expect(context.treatment("exp_test_abc")).to eq(2)
+
+      context.set_attribute(:environment, "staging")
+      expect(context.treatment("exp_test_abc")).to eq(1)
+
+      context.set_attribute("environment", "prod")
+      expect(context.treatment("exp_test_abc")).to eq(2)
+    end
+
     it "keeps an assign rule assignment when the unit is set" do
       context = create_context(context_data([assign_rule(1)]), units: {}, attributes: { country: "US" })
       expect(context.treatment("exp_test_abc")).to eq(1)
@@ -391,6 +913,22 @@ RSpec.describe "Context assignment rules" do
   end
 
   describe "cached reads" do
+    it "parses rules once at install, not on resolution or attribute revalidation" do
+      parses = 0
+      allow(audience_matcher).to receive(:parse_rules).and_wrap_original do |original, *args|
+        parses += 1
+        original.call(*args)
+      end
+      context = create_context(context_data([assign_rule(1)]), attributes: { country: "US" })
+      expect(parses).to eq(1)
+      expect(context.treatment("exp_test_abc")).to eq(1)
+      3.times do |i|
+        context.set_attribute("unrelated", i)
+        expect(context.peek_treatment("exp_test_abc")).to eq(1)
+      end
+      expect(parses).to eq(1)
+    end
+
     def count_rule_evaluations
       calls = 0
       allow(audience_matcher).to receive(:evaluate_parsed_rules).and_wrap_original do |original, *args|

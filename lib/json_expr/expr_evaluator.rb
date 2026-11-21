@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require_relative "../string"
 require_relative "../type_utils"
 require_relative "./evaluator"
 EMPTY_MAP = {}
@@ -106,5 +107,13 @@ class ExprEvaluator < Evaluator
       return 0
     end
     nil
+  end
+end
+
+# Kept from v1.3.0, which defined it here; the SDK itself uses
+# Absmartly::TypeUtils.wrap_array.
+class Array
+  def self.wrap(object)
+    Absmartly::TypeUtils.wrap_array(object)
   end
 end

@@ -26,7 +26,7 @@ RSpec.describe "Backwards Compatibility" do
       class MyPublisher < ContextEventHandler
         def publish(context, event); end
       end
-      p [MyPublisher.ancestors.include?(ContextPublisher), DefaultContextEventHandler == DefaultContextPublisher]
+      p [MyPublisher.ancestors.include?(Absmartly::ContextPublisher), DefaultContextEventHandler == Absmartly::DefaultContextPublisher]
     RUBY
     expect([out, status.success?]).to eq(["[true, true]\n", true]), err
   end
@@ -42,11 +42,37 @@ RSpec.describe "Backwards Compatibility" do
     expect([out, status.success?]).to eq(["[Module, Object, [], true]\n", true]), err
   end
 
-  it "ContextEventHandler is a deprecated alias for ContextPublisher" do
+  it "loads next to application classes named like the SDK's additions without replacing them" do
+    out, err, status = run_ruby(<<~RUBY)
+      class PublishError < RuntimeError; end
+      class SemverComparator; end
+      class ContextDataResult; end
+      require "absmartly"
+      class Base; end
+      class ContextPublisher < Base
+        def publish(*); :mine; end
+      end
+      class DefaultContextPublisher
+        def publish(*); :mine_too; end
+      end
+      p [PublishError.superclass, SemverComparator.class, ContextPublisher.superclass,
+         ContextPublisher == ContextEventHandler, DefaultContextPublisher.superclass,
+         DefaultContextEventHandler.new(Object.new).respond_to?(:publish) &&
+           DefaultContextEventHandler.instance_method(:publish).owner,
+         Absmartly::PublishError.superclass,
+         ABSmartly.new("https://x/v1", api_key: "k", application: "a", environment: "e")
+           .context_event_handler.class]
+    RUBY
+    expect([out, status.success?])
+      .to eq(["[RuntimeError, Class, Base, false, Object, DefaultContextEventHandler, StandardError, DefaultContextEventHandler]\n",
+              true]), err
+  end
+
+  it "ContextEventHandler is still the v1.3.0 class, aliased as Absmartly::ContextPublisher without a warning" do
     original = Warning[:deprecated]
     Warning[:deprecated] = true
-    expect { expect(Object.const_get(:ContextEventHandler)).to eq(ContextPublisher) }
-      .to output(/ContextEventHandler is deprecated/).to_stderr
+    expect { expect(Absmartly::ContextPublisher).to eq(ContextEventHandler) }.not_to output.to_stderr
+    expect(ContextEventHandler.name).to eq("ContextEventHandler")
   ensure
     Warning[:deprecated] = original
   end
@@ -78,6 +104,29 @@ RSpec.describe "Backwards Compatibility" do
     expect(experiment.custom_field_values).to eq([CustomFieldValue.new("country", "US", "string")])
   end
 
+  it "parses custom field values whose type is given as a Symbol, as in v1.3.0" do
+    out, err, status = run_ruby(<<~RUBY)
+      require "absmartly"
+      data = ContextData.new([{ id: 1, name: "exp", unitType: "session_id", iteration: 1, split: [1],
+                                trafficSplit: [1], fullOnVariant: 0, seedHi: 0, seedLo: 0,
+                                trafficSeedHi: 0, trafficSeedLo: 0,
+                                variants: [{ name: "A", config: nil }],
+                                customFieldValues: [{ name: "j", value: '{"a":1}', type: :json },
+                                                    { name: "n", value: "7", type: :number },
+                                                    { name: "b", value: "true", type: :boolean }] }])
+      config = ContextConfig.create
+      config.set_unit("session_id", "u1")
+      context = Context.create(Time.at(0), config, Struct.new(:data_future, :success?).new(data, true), nil,
+                               nil, nil, DefaultVariableParser.new,
+                               AudienceMatcher.new(DefaultAudienceDeserializer.new))
+      print Marshal.dump([context.custom_field_value("exp", "j"), context.custom_field_value("exp", "n"),
+                          context.custom_field_value("exp", "b")]).unpack1("H*")
+    RUBY
+
+    expect(status).to be_success, err
+    expect(Marshal.load([out].pack("H*"))).to eq([{ a: 1 }, 7, true])
+  end
+
   it "prefers the symbol key when a nested object has both key styles" do
     experiment = Experiment.new(variants: [{ name: "sym", "name" => "str", config: nil }])
 
@@ -88,11 +137,12 @@ RSpec.describe "Backwards Compatibility" do
     expect(experiment.variants.first.name).to be_nil
   end
 
-  it "DefaultContextEventHandler is a deprecated alias for DefaultContextPublisher" do
+  it "DefaultContextEventHandler is still the v1.3.0 class, aliased as Absmartly::DefaultContextPublisher without a warning" do
     original = Warning[:deprecated]
     Warning[:deprecated] = true
-    expect { expect(Object.const_get(:DefaultContextEventHandler)).to eq(DefaultContextPublisher) }
-      .to output(/DefaultContextEventHandler is deprecated/).to_stderr
+    expect { expect(Absmartly::DefaultContextPublisher).to eq(DefaultContextEventHandler) }.not_to output.to_stderr
+    expect(DefaultContextEventHandler.name).to eq("DefaultContextEventHandler")
+    expect(DefaultContextEventHandler.superclass).to eq(ContextEventHandler)
   ensure
     Warning[:deprecated] = original
   end
@@ -105,7 +155,7 @@ RSpec.describe "Backwards Compatibility" do
     config = ABSmartlyConfig.create
     config.client = client
     expect(ABSmartly.create(config).context_event_handler).to be_a(Object.const_get(:DefaultContextEventHandler))
-    expect(@handler).to be_a(DefaultContextPublisher)
+    expect(@handler).to be_a(Absmartly::DefaultContextPublisher)
   ensure
     Warning[:deprecated] = original
   end

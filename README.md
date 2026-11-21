@@ -11,13 +11,13 @@ The ABsmartly Ruby SDK is compatible with Ruby versions 2.7 and later. For the b
 Install the gem and add to the application's Gemfile by executing:
 
 ```bash
-bundle add absmartly-sdk
+bundle add absmartly-sdk --version "~> 1.4"
 ```
 
 If bundler is not being used to manage dependencies, install the gem by executing:
 
 ```bash
-gem install absmartly-sdk
+gem install absmartly-sdk -v 1.4.0
 ```
 
 ## Getting Started
@@ -174,7 +174,9 @@ if context.ready?
 end
 ```
 
-Read methods (`treatment`, `peek_treatment`, `variable_value`, `peek_variable_value`, `variable_keys`, `experiments`, `custom_field_keys`, `custom_field_value`) raise `IllegalStateException` ("ABSmartly Context is not yet ready") until the context is ready, and ("ABSmartly Context is closed") after `close`. Check `ready?` first. A context whose data fetch failed is ready and failed: reads return control (0) and the caller's defaults.
+A `refresh` that was already in flight when the initial fetch failed, and then installs data, recovers the context (a failed `refresh` installs nothing, and a `refresh` called after the context failed is a no-op, as in 1.3.0): it installs the data, clears `failed?` and `ready_error`, and events still queued are published with the next `publish`. Exposures made while the context was failed are unassigned (`assigned: false`, experiment id 0; control unless an override forces a variant), which the collector excludes from analysis; a `publish` made while the context was failed still drops its events, as in 1.3.0. A `refresh` that succeeds before the background fetch lands makes the context ready with the refreshed data; that data is kept when the initial fetch completes later, and the `"ready"` event is logged once the initial fetch completes.
+
+Read methods (`treatment`, `peek_treatment`, `variable_value`, `peek_variable_value`, `variable_keys`, `experiments`, `custom_field_keys`, `custom_field_value`) raise `IllegalStateException` ("ABSmartly Context is not yet ready") until the context is ready, and ("ABSmartly Context is closed") after `close` or `finalize` (except `experiments`, which still works after `finalize`). Check `ready?` first. A context whose data fetch failed is ready and failed: reads return control (0) and the caller's defaults.
 
 Or using the global configuration approach:
 
@@ -358,13 +360,23 @@ context.publish
 
 The `close` method will ensure all events have been published to the ABsmartly collector, like `publish`, and will also "seal" the context, throwing an error if any method that could generate an event is called.
 
-If the final publish fails, `close` raises the failure, the context stays open and the events stay queued, so `close` can be called again to retry. The raised error is a `StandardError`, so it can be caught with an ordinary `rescue`.
+If the collector rejects the final publish, `close` logs an `"error"` event, drops that batch and still seals the context, as in v1.3.0. Events tracked while that request was in flight are not part of the rejected batch, so `close` sends them before sealing.
 
 ```ruby
 context.close
 ```
 
-`finalize` does the same as `close`, but logs the `"finalize"` event instead of `"close"`.
+`finalize` works like the other ABsmartly SDKs: if the final publish fails it raises the failure (a `StandardError`, so an ordinary `rescue` catches it), the context stays open and the events stay queued, so `finalize` can be called again to retry. It logs the `"finalize"` event instead of `"close"`, and `experiments`, `set_override` and `set_overrides` keep working after it.
+
+```ruby
+begin
+  context.finalize
+rescue StandardError => e
+  # retry later: the events are still queued
+end
+```
+
+Both sealing methods allow one extra publish for events queued during the first request. If events are still queued after that extra publish (whether it succeeded, or `close` dropped its rejected batch), they stay queued, the context stays open, and the method raises `StandardError` ("Events queued while closing; retry close or finalize"); those events are not sent in the same call, so retry after the producer stops. Otherwise a rejection follows the rules above: `close` logs the error, drops that batch and seals (as in v1.3.0), and `finalize` raises the rejection and stays open.
 
 ### Custom Event Logger
 

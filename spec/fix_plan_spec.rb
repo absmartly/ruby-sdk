@@ -33,7 +33,7 @@ RSpec.describe "Fix Plan Validations" do
   let(:data) { descr.deserialize(json, 0, json.length) }
   let(:publish_future) { OpenStruct.new(success?: true) }
   let(:event_handler) do
-    ev = instance_double(ContextPublisher)
+    ev = instance_double(Absmartly::ContextPublisher)
     allow(ev).to receive(:publish).and_return(publish_future)
     ev
   end
@@ -100,7 +100,7 @@ RSpec.describe "Fix Plan Validations" do
     end
 
     it "flush atomically clears events before publishing" do
-      ev = instance_double(ContextPublisher)
+      ev = instance_double(Absmartly::ContextPublisher)
       allow(ev).to receive(:publish).and_return(publish_future)
 
       context = create_ready_context(evt_handler: ev)
@@ -316,7 +316,7 @@ RSpec.describe "Fix Plan Validations" do
 
   describe "Fix 1.3: publish error handling preserves events on failure" do
     it "preserves pending_count after publish failure" do
-      ev = instance_double(ContextPublisher)
+      ev = instance_double(Absmartly::ContextPublisher)
       failure = Exception.new("FAILED")
       failure_future = OpenStruct.new(exception: failure, success?: false, data_future: nil)
       allow(ev).to receive(:publish).and_return(failure_future)
@@ -353,17 +353,17 @@ RSpec.describe "Fix Plan Validations" do
     end
   end
 
-  describe "Fix 4.1: set_override works after context is closed" do
-    it "allows set_override after close without raising" do
+  describe "Fix 4.1: set_override works after context is finalized" do
+    it "allows set_override after finalize without raising" do
       context = create_ready_context
-      context.close
+      context.finalize
 
       expect { context.set_override("exp_test_ab", 2) }.not_to raise_error
     end
 
-    it "allows set_overrides after close without raising" do
+    it "allows set_overrides after finalize without raising" do
       context = create_ready_context
-      context.close
+      context.finalize
 
       expect { context.set_overrides("exp_test_ab": 2) }.not_to raise_error
     end
@@ -443,7 +443,7 @@ RSpec.describe "Fix Plan Validations" do
     def shared_context(published, exp_a_full_on: 0)
       json = JSON.generate({ "experiments" => [shared_experiment(1, "exp_a", "user_id", exp_a_full_on),
                                                shared_experiment(2, "exp_b", "session_id", 1)] })
-      handler = instance_double(ContextPublisher)
+      handler = instance_double(Absmartly::ContextPublisher)
       allow(handler).to receive(:publish) { |_ctx, event| published.concat(event.exposures || []); publish_future }
       config = ContextConfig.create
       config.set_unit(:session_id, "test-unit")
@@ -485,7 +485,7 @@ RSpec.describe "Fix Plan Validations" do
                            { "name" => "B", "config" => %({"shared.key":"from_exp_a"}) }]
       json = JSON.generate({ "experiments" => [exp_a, shared_experiment(2, "exp_b", "session_id", 1)] })
       published = []
-      handler = instance_double(ContextPublisher)
+      handler = instance_double(Absmartly::ContextPublisher)
       allow(handler).to receive(:publish) { |_ctx, event| published.concat(event.exposures || []); publish_future }
       config = ContextConfig.create
       config.set_unit(:session_id, "test-unit")
@@ -504,7 +504,7 @@ RSpec.describe "Fix Plan Validations" do
       json = JSON.generate({ "experiments" => [shared_experiment(2, "exp_b", "session_id", 1),
                                                shared_experiment(1, "exp_a", "session_id", 1)] })
       published = []
-      handler = instance_double(ContextPublisher)
+      handler = instance_double(Absmartly::ContextPublisher)
       allow(handler).to receive(:publish) { |_ctx, event| published.concat(event.exposures || []); publish_future }
       config = ContextConfig.create
       config.set_unit(:session_id, "test-unit")
