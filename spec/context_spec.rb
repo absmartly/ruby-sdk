@@ -575,6 +575,71 @@ RSpec.describe Context do
     end
   end
 
+  it "passes both String and Symbol user keys to an AudienceMatcher subclass, as in v1.3.0" do
+    seen = nil
+    matcher = Class.new(AudienceMatcher) do
+      define_method(:evaluate) do |audience, attributes|
+        seen = attributes
+        super(audience, attributes)
+      end
+    end.new(DefaultAudienceDeserializer.new)
+    config = ContextConfig.create
+    config.set_units(units)
+    context = Context.create(clock, config, audience_strict_data_future_ready, data_provider, event_handler,
+                             event_logger, variable_parser, matcher)
+    context.set_attribute("age", 10)
+    context.set_attribute(:age, 25)
+    context.peek_treatment("exp_test_ab")
+
+    expect(seen).to eq("age" => 10, :age => 25)
+  end
+
+  it "allocates no more on a warmed treatment than one exposed read needs" do
+    context = create_ready_context
+    context.treatment("exp_test_ab")
+    GC.disable
+    before = GC.stat(:total_allocated_objects)
+    100.times { context.treatment("exp_test_ab") }
+    allocated = GC.stat(:total_allocated_objects) - before
+    GC.enable
+    expect(allocated).to be <= 100
+  end
+
+  it "lets a timeout interrupt a treatment waiting for the assignment lock" do
+    release = Queue.new
+    holding = Queue.new
+    matcher = Class.new do
+      define_method(:evaluate) do |_audience, _attributes|
+        if Thread.current[:hold]
+          holding << true
+          # Bounded, so a regression that masks the wait fails instead of hanging.
+          Timeout.timeout(1.5) { release.pop } rescue nil
+        end
+        Struct.new(:result).new(true)
+      end
+    end.new
+    config = ContextConfig.create
+    config.set_units(units)
+    context = Context.create(clock, config, audience_strict_data_future_ready, data_provider, event_handler,
+                             event_logger, variable_parser, matcher)
+    # Cached but not exposed, so the treatment below must take the claim.
+    assignment = context.send(:assignment, "exp_test_abc")
+    holder = Thread.new do
+      Thread.current[:hold] = true
+      context.peek_treatment("exp_test_ab")
+    end
+    begin
+      Timeout.timeout(5) { holding.pop }
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      expect { Timeout.timeout(0.3) { context.send(:queue_exposure, assignment, "exp_test_abc") } }
+        .to raise_error(Timeout::Error)
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1
+    ensure
+      release << true
+      holder.join(5) || holder.kill
+    end
+  end
+
   it "keeps both String and Symbol user keys for a custom matcher, as in v1.3.0" do
     seen = nil
     matcher = Class.new do
@@ -849,17 +914,24 @@ RSpec.describe Context do
         holder[:context].finalize
       end
     end.new
+    blocked = Queue.new
     handler = Object.new
     handler.define_singleton_method(:publish) do |_context, _event|
       holder[:calls] += 1
-      sleep 2 if holder[:calls] == 2
+      if holder[:calls] == 2
+        blocked << true
+        sleep
+      end
       OpenStruct.new(success?: true)
     end
     holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
                                       variable_parser, audience_matcher)
     holder[:context].track("goal1", nil)
 
-    expect { Timeout.timeout(0.3) { holder[:context].publish } }.to raise_error(Timeout::Error)
+    publisher = Thread.new { Timeout.timeout(5) { holder[:context].publish } }
+    Timeout.timeout(5) { blocked.pop }
+    publisher.raise(Timeout::Error)
+    expect { publisher.join(5) }.to raise_error(Timeout::Error)
     expect(holder[:context].finalized?).to be false
     expect(holder[:context].pending_count).to eq(1)
     Timeout.timeout(5) { holder[:context].publish }

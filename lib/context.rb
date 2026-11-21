@@ -243,14 +243,11 @@ class Context
   def treatment(experiment_name)
     check_ready?(true)
 
-    loop do
-      state = @state
-      assignment = assignment(experiment_name, state)
+    while true # rubocop:disable Style/InfiniteLoop -- no block allocation on the read path
+      assignment = assignment(experiment_name)
       # set_unit may evict it between the lookup and the exposure claim:
       # then it is resolved again, so the variant served is the one exposed.
-      # A read on a snapshot a refresh replaced is never cached, so not checked.
-      current = state.equal?(@state) ? experiment_name : nil
-      return assignment.variant unless queue_exposure(assignment, current) == :evicted
+      return assignment.variant unless queue_exposure(assignment, experiment_name) == :evicted
     end
   end
 
@@ -265,8 +262,10 @@ class Context
       loop do
         waiting = false
         evicted = false
-        Thread.handle_interrupt(Object => :never) do
-          @assignment_mutex.synchronize do
+        # Waiting for the assignment lock stays interruptible; only the claim
+        # bookkeeping under it is masked.
+        @assignment_mutex.synchronize do
+          Thread.handle_interrupt(Object => :never) do
             @queue_mutex.synchronize do
               check_not_closed?
               waiting = @exposing.key?(assignment) && @exposing[assignment] != Thread.current
@@ -1013,13 +1012,15 @@ class Context
       key = key.to_s.to_sym
       (state.index_variables[key] || []).each do |experiment|
         assignment = nil
-        loop do
+        while true # rubocop:disable Style/InfiniteLoop -- no block allocation on the read path
           assignment = assignment(experiment.data.name, state)
           break if assignment.variables.nil? || !expose
           # Resolved again if set_unit evicted it before its exposure claim. A
-          # read on a replaced snapshot is never cached, so it is not checked.
-          current = state.equal?(@state) ? experiment.data.name : nil
-          break unless queue_exposure(assignment, current) == :evicted
+          # read on a failed snapshot that a refresh has since replaced is the
+          # one kind never cached (see cached_or_new_assignment), so it is not
+          # checked; any other assignment read here was cached.
+          late_failed_read = state.equal?(@failed_state) && !@state.equal?(@failed_state)
+          break unless queue_exposure(assignment, late_failed_read ? nil : experiment.data.name) == :evicted
         end
         next if assignment.variables.nil?
 

@@ -413,6 +413,65 @@ RSpec.describe "Context assignment rules" do
       expect(variants.map(&:first)).to eq(["exp_test_abc"])
     end
 
+    it "re-resolves when a refresh and set_unit land between the lookup and the exposure" do
+      data = context_data([split_rule("0/100/0")])
+      allow(data_provider).to receive(:context_data).and_return(OpenStruct.new(data_future: data, success?: true))
+      context = create_context(data, units: {}, attributes: { country: "US" })
+      sid = session_id
+      armed = true
+      allow(context).to receive(:queue_exposure).and_wrap_original do |original, assignment, *rest|
+        if armed
+          armed = false
+          context.refresh
+          context.set_unit("session_id", sid)
+        end
+        original.call(assignment, *rest)
+      end
+
+      first = context.treatment("exp_test_abc")
+      expect(context.treatment("exp_test_abc")).to eq(first)
+      expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", first]])
+    end
+
+    it "does not claim an exposure that set_unit is evicting" do
+      context = create_context(context_data([split_rule("0/100/0")]), units: {}, attributes: { country: "US" })
+      sid = session_id
+      assignment = context.send(:assignment, "exp_test_abc")
+      cache = context.instance_variable_get(:@assignment_cache)
+      in_eviction = Queue.new
+      resume = Queue.new
+      # Park set_unit inside its eviction, holding the assignment lock, after
+      # it has read which exposures are in progress.
+      allow(cache).to receive(:delete_if).and_wrap_original do |original, &block|
+        if Thread.current[:gate]
+          Thread.current[:gate] = false
+          in_eviction << true
+          resume.pop
+        end
+        original.call(&block)
+      end
+      setter = Thread.new do
+        Thread.current[:gate] = true
+        context.set_unit("session_id", sid)
+      end
+      reader = nil
+      begin
+        Timeout.timeout(5) { in_eviction.pop }
+        reader = Thread.new { context.send(:queue_exposure, assignment, "exp_test_abc") }
+        expect(reader.join(0.2)).to be_nil
+        resume << true
+        Timeout.timeout(5) { setter.join }
+        expect(Timeout.timeout(5) { reader.value }).to eq(:evicted)
+      ensure
+        resume << true
+        setter.join(5) || setter.kill
+        reader&.join(5) || reader&.kill
+      end
+
+      expect(context.treatment("exp_test_abc")).to eq(1)
+      expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 1]])
+    end
+
     it "uses the latest String or Symbol spelling of an attribute in the built-in evaluator" do
       staging = { and: [{ eq: [{ var: "environment" }, { value: "staging" }] }] }
       context = create_context(context_data([assign_rule(1, conditions: staging)]))
