@@ -9,7 +9,7 @@ class DefaultContextDataDeserializer < ContextDataDeserializer
 
   def deserialize(bytes, offset, length)
     parse = JSON.parse(bytes[offset, length], symbolize_names: true)
-    @reader = ContextData.new(parse[:experiments])
+    @reader = ContextData.new(parse[:experiments], parse[:holdouts])
   rescue StandardError
     nil
   end

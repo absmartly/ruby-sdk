@@ -9,13 +9,14 @@ class Experiment
   attr_accessor :id, :name, :unit_type, :iteration, :seed_hi, :seed_lo, :split,
                 :traffic_seed_hi, :traffic_seed_lo, :traffic_split, :full_on_variant,
                 :applications, :variants, :audience_strict, :audience, :custom_field_values,
-                :assignment_rules
+                :assignment_rules, :holdout_ids, :holdout_type
 
   ALLOWED_KEYS = %i[
     id name unitType unit_type iteration seedHi seed_hi seedLo seed_lo split
     trafficSeedHi traffic_seed_hi trafficSeedLo traffic_seed_lo trafficSplit traffic_split
     fullOnVariant full_on_variant applications variants audienceStrict audience_strict
     audience customFieldValues custom_field_values assignmentRules assignment_rules
+    holdoutIds holdout_ids holdoutType holdout_type
   ].freeze
 
   def initialize(args = {})
@@ -68,7 +69,8 @@ class Experiment
       @traffic_split == that.traffic_split && @applications == that.applications &&
       @variants == that.variants && @audience_strict == that.audience_strict &&
       @audience == that.audience && @custom_field_values == that.custom_field_values &&
-      @assignment_rules == that.assignment_rules
+      @assignment_rules == that.assignment_rules &&
+      holdout_ids == that.holdout_ids && holdout_type == that.holdout_type
   end
 
   def hash_code
