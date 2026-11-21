@@ -1223,7 +1223,7 @@ RSpec.describe Context do
       expect(second.alive?).to be true
       release_send << true
       Timeout.timeout(5) { second.join }
-      context.publish
+      context.publish unless context.finalized?
       expect(context.finalized?).to be true
     ensure
       release_send << true
