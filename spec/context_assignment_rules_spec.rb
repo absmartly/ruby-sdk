@@ -745,8 +745,8 @@ RSpec.describe "Context assignment rules" do
 
     # A concurrent read checks an assignment just as its exposure completes:
     # it must not see it as neither exposed nor being exposed.
-    [false, true].each do |with_attribute|
-      it "keeps the no-unit variant when a read overlaps its exposure completing#{" after an attribute update" if with_attribute}" do
+    [[false, 1], [true, 1], [true, 2]].each do |with_attribute, gate_at|
+      it "keeps the no-unit variant when a read overlaps its exposure completing#{" after an attribute update" if with_attribute} at check #{gate_at}" do
         holder = { in_clock: Queue.new, resume: Queue.new }
         sid = session_id
         clock_object = Object.new
@@ -769,9 +769,12 @@ RSpec.describe "Context assignment rules" do
         # exposure state, until the owner has completed its exposure.
         allow(queue_mutex).to receive(:synchronize).and_wrap_original do |original, &block|
           if Thread.current[:gate]
-            Thread.current[:gate] = false
-            checking << true
-            proceed.pop
+            Thread.current[:checks] = (Thread.current[:checks] || 0) + 1
+            if Thread.current[:checks] == gate_at
+              Thread.current[:gate] = false
+              checking << true
+              proceed.pop
+            end
           end
           original.call(&block)
         end
@@ -800,6 +803,17 @@ RSpec.describe "Context assignment rules" do
         expect(context.treatment("exp_test_abc")).to eq(0)
         expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
       end
+    end
+
+    it "does not take the queue lock to check a no-unit assignment already exposed" do
+      context = create_context(context_data([split_rule("0/100/0")]), units: {}, attributes: { country: "US" })
+      context.treatment("exp_test_abc")
+      context.set_unit("session_id", session_id)
+      context.set_attribute("age", 30)
+      assignment = context.send(:assignment, "exp_test_abc")
+      mutex = context.instance_variable_get(:@queue_mutex)
+      expect(mutex).not_to receive(:synchronize)
+      expect(context.send(:exposed_or_exposing?, assignment)).to be true
     end
 
     it "uses the latest String or Symbol spelling of an attribute in the built-in evaluator" do

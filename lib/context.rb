@@ -845,6 +845,9 @@ class Context
     # Read together under the queue lock: an exposure completing sets exposed
     # and releases its claim under that lock, so a reader can't see neither.
     def exposed_or_exposing?(assignment)
+      # exposed only moves false -> true: the positive result is stable.
+      return true if assignment.exposed
+
       @queue_mutex.synchronize { assignment.exposed || @exposing.key?(assignment) }
     end
 

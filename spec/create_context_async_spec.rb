@@ -1544,6 +1544,15 @@ RSpec.describe "create_context_async" do
         context = Context.create_async(clock, config, data_provider,
                                        handler, event_logger, variable_parser, audience_matcher)
         context.track("before_failure", nil)
+        # Each copy is part of the failure/selection transaction, including a
+        # copy moved earlier than the scheduling gate below.
+        %i[@achievements @exposures].each do |name|
+          array = context.instance_variable_get(name)
+          allow(array).to receive(:dup).and_wrap_original do |original|
+            expect(context.instance_variable_get(:@ready_mutex).owned?).to be true
+            original.call
+          end
+        end
         # Park the publisher the moment it releases the readiness lock that
         # covers its failure check and batch selection, then fail the fetch and
         # queue a goal. Any part of the batch copied outside that lock (before
