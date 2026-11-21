@@ -527,8 +527,10 @@ class Context
       # that is already running does not claim it, so the request survives if
       # that seal fails or gives up.
       if @publish_mutex.owned?
-        @close_pending = event_type
-        @close_requests += 1
+        @deferred_mutex.synchronize do
+          @close_pending = event_type
+          @close_requests += 1
+        end
         return nil
       end
 
@@ -698,11 +700,13 @@ class Context
     end
 
     def take_close_pending
-      return nil unless @close_pending
+      @deferred_mutex.synchronize do
+        next nil unless @close_pending
 
-      claimed = [@close_pending, @close_requests]
-      @close_pending = false
-      claimed
+        claimed = [@close_pending, @close_requests]
+        @close_pending = false
+        claimed
+      end
     end
 
     def run_deferred_seal(claimed)
@@ -726,7 +730,7 @@ class Context
     # one another publish has already claimed).
     def restore_close_pending((event_type, request))
       Thread.handle_interrupt(Object => :never) do
-        @publish_mutex.synchronize do
+        @deferred_mutex.synchronize do
           @close_pending = event_type unless @closed || @close_requests != request
         end
       end
@@ -1272,6 +1276,7 @@ class Context
       @ready_condvar = ConditionVariable.new
       @queue_mutex = Mutex.new
       @publish_mutex = Mutex.new
+      @deferred_mutex = Mutex.new
       @close_pending = false
       @close_requests = 0
 

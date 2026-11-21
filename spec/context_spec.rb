@@ -1168,6 +1168,70 @@ RSpec.describe Context do
     end
   end
 
+  it "reports cancellation at deferred handoff while another publisher's handler is blocked" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { calls: 0, requested: false }
+    handoff = Queue.new
+    second_send = Queue.new
+    release_send = Queue.new
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        if event == ContextEventLogger::EVENT_TYPE::PUBLISH && !holder[:requested]
+          holder[:requested] = true
+          holder[:context].track("followup", nil)
+          holder[:context].finalize
+        end
+      end
+    end.new
+    handler = Object.new
+    handler.define_singleton_method(:publish) do |_context, _event|
+      holder[:calls] += 1
+      if holder[:calls] == 2
+        second_send << true
+        release_send.pop
+      end
+      OpenStruct.new(success?: true)
+    end
+    context = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                             variable_parser, audience_matcher)
+    holder[:context] = context
+    allow(context).to receive(:run_deferred_seal).and_wrap_original do |original, claimed|
+      if Thread.current[:gate]
+        Thread.current[:gate] = false
+        handoff << true
+        sleep
+      end
+      original.call(claimed)
+    end
+    context.track("first", nil)
+    first = Thread.new do
+      Thread.current[:gate] = true
+      begin
+        Timeout.timeout(0.5) { context.publish }
+      rescue Timeout::Error
+        :timed_out
+      end
+    end
+    second = nil
+    begin
+      Timeout.timeout(5) { handoff.pop }
+      second = Thread.new { context.publish }
+      Timeout.timeout(5) { second_send.pop }
+      expect(first.join(1)).not_to be_nil
+      expect(first.value).to eq(:timed_out)
+      expect(second.alive?).to be true
+      release_send << true
+      Timeout.timeout(5) { second.join }
+      context.publish
+      expect(context.finalized?).to be true
+    ensure
+      release_send << true
+      first.kill.join(1)
+      second&.kill&.join(1)
+    end
+  end
+
   it "a close requested after another thread's rejected publish waits for a later success" do
     config = ContextConfig.create
     config.set_units(units)
