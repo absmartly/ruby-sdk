@@ -270,7 +270,10 @@ class Context
               check_not_closed?
               waiting = @exposing.key?(assignment) && @exposing[assignment] != Thread.current
               unless waiting || assignment.exposed || @exposing.key?(assignment)
-                if experiment_name.nil? || @assignment_cache[experiment_name.to_s].equal?(assignment)
+                # A no-unit split assignment whose unit has since been set is
+                # stale too (a failed exposure left it cached): resolved again.
+                if (experiment_name.nil? || @assignment_cache[experiment_name.to_s].equal?(assignment)) &&
+                   !unit_now_set?(assignment)
                   @exposing[assignment] = Thread.current
                   claimed = true
                 else
@@ -787,7 +790,8 @@ class Context
     # stay, so the user never switches variant or gets a second exposure.
     # One being exposed right now (its clock is running) is kept: it is
     # about to be queued with its variant, so evicting it would serve one
-    # variant and expose two. If that exposure fails, it is evicted then.
+    # variant and expose two. If that exposure fails, the next read or claim
+    # finds it stale and resolves it again.
     def invalidate_assignments_missing_unit(unit_type)
       @assignment_mutex.synchronize do
         exposing = @queue_mutex.synchronize { @exposing.keys }
@@ -802,10 +806,13 @@ class Context
     # exposed and not being exposed: set_unit skipped evicting it because its
     # exposure was in progress, and that exposure did not complete.
     def stale_missing_unit?(assignment)
-      return false if assignment.exposed || !assignment.rule_missing_unit || assignment.unit_type.nil?
-      return false if @units[assignment.unit_type.to_sym].nil?
+      return false if assignment.exposed || !unit_now_set?(assignment)
 
       @queue_mutex.synchronize { !@exposing.key?(assignment) }
+    end
+
+    def unit_now_set?(assignment)
+      assignment.rule_missing_unit && !assignment.unit_type.nil? && !@units[assignment.unit_type.to_sym].nil?
     end
 
     def audience_matches(entry, assignment)
@@ -899,7 +906,7 @@ class Context
       if !assignment.nil? && !experiment.nil? && !@failed_built.empty? && @failed_built.key?(assignment)
         assignment = nil
       end
-      assignment = nil if !assignment.nil? && stale_missing_unit?(assignment)
+      assignment = nil if !assignment.nil? && assignment.rule_missing_unit && stale_missing_unit?(assignment)
 
       if !assignment.nil?
         if !override.nil?

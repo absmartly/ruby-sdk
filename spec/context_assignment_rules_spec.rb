@@ -523,6 +523,84 @@ RSpec.describe "Context assignment rules" do
       expect(context.instance_variable_get(:@exposing)).to be_empty
     end
 
+    # T2's clock sets the unit while it exposes the no-unit variant.
+    def unit_setting_clock(holder, sid, raise_after: false)
+      clock_object = Object.new
+      clock_object.define_singleton_method(:to_i) do
+        if Thread.current[:arm]
+          Thread.current[:arm] = false
+          holder[:context].set_unit("session_id", sid)
+          holder[:in_clock] << true
+          holder[:resume].pop
+          raise "clock failed" if raise_after
+        end
+        123
+      end
+      clock_object
+    end
+
+    %i[treatment variable_value].each do |read|
+      it "a #{read} waiting on a failed no-unit exposure resolves the unit set during it" do
+        holder = { in_clock: Queue.new, resume: Queue.new }
+        clock_object = unit_setting_clock(holder, session_id, raise_after: true)
+        context = clocked_context(context_data([split_rule("0/100/0")]), clock_object, attributes: { country: "US" })
+        holder[:context] = context
+        call = read == :treatment ? -> { context.treatment("exp_test_abc") } : -> { context.variable_value("button.color", "d") }
+        owner = Thread.new do
+          Thread.current[:arm] = true
+          call.call
+        rescue RuntimeError
+          nil
+        end
+        waiter = nil
+        begin
+          Timeout.timeout(5) { holder[:in_clock].pop }
+          waiter = Thread.new { call.call }
+          expect(waiter.join(0.1)).to be_nil
+          holder[:resume] << true
+          Timeout.timeout(5) { owner.join }
+          expected = read == :treatment ? 1 : "blue"
+          expect(Timeout.timeout(5) { waiter.value }).to eq(expected)
+        ensure
+          holder[:resume] << true
+          owner.join(5) || owner.kill
+          waiter&.join(5) || waiter&.kill
+        end
+        expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 1]])
+      end
+    end
+
+    it "a concurrent read during a no-unit exposure that sets the unit serves the variant being exposed" do
+      holder = { in_clock: Queue.new, resume: Queue.new }
+      clock_object = unit_setting_clock(holder, session_id)
+      context = clocked_context(context_data([split_rule("0/100/0")]), clock_object, attributes: { country: "US" })
+      holder[:context] = context
+      owner = Thread.new do
+        Thread.current[:arm] = true
+        context.treatment("exp_test_abc")
+      end
+      begin
+        Timeout.timeout(5) { holder[:in_clock].pop }
+        expect(context.peek_treatment("exp_test_abc")).to eq(0)
+        holder[:resume] << true
+        expect(Timeout.timeout(5) { owner.value }).to eq(0)
+      ensure
+        holder[:resume] << true
+        owner.join(5) || owner.kill
+      end
+      expect(context.treatment("exp_test_abc")).to eq(0)
+      expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
+    end
+
+    it "reuses a no-unit split assignment while its unit is still missing" do
+      context = create_context(context_data([split_rule("0/100/0")]), units: {}, attributes: { country: "US" })
+      context.peek_treatment("exp_test_abc")
+      matcher = context.send(:rule_matcher)
+      allow(matcher).to receive(:evaluate_parsed_rules).and_call_original
+      3.times { context.peek_treatment("exp_test_abc") }
+      expect(matcher).not_to have_received(:evaluate_parsed_rules)
+    end
+
     it "uses the latest String or Symbol spelling of an attribute in the built-in evaluator" do
       staging = { and: [{ eq: [{ var: "environment" }, { value: "staging" }] }] }
       context = create_context(context_data([assign_rule(1, conditions: staging)]))
