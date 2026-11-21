@@ -271,12 +271,39 @@ module ContextHoldoutsSpec
                                              own_exposure(2, "fullon", 2, full_on: true)])
       end
 
+      it "ignores the holdout's own fullOnVariant" do
+        context = create_context(data_of([experiment(1, "non_fullon", holdout_ids: [21]),
+                                          experiment(2, "fullon", full_on_variant: 2, holdout_ids: [21])],
+                                         [three_arm_holdout(21, "holdout_three_arm", THREE_ARM_1).merge(fullOnVariant: 2)]))
+
+        expect(context.treatment("non_fullon")).to eq(0)
+        expect(context.treatment("fullon")).to eq(2)
+        expect(exposures_of(context)).to eq([holdout_exposure(21, "holdout_three_arm", 1),
+                                             own_exposure(2, "fullon", 2, full_on: true)])
+      end
+
+      it "assigns the arm from the split even when the holdout declares a fullOnVariant" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
+                                         [holdout(11, "holdout_a", HOLDOUT_A, fullOnVariant: 1)]))
+
+        expect(context.treatment("exp")).to eq(0)
+        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0)])
+      end
+
       it "treats arm 1 of a 4-arm holdout as not held out" do
         four = holdout(21, "holdout_four_arm", [0, 1], split: [0.25, 0.25, 0.25, 0.25])
         context = create_context(data_of([experiment(1, "non_fullon", holdout_ids: [21])], [four]))
 
         expect(context.treatment("non_fullon")).to eq(NORMAL_VARIANT)
         expect(exposures_of(context).last).to eq(holdout_exposure(21, "holdout_four_arm", 1))
+      end
+
+      it "applies a holdout whose holdoutType this SDK does not know" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
+                                         [holdout(11, "holdout_a", HOLDOUT_A, holdout_type: "future")]))
+
+        expect(context.treatment("exp")).to eq(0)
+        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0)])
       end
 
       it "takes the arity from the split, not holdoutType" do
@@ -419,6 +446,24 @@ module ContextHoldoutsSpec
         end
       end
 
+      [["09", [9]], ["-0", [0]], [9, ["09"]], [0, ["-0"]]].each do |id, ids|
+        it "does not match holdout id #{id.inspect} with holdoutIds #{ids.inspect}" do
+          context = create_context(data_of([experiment(1, "exp", holdout_ids: ids)],
+                                           [holdout(11, "holdout_a", HOLDOUT_A).merge(id: id)]))
+
+          expect(context.treatment("exp")).to eq(NORMAL_VARIANT)
+          expect(exposures_of(context)).to eq([own_exposure(1, "exp", NORMAL_VARIANT)])
+        end
+      end
+
+      it "matches a negative holdout id given as text" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [-5])],
+                                         [holdout(11, "holdout_a", HOLDOUT_A).merge(id: "-5")]))
+
+        expect(context.treatment("exp")).to eq(0)
+        expect(context.pending_count).to eq(1)
+      end
+
       it "treats a non-array holdouts value or holdoutIds as no coverage" do
         json = JSON.generate(experiments: [experiment(1, "exp", holdout_ids: "11")], holdouts: { id: 11 })
         context = create_context(DefaultContextDataDeserializer.new.deserialize(json, 0, json.length))
@@ -474,6 +519,43 @@ module ContextHoldoutsSpec
         expect(context.treatment("exp_strict")).to eq(0)
         expect(exposures_of(context)).to eq([own_exposure(1, "exp_strict", 0, assigned: false, audience_mismatch: true),
                                              holdout_exposure(11, "holdout_a", 1)])
+      end
+
+      it "keeps a cached suppressed assignment out of the audience matcher after unrelated updates" do
+        context = create_context(data_of([experiment(1, "exp_holdout_audience", holdout_ids: [11], audienceStrict: true,
+                                                                                  audience: '{"filter":[{"gte":[{"var":"age"},{"value":20}]}]}')],
+                                         [holdout(11, "holdout_a", HOLDOUT_A)]))
+        allow(audience_matcher).to receive(:evaluate).and_raise("suppressed audience evaluated")
+        expect(context.treatment("exp_holdout_audience")).to eq(0)
+        cached = context.instance_variable_get(:@assignment_cache)["exp_holdout_audience"]
+
+        100.times do |i|
+          context.set_attribute("unrelated", i)
+          expect(context.treatment("exp_holdout_audience")).to eq(0)
+        end
+
+        expect(context.instance_variable_get(:@assignment_cache)["exp_holdout_audience"]).to equal(cached)
+        expect(cached.attrs_seq).to eq(context.instance_variable_get(:@attrs_seq))
+        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0)])
+      end
+
+      it "still checks the rules, not the audience, of a cached suppressed assignment" do
+        context = create_context(data_of([experiment(1, "exp_holdout_rules", holdout_ids: [11], assignmentRules: US_RULE,
+                                                                               audienceStrict: true,
+                                                                               audience: '{"filter":[{"gte":[{"var":"age"},{"value":20}]}]}')],
+                                         [holdout(11, "holdout_a", HOLDOUT_A)]))
+        allow(audience_matcher).to receive(:evaluate).and_raise("suppressed audience evaluated")
+        context.set_attribute("country", "GB")
+        expect(context.treatment("exp_holdout_rules")).to eq(0)
+        cached = context.instance_variable_get(:@assignment_cache)["exp_holdout_rules"]
+
+        context.set_attribute("unrelated", 1)
+        expect(context.treatment("exp_holdout_rules")).to eq(0)
+        expect(context.instance_variable_get(:@assignment_cache)["exp_holdout_rules"]).to equal(cached)
+
+        context.set_attribute("country", "US")
+        expect(context.treatment("exp_holdout_rules")).to eq(1)
+        expect(context.pending_count).to eq(2)
       end
 
       it "lets a matching assign rule win over suppression and still exposes the holdout" do
@@ -752,6 +834,29 @@ module ContextHoldoutsSpec
         expect(exposures_of(context)).to eq([own, own, holdout_exposure(11, "holdout_late", 0)])
       end
 
+      it "re-resolves a peeked overridden experiment when a refresh removes its coverage" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
+                                         [holdout(11, "holdout_a", HOLDOUT_A)]), overrides: { "exp" => 3 })
+        expect(context.peek_treatment("exp")).to eq(3)
+
+        refresh(context, data_of([experiment(1, "exp")], [holdout(11, "holdout_a", HOLDOUT_A)]))
+
+        expect(context.treatment("exp")).to eq(3)
+        expect(exposures_of(context)).to eq([own_exposure(1, "exp", 3, assigned: false, overridden: true)])
+      end
+
+      it "exposes an overridden experiment again when a refresh removes its coverage" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
+                                         [holdout(11, "holdout_a", HOLDOUT_A)]), overrides: { "exp" => 3 })
+        expect(context.treatment("exp")).to eq(3)
+
+        refresh(context, data_of([experiment(1, "exp")], [holdout(11, "holdout_a", HOLDOUT_A)]))
+
+        expect(context.treatment("exp")).to eq(3)
+        own = own_exposure(1, "exp", 3, assigned: false, overridden: true)
+        expect(exposures_of(context)).to eq([own, holdout_exposure(11, "holdout_a", 0), own])
+      end
+
       it "re-resolves an experiment when a refresh removes its coverage" do
         context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
                                          [holdout(11, "holdout_a", HOLDOUT_A)]))
@@ -851,6 +956,38 @@ module ContextHoldoutsSpec
 
         expect(context.treatment("exp")).to eq(NORMAL_VARIANT)
         expect(context.pending_count).to eq(2)
+      end
+
+      it "re-resolves when a refresh replaces the covering holdout id at the same iteration" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
+                                         [holdout(11, "holdout_a", HOLDOUT_A), holdout(12, "holdout_b", HOLDOUT_B)]))
+        expect(context.treatment("exp")).to eq(0)
+
+        refresh(context, data_of([experiment(1, "exp", holdout_ids: [12])],
+                                 [holdout(11, "holdout_a", HOLDOUT_A), holdout(12, "holdout_b", HOLDOUT_B)]))
+
+        expect(context.treatment("exp")).to eq(NORMAL_VARIANT)
+        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0), own_exposure(1, "exp", NORMAL_VARIANT),
+                                             holdout_exposure(12, "holdout_b", 1)])
+      end
+
+      it "compares an equivalent coverage list after a refresh once, not on every read" do
+        context = create_context(data_of([experiment(1, "exp", holdout_ids: [11])],
+                                         [holdout(11, "holdout_a", HOLDOUT_A)]))
+        expect(context.treatment("exp")).to eq(0)
+        cached = context.instance_variable_get(:@assignment_cache)["exp"]
+
+        refresh(context, data_of([experiment(1, "exp", holdout_ids: [11])], [holdout(11, "holdout_renamed", HOLDOUT_A)]))
+        expect(context.treatment("exp")).to eq(0)
+
+        fresh = context.instance_variable_get(:@state).index[:exp].holdouts
+        expect(fresh).not_to receive(:each_with_index)
+        fresh.each { |holdout| expect(holdout).not_to receive(:iteration) }
+        cached.holdouts.each { |holdout| expect(holdout).not_to receive(:iteration) }
+        expect(context).not_to receive(:holdout_id)
+        expect(context.treatment("exp")).to eq(0)
+        expect(context.instance_variable_get(:@assignment_cache)["exp"]).to equal(cached)
+        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0)])
       end
 
       it "names the holdout exposure after the definition the decision was made with" do
@@ -1281,6 +1418,17 @@ module ContextHoldoutsSpec
         legacy = Struct.new(:experiments).new([Experiment.new(experiment(1, "exp"))])
         context = create_context(legacy)
         expect(context.treatment("exp")).to eq(NORMAL_VARIANT)
+      end
+
+      it "assigns normally an experiment object that predates holdoutIds when the payload has holdouts" do
+        legacy_experiment = Class.new(Experiment) { undef_method :holdout_ids }
+        data = Struct.new(:experiments, :holdouts).new([legacy_experiment.new(experiment(1, "exp"))],
+                                                       [Experiment.new(holdout(11, "holdout_a", HOLDOUT_A))])
+        context = create_context(data)
+
+        expect(context.ready?).to be(true)
+        expect(context.treatment("exp")).to eq(NORMAL_VARIANT)
+        expect(exposures_of(context)).to eq([own_exposure(1, "exp", NORMAL_VARIANT)])
       end
 
       it "publishes the same body without holdouts as with an empty holdouts array" do
