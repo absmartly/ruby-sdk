@@ -597,12 +597,11 @@ RSpec.describe Context do
   it "builds no per-claim block on a first exposure" do
     contexts = Array.new(50) { create_ready_context.tap { |c| c.peek_treatment("exp_test_ab") } }
     GC.disable
-    before = GC.stat(:total_allocated_objects)
+    before = ObjectSpace.each_object(Proc).count
     contexts.each { |c| c.treatment("exp_test_ab") }
-    allocated = GC.stat(:total_allocated_objects) - before
+    created = ObjectSpace.each_object(Proc).count - before
     GC.enable
-    # A lambda per claim adds three objects to each first exposure.
-    expect(allocated).to be <= 4800
+    expect(created).to be < 50
   end
 
   it "allocates no more on warmed treatment and variable reads than one exposed read needs" do
