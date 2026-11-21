@@ -1559,9 +1559,7 @@ RSpec.describe "create_context_async" do
         end
         # Park the publisher the moment it releases the readiness lock that
         # covers its failure check and batch selection, then fail the fetch and
-        # queue a goal. Any part of the batch copied outside that lock (before
-        # or after the release, under the queue lock or under none) either sees
-        # the context failed or carries the late goal into the handler.
+        # queue a late goal and exposure; the dup spies above pin the copies.
         ready_mutex = context.instance_variable_get(:@ready_mutex)
         publish_mutex = context.instance_variable_get(:@publish_mutex)
         queue_mutex = context.instance_variable_get(:@queue_mutex)

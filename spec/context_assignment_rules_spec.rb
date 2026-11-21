@@ -743,8 +743,6 @@ RSpec.describe "Context assignment rules" do
       expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
     end
 
-    # A concurrent read checks an assignment just as its exposure completes:
-    # it must not see it as neither exposed nor being exposed.
     [[false, 1], [true, 1], [true, 2]].each do |with_attribute, gate_at|
       it "keeps the no-unit variant when a read overlaps its exposure completing#{" after an attribute update" if with_attribute} at check #{gate_at}" do
         holder = { in_clock: Queue.new, resume: Queue.new }

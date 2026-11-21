@@ -422,6 +422,13 @@ class Context
     # been set counts as stale; then nothing is queued and :evicted is
     # returned so the caller resolves it again. Returns nil otherwise, never
     # the logger's result (that is passed to the block).
+    # SDK reads check the cache under the assignment lock; a direct
+    # queue_exposure call has nothing to check and may already hold it (from a
+    # custom matcher), so it skips it.
+    def with_assignment_lock_if(locked, &block)
+      locked ? @assignment_mutex.synchronize(&block) : yield
+    end
+
     def claim_and_queue_exposure(assignment, experiment_name = nil)
       return if assignment.exposed
 
@@ -432,7 +439,7 @@ class Context
           evicted = false
           # Waiting for the assignment lock stays interruptible; only the claim
           # bookkeeping under it is masked.
-          claim = lambda do
+          with_assignment_lock_if(experiment_name) do
             Thread.handle_interrupt(Object => :never) do
               @queue_mutex.synchronize do
                 check_not_closed?
@@ -452,11 +459,6 @@ class Context
                 end
               end
             end
-          end
-          if experiment_name.nil?
-            claim.call
-          else
-            @assignment_mutex.synchronize(&claim)
           end
           return :evicted if evicted
           break unless waiting
@@ -723,7 +725,6 @@ class Context
         seal(claimed.first)
         finished = true
       rescue EventsQueuedWhileClosing
-        # Events still queued: this publish returns, the seal stays pending.
         nil
       ensure
         # A deferred seal that did not finish (events still queued, its own
