@@ -80,7 +80,7 @@ class Context
     end
 
     # User callbacks run outside the readiness lock so they may call
-    # wait_until_ready. A context made ready by a refresh logs "ready" too.
+    # wait_until_ready.
     log_error(failure) unless failure.nil?
     log_event(ContextEventLogger::EVENT_TYPE::READY, ready_data) unless ready_data.nil?
   end
@@ -312,6 +312,7 @@ class Context
             @exposing.delete(assignment)
             @exposure_condvar.broadcast
           end
+          evict_if_unit_now_set(assignment) unless assignment.exposed
         end
       end
     end
@@ -650,14 +651,17 @@ class Context
 
     def run_deferred_seal((event_type, request))
       seal(event_type)
-    rescue StandardError => error
-      # A deferred seal that did not finish (events still queued, or its own
-      # publish rejected or raised) stays pending for the next successful
-      # publish, unless a newer request was made meanwhile (even one another
-      # publish has already claimed). Only "events still queued" lets this
-      # publish return.
-      @publish_mutex.synchronize do
-        @close_pending = event_type unless @closed || @close_requests != request
+    rescue Exception => error # rubocop:disable Lint/RescueException
+      # A deferred seal that did not finish (events still queued, its own
+      # publish rejected or raised, or an interrupt such as Timeout unwound
+      # it) stays pending for the next successful publish, unless a newer
+      # request was made meanwhile (even one another publish has already
+      # claimed). The error always propagates, except "events still queued",
+      # which lets this publish return.
+      Thread.handle_interrupt(Object => :never) do
+        @publish_mutex.synchronize do
+          @close_pending = event_type unless @closed || @close_requests != request
+        end
       end
       raise unless error.is_a?(EventsQueuedWhileClosing)
     end
@@ -738,14 +742,43 @@ class Context
       attrs.merge!(user)
     end
 
+    # The built-in evaluator reads a name as a String or a Symbol, so it gets
+    # one entry per name: the latest value set under either spelling.
+    def evaluator_attributes
+      attrs = {}
+      @system_attributes.each { |name, value| attrs[name] = value }
+      @attributes.each { |attr| attrs[attr.name.to_s] = attr.value }
+      attrs
+    end
+
+    # Custom matchers get the caller's keys (as in v1.3.0); the built-in one
+    # gets the latest value per name.
+    def matcher_attributes(matcher)
+      matcher.instance_of?(AudienceMatcher) ? evaluator_attributes : attributes_map
+    end
+
     # A split rule resolved while its unit was missing gave the no-unit
     # variant; once the unit is set, unexposed ones are rebuilt. Exposed ones
     # stay, so the user never switches variant or gets a second exposure.
+    # One being exposed right now (its clock is running) is kept: it is
+    # about to be queued with its variant, so evicting it would serve one
+    # variant and expose two. If that exposure fails, it is evicted then.
     def invalidate_assignments_missing_unit(unit_type)
       @assignment_mutex.synchronize do
+        exposing = @queue_mutex.synchronize { @exposing.keys }
         @assignment_cache.delete_if do |_name, assignment|
-          assignment.unit_type.to_s == unit_type && !assignment.exposed && assignment.rule_missing_unit
+          assignment.unit_type.to_s == unit_type && !assignment.exposed && assignment.rule_missing_unit &&
+            exposing.none? { |claimed| claimed.equal?(assignment) }
         end
+      end
+    end
+
+    def evict_if_unit_now_set(assignment)
+      return unless assignment.rule_missing_unit && !assignment.unit_type.nil?
+      return if @units[assignment.unit_type.to_sym].nil?
+
+      @assignment_mutex.synchronize do
+        @assignment_cache.delete_if { |_name, cached| cached.equal?(assignment) && !cached.exposed }
       end
     end
 
@@ -765,18 +798,16 @@ class Context
       return false if key_changed && key.empty? && assignment.rule_override
 
       if @attrs_seq > (assignment.attrs_seq || 0) || key_changed
-        attrs = attributes_map
-
         unless key.empty?
           pinned_missing = assignment.exposed && assignment.rule_missing_unit
-          rule = resolve_rule(entry, attrs, pinned_missing)
+          rule = resolve_rule(entry, matcher_attributes(rule_matcher), pinned_missing)
           return false if rule&.first != assignment.rule_variant
 
           assignment.rule_missing_unit = rule ? rule.last : false
         end
 
         if !assignment.rule_override && !experiment.audience.nil? && experiment.audience.size > 0
-          match = @audience_matcher.evaluate(experiment.audience, attrs)
+          match = @audience_matcher.evaluate(experiment.audience, matcher_attributes(@audience_matcher))
           # An indeterminate result (no filter, bad JSON) keeps the cached flag.
           new_audience_mismatch = match.nil? ? assignment.audience_mismatch : !match.result
 
@@ -880,7 +911,7 @@ class Context
         assignment.traffic_split = data.traffic_split
         assignment.full_on_variant = data.full_on_variant
         assignment.rule_key = experiment.rule_key
-        rule = assignment.rule_key.empty? ? nil : resolve_rule(experiment, attributes_map, false)
+        rule = assignment.rule_key.empty? ? nil : resolve_rule(experiment, matcher_attributes(rule_matcher), false)
         assignment.rule_variant = rule&.first
         assignment.rule_missing_unit = rule ? rule.last : false
 
@@ -889,7 +920,7 @@ class Context
           assignment.variant = rule.first
         else
           if !data.audience.nil? && data.audience.size > 0
-            match = @audience_matcher.evaluate(data.audience, attributes_map)
+            match = @audience_matcher.evaluate(data.audience, matcher_attributes(@audience_matcher))
             assignment.audience_mismatch = true if match && !match.result
           end
 

@@ -1544,13 +1544,19 @@ RSpec.describe "create_context_async" do
         context = Context.create_async(clock, config, data_provider,
                                        handler, event_logger, variable_parser, audience_matcher)
         context.track("before_failure", nil)
-        selecting = Queue.new
-        resume = Queue.new
         queue_mutex = context.instance_variable_get(:@queue_mutex)
+        ready_mutex = context.instance_variable_get(:@ready_mutex)
+        publish_mutex = context.instance_variable_get(:@publish_mutex)
+        # Any queue access the publisher makes after its failure decision and
+        # before the handler runs, without the readiness lock, is a window in
+        # which failure can land. The batch must not have one: if it does,
+        # fail the fetch and queue a goal there, and the batch must not carry it.
+        events = Queue.new
+        resume = Queue.new
         allow(queue_mutex).to receive(:synchronize).and_wrap_original do |original, &block|
-          if Thread.current[:gate_selection] && context.instance_variable_get(:@ready_mutex).owned?
+          if Thread.current[:gate_selection] && publish_mutex.owned? && !ready_mutex.owned? && sent.empty?
             Thread.current[:gate_selection] = false
-            selecting << true
+            events << :window
             resume.pop
           end
           original.call(&block)
@@ -1558,21 +1564,19 @@ RSpec.describe "create_context_async" do
         publisher = Thread.new do
           Thread.current[:gate_selection] = true
           context.public_send(operation)
+        ensure
+          events << :done
         end
-        failing = nil
         begin
-          Timeout.timeout(5) { selecting.pop }
-          failing = Thread.new do
+          if Timeout.timeout(5) { events.pop } == :window
             context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+            context.track("after_failure", nil)
+            resume << true
           end
-          expect(failing.join(0.1)).to be_nil
-          resume << true
-          Timeout.timeout(5) { publisher.value }
-          Timeout.timeout(5) { failing.value }
+          Timeout.timeout(5) { publisher.join }
         ensure
           resume << true
           publisher.join(5) || publisher.kill
-          failing&.join(5) || failing&.kill
         end
         expect(sent).to eq(["before_failure"])
       end
@@ -1691,10 +1695,16 @@ RSpec.describe "create_context_async" do
         end
         123
       end
+      names = []
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, event|
+        names.concat((event.exposures || []).map(&:name))
+        OpenStruct.new(success?: true)
+      end
       config = ContextConfig.create
       config.set_units(units)
       context = Context.create(custom_clock, config, OpenStruct.new(data_future: data, success?: true),
-                               data_provider, event_handler, event_logger, variable_parser, audience_matcher)
+                               data_provider, handler, event_logger, variable_parser, audience_matcher)
       begin
         Thread.current[:outer_clock] = true
         context.treatment("exp_test_ab")
@@ -1702,6 +1712,8 @@ RSpec.describe "create_context_async" do
         Thread.current[:outer_clock] = nil
       end
       expect(context.pending_count).to eq(2)
+      context.publish
+      expect(names).to eq(%w[exp_test_abc exp_test_ab])
     end
 
     it "does not enqueue an exposure after close seals during its clock callback" do

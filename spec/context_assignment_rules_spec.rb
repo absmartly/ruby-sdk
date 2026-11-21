@@ -328,6 +328,69 @@ RSpec.describe "Context assignment rules" do
       expect(context.pending_count).to eq(1)
     end
 
+    def clocked_context(data, clock_object, units: {}, attributes: {})
+      config = ContextConfig.create
+      config.set_units(units)
+      config.set_attributes(attributes)
+      Context.create(clock_object, config, OpenStruct.new(data_future: data, success?: true), data_provider,
+                     event_handler, nil, variable_parser, audience_matcher,
+                     application: "website", environment: "production")
+    end
+
+    it "keeps the no-unit variant when the unit is set during that exposure's clock" do
+      holder = {}
+      sid = session_id
+      clock_object = Object.new
+      clock_object.define_singleton_method(:to_i) do
+        if holder[:arm]
+          holder[:arm] = false
+          holder[:context].set_unit("session_id", sid)
+        end
+        123
+      end
+      context = clocked_context(context_data([split_rule("0/100/0")]), clock_object, attributes: { country: "US" })
+      holder[:context] = context
+      holder[:arm] = true
+
+      expect(context.treatment("exp_test_abc")).to eq(0)
+      expect(context.treatment("exp_test_abc")).to eq(0)
+      expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
+    end
+
+    it "rebuilds the no-unit variant if its exposure fails after the unit was set during the clock" do
+      holder = {}
+      sid = session_id
+      clock_object = Object.new
+      clock_object.define_singleton_method(:to_i) do
+        if holder[:arm]
+          holder[:arm] = false
+          holder[:context].set_unit("session_id", sid)
+          raise "clock failed"
+        end
+        123
+      end
+      context = clocked_context(context_data([split_rule("0/100/0")]), clock_object, attributes: { country: "US" })
+      holder[:context] = context
+      holder[:arm] = true
+
+      expect { context.treatment("exp_test_abc") }.to raise_error("clock failed")
+      expect(context.treatment("exp_test_abc")).to eq(1)
+      expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 1]])
+    end
+
+    it "uses the latest String or Symbol spelling of an attribute in the built-in evaluator" do
+      staging = { and: [{ eq: [{ var: "environment" }, { value: "staging" }] }] }
+      context = create_context(context_data([assign_rule(1, conditions: staging)]))
+      context.set_attribute("environment", "prod")
+      expect(context.treatment("exp_test_abc")).to eq(2)
+
+      context.set_attribute(:environment, "staging")
+      expect(context.treatment("exp_test_abc")).to eq(1)
+
+      context.set_attribute("environment", "prod")
+      expect(context.treatment("exp_test_abc")).to eq(2)
+    end
+
     it "keeps an assign rule assignment when the unit is set" do
       context = create_context(context_data([assign_rule(1)]), units: {}, attributes: { country: "US" })
       expect(context.treatment("exp_test_abc")).to eq(1)

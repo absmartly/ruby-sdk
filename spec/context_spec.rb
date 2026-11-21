@@ -787,8 +787,6 @@ RSpec.describe Context do
         holder[:context].finalize
       end
     end.new
-    # The first publish succeeds and its callback asks for finalize; the
-    # deferred finalize's own publish is rejected; the next publish succeeds.
     responses = [nil, failure_future, nil, nil]
     handler = instance_double(Absmartly::ContextPublisher)
     allow(handler).to receive(:publish) { responses.shift }
@@ -800,6 +798,39 @@ RSpec.describe Context do
     expect(holder[:context].finalized?).to be false
     expect(holder[:context].pending_count).to eq(1)
     holder[:context].track("late", nil)
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].finalized?).to be true
+    expect(holder[:context].pending_count).to eq(0)
+    expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::FINALIZE)).to eq(1)
+  end
+
+  it "keeps a deferred finalize pending when a timeout interrupts its own publish" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { goals: 0, events: [], calls: 0 }
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        holder[:events] << event
+        next unless event == ContextEventLogger::EVENT_TYPE::PUBLISH && holder[:goals] < 1
+
+        holder[:goals] += 1
+        holder[:context].track("followup", nil)
+        holder[:context].finalize
+      end
+    end.new
+    handler = Object.new
+    handler.define_singleton_method(:publish) do |_context, _event|
+      holder[:calls] += 1
+      sleep 2 if holder[:calls] == 2
+      OpenStruct.new(success?: true)
+    end
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+
+    expect { Timeout.timeout(0.3) { holder[:context].publish } }.to raise_error(Timeout::Error)
+    expect(holder[:context].finalized?).to be false
+    expect(holder[:context].pending_count).to eq(1)
     Timeout.timeout(5) { holder[:context].publish }
     expect(holder[:context].finalized?).to be true
     expect(holder[:context].pending_count).to eq(0)
