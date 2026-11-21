@@ -1544,39 +1544,36 @@ RSpec.describe "create_context_async" do
         context = Context.create_async(clock, config, data_provider,
                                        handler, event_logger, variable_parser, audience_matcher)
         context.track("before_failure", nil)
-        queue_mutex = context.instance_variable_get(:@queue_mutex)
-        ready_mutex = context.instance_variable_get(:@ready_mutex)
-        publish_mutex = context.instance_variable_get(:@publish_mutex)
-        # Any queue access the publisher makes after its failure decision and
-        # before the handler runs, without the readiness lock, is a window in
-        # which failure can land. The batch must not have one: if it does,
-        # fail the fetch and queue a goal there, and the batch must not carry it.
-        events = Queue.new
+        # Park the publisher on the first line after its locked failure check
+        # and batch selection, then fail the fetch and queue a goal. Any part
+        # of the batch copied from there on, under the queue lock or under no
+        # lock at all, would carry the late goal.
+        source = Context.instance_method(:flush).source_location.first
+        after_selection = File.readlines(source).index { |line| line.strip == "next failure if dropped" } + 1
+        parked = Queue.new
         resume = Queue.new
-        allow(queue_mutex).to receive(:synchronize).and_wrap_original do |original, &block|
-          if Thread.current[:gate_selection] && publish_mutex.owned? && !ready_mutex.owned? && sent.empty?
+        trace = TracePoint.new(:line) do |tp|
+          if tp.path == source && tp.lineno == after_selection && Thread.current[:gate_selection]
             Thread.current[:gate_selection] = false
-            events << :window
+            parked << true
             resume.pop
           end
-          original.call(&block)
         end
+        trace.enable
         publisher = Thread.new do
           Thread.current[:gate_selection] = true
           context.public_send(operation)
-        ensure
-          events << :done
         end
         begin
-          if Timeout.timeout(5) { events.pop } == :window
-            context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
-            context.track("after_failure", nil)
-            resume << true
-          end
+          Timeout.timeout(5) { parked.pop }
+          context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
+          context.track("after_failure", nil)
+          resume << true
           Timeout.timeout(5) { publisher.join }
         ensure
+          trace.disable
           resume << true
-          publisher.join(5) || publisher.kill
+          publisher.join(1) || publisher.kill
         end
         expect(sent).to eq(["before_failure"])
       end

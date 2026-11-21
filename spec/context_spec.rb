@@ -627,7 +627,6 @@ RSpec.describe Context do
     config.set_units(units)
     context = Context.create(clock, config, audience_strict_data_future_ready, data_provider, event_handler,
                              event_logger, variable_parser, matcher)
-    # Cached but not exposed, so the treatment below must take the claim.
     assignment = context.send(:assignment, "exp_test_abc")
     holder = Thread.new do
       Thread.current[:hold] = true
@@ -636,7 +635,7 @@ RSpec.describe Context do
     begin
       Timeout.timeout(5) { holding.pop }
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      expect { Timeout.timeout(0.3) { context.send(:queue_exposure, assignment, "exp_test_abc") } }
+      expect { Timeout.timeout(0.3) { context.send(:claim_and_queue_exposure, assignment, "exp_test_abc") } }
         .to raise_error(Timeout::Error)
       expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1
     ensure
@@ -982,6 +981,62 @@ RSpec.describe Context do
     Timeout.timeout(5) { holder[:context].publish }
     expect(holder[:context].finalized?).to be true
     expect(holder[:context].pending_count).to eq(0)
+  end
+
+  %i[timeout kill].each do |cancel|
+    it "keeps a deferred finalize pending when #{cancel} lands after it is claimed, before it starts" do
+      config = ContextConfig.create
+      config.set_units(units)
+      holder = { goals: 0, events: [] }
+      logger = Class.new(ContextEventLogger) do
+        define_method(:handle_event) do |event, _data|
+          holder[:events] << event
+          next unless event == ContextEventLogger::EVENT_TYPE::PUBLISH && holder[:goals] < 1
+
+          holder[:goals] += 1
+          holder[:context].track("followup", nil)
+          holder[:context].finalize
+        end
+      end.new
+      handler = Object.new
+      handler.define_singleton_method(:publish) { |_context, _event| OpenStruct.new(success?: true) }
+      holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                        variable_parser, audience_matcher)
+      holder[:context].track("goal1", nil)
+
+      # Park the publisher on the line that starts the claimed seal.
+      source = Context.instance_method(:flush).source_location.first
+      handoff = File.readlines(source).index { |line| line.strip == "run_deferred_seal(claimed)" } + 1
+      parked = Queue.new
+      trace = TracePoint.new(:line) do |tp|
+        if tp.path == source && tp.lineno == handoff && Thread.current[:gate]
+          Thread.current[:gate] = false
+          parked << true
+          sleep
+        end
+      end
+      trace.enable
+      publisher = Thread.new do
+        Thread.current[:gate] = true
+        cancel == :timeout ? Timeout.timeout(5) { holder[:context].publish } : holder[:context].publish
+      rescue Timeout::Error
+        nil
+      end
+      begin
+        Timeout.timeout(5) { parked.pop }
+        cancel == :timeout ? publisher.raise(Timeout::Error) : publisher.kill
+        publisher.join(5)
+      ensure
+        trace.disable
+        publisher.join(1) || publisher.kill
+      end
+
+      expect(holder[:context].finalized?).to be false
+      Timeout.timeout(5) { holder[:context].publish }
+      expect(holder[:context].finalized?).to be true
+      expect(holder[:context].pending_count).to eq(0)
+      expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::FINALIZE)).to eq(1)
+    end
   end
 
   it "a close requested after another thread's rejected publish waits for a later success" do

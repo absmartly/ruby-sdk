@@ -396,7 +396,7 @@ RSpec.describe "Context assignment rules" do
       context = create_context(context_data([split_rule("0/100/0")]), units: {}, attributes: { country: "US" })
       sid = session_id
       armed = true
-      allow(context).to receive(:queue_exposure).and_wrap_original do |original, assignment, *rest|
+      allow(context).to receive(:claim_and_queue_exposure).and_wrap_original do |original, assignment, *rest|
         if armed
           armed = false
           context.set_unit("session_id", sid)
@@ -413,7 +413,7 @@ RSpec.describe "Context assignment rules" do
       context = create_context(context_data([split_rule("0/100/0")]), units: {}, attributes: { country: "US" })
       sid = session_id
       armed = true
-      allow(context).to receive(:queue_exposure).and_wrap_original do |original, assignment, *rest|
+      allow(context).to receive(:claim_and_queue_exposure).and_wrap_original do |original, assignment, *rest|
         if armed
           armed = false
           context.set_unit("session_id", sid)
@@ -477,7 +477,7 @@ RSpec.describe "Context assignment rules" do
       reader = nil
       begin
         Timeout.timeout(5) { in_eviction.pop }
-        reader = Thread.new { context.send(:queue_exposure, assignment, "exp_test_abc") }
+        reader = Thread.new { context.send(:claim_and_queue_exposure, assignment, "exp_test_abc") }
         expect(reader.join(0.2)).to be_nil
         resume << true
         Timeout.timeout(5) { setter.join }
@@ -537,7 +537,6 @@ RSpec.describe "Context assignment rules" do
       expect(context.instance_variable_get(:@exposing)).to be_empty
     end
 
-    # T2's clock sets the unit while it exposes the no-unit variant.
     def unit_setting_clock(holder, sid, raise_after: false)
       clock_object = Object.new
       clock_object.define_singleton_method(:to_i) do
@@ -643,14 +642,66 @@ RSpec.describe "Context assignment rules" do
       context = create_context(context_data([assign_rule(1)]), attributes: { country: "US" })
       context.treatment("exp_test_abc")
       context.variable_value("button.color", "d")
-      allow(context).to receive(:queue_exposure).and_call_original
+      allow(context).to receive(:claim_and_queue_exposure).and_call_original
       allow(context).to receive(:stale_missing_unit?).and_call_original
 
       context.variable_value("button.color", "d")
       context.peek_treatment("exp_test_abc")
 
-      expect(context).not_to have_received(:queue_exposure)
+      expect(context).not_to have_received(:claim_and_queue_exposure)
       expect(context).not_to have_received(:stale_missing_unit?)
+    end
+
+    it "keeps the no-unit variant when its clock sets the unit and an attribute, then reads" do
+      holder = {}
+      sid = session_id
+      clock_object = Object.new
+      clock_object.define_singleton_method(:to_i) do
+        if holder[:arm]
+          holder[:arm] = false
+          holder[:context].set_unit("session_id", sid)
+          holder[:context].set_attribute("age", 30)
+          holder[:peeked] = holder[:context].peek_treatment("exp_test_abc")
+        end
+        123
+      end
+      context = clocked_context(context_data([split_rule("0/100/0")]), clock_object, attributes: { country: "US" })
+      holder[:context] = context
+      holder[:arm] = true
+
+      expect(context.treatment("exp_test_abc")).to eq(0)
+      expect(holder[:peeked]).to eq(0)
+      expect(context.treatment("exp_test_abc")).to eq(0)
+      expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
+    end
+
+    %i[evicted logged].each do |returned|
+      it "serves and exposes the same when the exposure logger returns #{returned.inspect}" do
+        holder = { calls: 0 }
+        logger = Class.new(ContextEventLogger) do
+          define_method(:handle_event) do |event, _data|
+            next unless event == ContextEventLogger::EVENT_TYPE::EXPOSURE
+
+            holder[:calls] += 1
+            next unless holder[:calls] == 1
+
+            holder[:context].set_override("exp_test_abc", 0)
+            returned
+          end
+        end.new
+        config = ContextConfig.create
+        config.set_units(session_id: session_id)
+        config.set_attributes(country: "US")
+        context = Context.create(clock, config, OpenStruct.new(data_future: context_data(nil), success?: true),
+                                 data_provider, event_handler, logger, variable_parser, audience_matcher,
+                                 application: "website", environment: "production")
+        holder[:context] = context
+
+        expect(context.variable_value("button.color", "default")).to eq("red")
+        expect(context.treatment("exp_test_abc")).to eq(0)
+        expect(published_exposures(context).map { |e| [e.name, e.variant] })
+          .to eq([["exp_test_abc", 2], ["exp_test_abc", 0]])
+      end
     end
 
     it "uses the latest String or Symbol spelling of an attribute in the built-in evaluator" do

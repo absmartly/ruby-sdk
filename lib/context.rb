@@ -247,102 +247,16 @@ class Context
       assignment = assignment(experiment_name)
       # set_unit may evict it between the lookup and the exposure claim:
       # then it is resolved again, so the variant served is the one exposed.
-      return assignment.variant unless queue_exposure(assignment, experiment_name) == :evicted
+      return assignment.variant unless claim_and_queue_exposure(assignment, experiment_name) == :evicted
     end
   end
 
-  # Kept public as in 1.3.0, but meant for the SDK's own read paths. Queues
-  # an exposure for assignment unless it is already exposed. With
-  # experiment_name, the claim is taken only while the assignment is still
-  # the cached one for that experiment (checked under the assignment lock,
-  # which set_unit also takes to evict); otherwise nothing is queued and
-  # :evicted is returned so the caller resolves it again. A no-unit split
-  # assignment whose unit has since been set is likewise not queued.
-  def queue_exposure(assignment, experiment_name = nil)
-    return if assignment.exposed
-
-    claimed = false
-    begin
-      loop do
-        waiting = false
-        evicted = false
-        # Waiting for the assignment lock stays interruptible; only the claim
-        # bookkeeping under it is masked.
-        @assignment_mutex.synchronize do
-          Thread.handle_interrupt(Object => :never) do
-            @queue_mutex.synchronize do
-              check_not_closed?
-              waiting = @exposing.key?(assignment) && @exposing[assignment] != Thread.current
-              unless waiting || assignment.exposed || @exposing.key?(assignment)
-                # A no-unit split assignment whose unit has since been set is
-                # stale too (a failed exposure left it cached): resolved again.
-                if (experiment_name.nil? || @assignment_cache[experiment_name.to_s].equal?(assignment)) &&
-                   !unit_now_set?(assignment)
-                  @exposing[assignment] = Thread.current
-                  claimed = true
-                else
-                  evicted = true
-                end
-              end
-            end
-          end
-        end
-        return :evicted if evicted
-        break unless waiting
-
-        @queue_mutex.synchronize do
-          if @exposing.key?(assignment) && @exposing[assignment] != Thread.current
-            @exposure_condvar.wait(@queue_mutex)
-          end
-        end
-      end
-      return unless claimed
-
-      # Only this assignment is claimed, without holding a lock over the
-      # supplied clock; distinct nested or concurrent exposures can proceed.
-      exposed_at = @clock.to_i
-      exposure = nil
-      @queue_mutex.synchronize do
-        # Checked under the queue lock so an exposure cannot slip in after close
-        # sealed the queue and be stranded.
-        check_not_closed?
-
-        unless assignment.exposed
-          assignment.exposed = true
-
-          exposure = Exposure.new
-          exposure.id = assignment.id || 0
-          exposure.name = assignment.name
-          exposure.unit = assignment.unit_type
-          exposure.variant = assignment.variant
-          exposure.exposed_at = exposed_at
-          exposure.assigned = assignment.assigned
-          exposure.eligible = assignment.eligible
-          exposure.overridden = assignment.overridden
-          exposure.full_on = assignment.full_on
-          exposure.custom = assignment.custom
-          exposure.audience_mismatch = assignment.audience_mismatch
-          exposure.rule_override = assignment.rule_override
-
-          @pending_count += 1
-          @exposures.push(exposure)
-        end
-      end
-    ensure
-      # Only the claim is released here (no assignment lock, so an unwinding
-      # timeout is not held up). A no-unit assignment left unexposed after its
-      # unit was set is rebuilt by the next read (see cached_or_new_assignment).
-      if claimed
-        Thread.handle_interrupt(Object => :never) do
-          @queue_mutex.synchronize do
-            @exposing.delete(assignment)
-            @exposure_condvar.broadcast
-          end
-        end
-      end
-    end
-    # User callbacks run outside the lock so they can call publish/track.
-    log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposure) unless exposure.nil?
+  # Public as in 1.3.0: queues an exposure for assignment unless it is
+  # already exposed, and returns the exposure logger's result.
+  def queue_exposure(assignment)
+    result = nil
+    claim_and_queue_exposure(assignment) { |logged| result = logged }
+    result
   end
 
   def peek_treatment(experiment_name)
@@ -503,6 +417,103 @@ class Context
   end
 
   private
+    # Claims and queues assignment's exposure. With experiment_name, the claim
+    # is taken only while the assignment is still the cached one for that
+    # experiment (checked under the assignment lock, which set_unit also
+    # takes to evict), and a no-unit split assignment whose unit has since
+    # been set counts as stale; then nothing is queued and :evicted is
+    # returned so the caller resolves it again. Returns nil otherwise, never
+    # the logger's result (that is passed to the block).
+    def claim_and_queue_exposure(assignment, experiment_name = nil)
+      return if assignment.exposed
+
+      claimed = false
+      begin
+        loop do
+          waiting = false
+          evicted = false
+          # Waiting for the assignment lock stays interruptible; only the claim
+          # bookkeeping under it is masked.
+          @assignment_mutex.synchronize do
+            Thread.handle_interrupt(Object => :never) do
+              @queue_mutex.synchronize do
+                check_not_closed?
+                waiting = @exposing.key?(assignment) && @exposing[assignment] != Thread.current
+                unless waiting || assignment.exposed || @exposing.key?(assignment)
+                  # A no-unit split assignment whose unit has since been set is
+                  # stale too (a failed exposure left it cached): resolved again.
+                  if (experiment_name.nil? || @assignment_cache[experiment_name.to_s].equal?(assignment)) &&
+                     !unit_now_set?(assignment)
+                    @exposing[assignment] = Thread.current
+                    claimed = true
+                  else
+                    evicted = true
+                  end
+                end
+              end
+            end
+          end
+          return :evicted if evicted
+          break unless waiting
+
+          @queue_mutex.synchronize do
+            if @exposing.key?(assignment) && @exposing[assignment] != Thread.current
+              @exposure_condvar.wait(@queue_mutex)
+            end
+          end
+        end
+        return unless claimed
+
+        # Only this assignment is claimed, without holding a lock over the
+        # supplied clock; distinct nested or concurrent exposures can proceed.
+        exposed_at = @clock.to_i
+        exposure = nil
+        @queue_mutex.synchronize do
+          # Checked under the queue lock so an exposure cannot slip in after close
+          # sealed the queue and be stranded.
+          check_not_closed?
+
+          unless assignment.exposed
+            assignment.exposed = true
+
+            exposure = Exposure.new
+            exposure.id = assignment.id || 0
+            exposure.name = assignment.name
+            exposure.unit = assignment.unit_type
+            exposure.variant = assignment.variant
+            exposure.exposed_at = exposed_at
+            exposure.assigned = assignment.assigned
+            exposure.eligible = assignment.eligible
+            exposure.overridden = assignment.overridden
+            exposure.full_on = assignment.full_on
+            exposure.custom = assignment.custom
+            exposure.audience_mismatch = assignment.audience_mismatch
+            exposure.rule_override = assignment.rule_override
+
+            @pending_count += 1
+            @exposures.push(exposure)
+          end
+        end
+      ensure
+        # Only the claim is released here (no assignment lock, so an unwinding
+        # timeout is not held up). A no-unit assignment left unexposed after its
+        # unit was set is rebuilt by the next read (see cached_or_new_assignment).
+        if claimed
+          Thread.handle_interrupt(Object => :never) do
+            @queue_mutex.synchronize do
+              @exposing.delete(assignment)
+              @exposure_condvar.broadcast
+            end
+          end
+        end
+      end
+      # User callbacks run outside the lock so they can call publish/track.
+      return nil if exposure.nil?
+
+      logged = log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposure)
+      yield logged if block_given?
+      nil
+    end
     def seal(event_type)
       return nil if @closed
 
@@ -567,76 +578,89 @@ class Context
       return nil if @publish_mutex.owned?
 
       claimed = nil
-      result = @publish_mutex.synchronize do
-        exposures = achievements = nil
-        event_count = 0
-        # Failure installation and recovery both take this lock. Keep the
-        # decision and snapshot together, but never hold it across publishing.
-        dropped, failure = @ready_mutex.synchronize do
-          failed_result = drop_if_failed(sealing, ready_locked: true)
-          unless failed_result.first
-            @queue_mutex.synchronize do
-              exposures = @exposures.dup
-              achievements = @achievements.dup
-              event_count = exposures.size + achievements.size
+      begin
+        result = @publish_mutex.synchronize do
+          exposures = achievements = nil
+          event_count = 0
+          # Failure installation and recovery both take this lock. Keep the
+          # decision and snapshot together, but never hold it across publishing.
+          dropped, failure = @ready_mutex.synchronize do
+            failed_result = drop_if_failed(sealing, ready_locked: true)
+            unless failed_result.first
+              @queue_mutex.synchronize do
+                exposures = @exposures.dup
+                achievements = @achievements.dup
+                event_count = exposures.size + achievements.size
+              end
             end
+            failed_result
           end
-          failed_result
-        end
-        next failure if dropped
+          next failure if dropped
 
-        if event_count.zero?
-          claimed = take_close_pending unless sealing
-          next nil
-        end
+          if event_count.zero?
+            # Assigned under the mask, so an interrupt can't land between
+            # clearing the request and recording that this publish holds it.
+            Thread.handle_interrupt(Object => :never) { claimed = take_close_pending } unless sealing
+            next nil
+          end
 
-        # Captured before the handler runs, so a handler that mutates the
-        # payload it was given can't change which queued events are removed.
-        sent = {}.compare_by_identity
-        exposures.each { |sent_event| sent[sent_event] = true }
-        achievements.each { |sent_event| sent[sent_event] = true }
+          # Captured before the handler runs, so a handler that mutates the
+          # payload it was given can't change which queued events are removed.
+          sent = {}.compare_by_identity
+          exposures.each { |sent_event| sent[sent_event] = true }
+          achievements.each { |sent_event| sent[sent_event] = true }
 
-        event = PublishEvent.new
-        event.hashed = true
-        event.published_at = @clock.to_i
-        event.units = @units.map do |key, value|
-          Unit.new(key.to_s, unit_hash(key, value))
-        end
-        event.exposures = exposures unless exposures.empty?
-        event.attributes = @attributes unless @attributes.empty?
-        event.goals = achievements unless achievements.empty?
-        # Like the JavaScript SDK, the publish event is logged once the batch is
-        # delivered; a failed delivery logs an error event instead.
-        begin
-          response = @event_handler.publish(self, event)
-        rescue StandardError => e
-          log_error(e)
-          raise
-        end
+          event = PublishEvent.new
+          event.hashed = true
+          event.published_at = @clock.to_i
+          event.units = @units.map do |key, value|
+            Unit.new(key.to_s, unit_hash(key, value))
+          end
+          event.exposures = exposures unless exposures.empty?
+          event.attributes = @attributes unless @attributes.empty?
+          event.goals = achievements unless achievements.empty?
+          # Like the JavaScript SDK, the publish event is logged once the batch is
+          # delivered; a failed delivery logs an error event instead.
+          begin
+            response = @event_handler.publish(self, event)
+          rescue StandardError => e
+            log_error(e)
+            raise
+          end
 
-        if publish_failed?(response)
-          if response.is_a?(Exception)
-            log_error(response)
-          elsif response.respond_to?(:exception) && response.exception
-            log_error(response.exception)
+          if publish_failed?(response)
+            if response.is_a?(Exception)
+              log_error(response)
+            elsif response.respond_to?(:exception) && response.exception
+              log_error(response.exception)
+            else
+              log_error(StandardError.new("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})"))
+            end
+            remove_published(sent) if drop_rejected
+            response
           else
-            log_error(StandardError.new("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})"))
+            log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
+            remove_published(sent)
+            # Claim a deferred close while still holding the lock, so only this
+            # successful publish can carry it out; a request made by another
+            # thread after a rejected publish waits for its own success.
+            # Assigned under the mask, so an interrupt can't land between
+            # clearing the request and recording that this publish holds it.
+            Thread.handle_interrupt(Object => :never) { claimed = take_close_pending } unless sealing
+            response
           end
-          remove_published(sent) if drop_rejected
-          response
-        else
-          log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
-          remove_published(sent)
-          # Claim a deferred close while still holding the lock, so only this
-          # successful publish can carry it out; a request made by another
-          # thread after a rejected publish waits for its own success.
-          claimed = take_close_pending unless sealing
-          response
         end
-      end
 
-      run_deferred_seal(claimed) if claimed
-      result
+        if claimed
+          run_deferred_seal(claimed)
+          claimed = nil
+        end
+        result
+      ensure
+        # A deferred seal claimed by this publish but not started (an interrupt
+        # landed after the claim) stays pending, as one that didn't finish does.
+        restore_close_pending(claimed) if claimed
+      end
     end
 
     # A failed context drops its queued events. Rechecked under the readiness
@@ -674,10 +698,10 @@ class Context
       claimed
     end
 
-    def run_deferred_seal((event_type, request))
+    def run_deferred_seal(claimed)
       finished = false
       begin
-        seal(event_type)
+        seal(claimed.first)
         finished = true
       rescue EventsQueuedWhileClosing
         # Events still queued: this publish returns, the seal stays pending.
@@ -686,14 +710,17 @@ class Context
         # A deferred seal that did not finish (events still queued, its own
         # publish rejected or raised, or an interrupt such as Timeout or
         # Thread#kill unwound it) stays pending for the next successful
-        # publish, unless a newer request was made meanwhile (even one another
-        # publish has already claimed). Any other error propagates.
-        unless finished
-          Thread.handle_interrupt(Object => :never) do
-            @publish_mutex.synchronize do
-              @close_pending = event_type unless @closed || @close_requests != request
-            end
-          end
+        # publish. Any other error propagates.
+        restore_close_pending(claimed) unless finished
+      end
+    end
+
+    # Unless the context sealed or a newer request was made meanwhile (even
+    # one another publish has already claimed).
+    def restore_close_pending((event_type, request))
+      Thread.handle_interrupt(Object => :never) do
+        @publish_mutex.synchronize do
+          @close_pending = event_type unless @closed || @close_requests != request
         end
       end
     end
@@ -836,7 +863,10 @@ class Context
 
       if @attrs_seq > (assignment.attrs_seq || 0) || key_changed
         unless key.empty?
-          pinned_missing = assignment.exposed && assignment.rule_missing_unit
+          # Exposed, or being exposed right now (its clock may set the unit):
+          # the no-unit variant stays, so a unit arriving can't switch it.
+          pinned_missing = assignment.rule_missing_unit &&
+                           (assignment.exposed || @queue_mutex.synchronize { @exposing.key?(assignment) })
           rule = resolve_rule(entry, matcher_attributes(rule_matcher), pinned_missing)
           return false if rule&.first != assignment.rule_variant
 
@@ -1030,8 +1060,7 @@ class Context
         while true # rubocop:disable Style/InfiniteLoop -- no block allocation on the read path
           assignment = assignment(experiment.data.name, state)
           break if assignment.variables.nil? || !expose || assignment.exposed
-          # Resolved again if set_unit evicted it before its exposure claim.
-          break unless queue_exposure(assignment, experiment.data.name) == :evicted
+          break unless claim_and_queue_exposure(assignment, experiment.data.name) == :evicted
         end
         next if assignment.variables.nil?
 
