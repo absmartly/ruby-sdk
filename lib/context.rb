@@ -243,28 +243,45 @@ class Context
   def treatment(experiment_name)
     check_ready?(true)
 
-    assignment = assignment(experiment_name)
-    queue_exposure(assignment)
-    assignment.variant
+    loop do
+      state = @state
+      assignment = assignment(experiment_name, state)
+      # set_unit may evict it between the lookup and the exposure claim:
+      # then it is resolved again, so the variant served is the one exposed.
+      # A read on a snapshot a refresh replaced is never cached, so not checked.
+      current = state.equal?(@state) ? experiment_name : nil
+      return assignment.variant unless queue_exposure(assignment, current) == :evicted
+    end
   end
 
-  def queue_exposure(assignment)
+  # experiment_name: the claim is taken only while the assignment is still
+  # the cached one for that experiment (under the assignment lock, which
+  # set_unit also takes to evict); otherwise :evicted is returned.
+  def queue_exposure(assignment, experiment_name = nil)
     return if assignment.exposed
 
     claimed = false
     begin
       loop do
         waiting = false
+        evicted = false
         Thread.handle_interrupt(Object => :never) do
-          @queue_mutex.synchronize do
-            check_not_closed?
-            waiting = @exposing.key?(assignment) && @exposing[assignment] != Thread.current
-            unless waiting || assignment.exposed || @exposing.key?(assignment)
-              @exposing[assignment] = Thread.current
-              claimed = true
+          @assignment_mutex.synchronize do
+            @queue_mutex.synchronize do
+              check_not_closed?
+              waiting = @exposing.key?(assignment) && @exposing[assignment] != Thread.current
+              unless waiting || assignment.exposed || @exposing.key?(assignment)
+                if experiment_name.nil? || @assignment_cache[experiment_name.to_s].equal?(assignment)
+                  @exposing[assignment] = Thread.current
+                  claimed = true
+                else
+                  evicted = true
+                end
+              end
             end
           end
         end
+        return :evicted if evicted
         break unless waiting
 
         @queue_mutex.synchronize do
@@ -650,20 +667,27 @@ class Context
     end
 
     def run_deferred_seal((event_type, request))
-      seal(event_type)
-    rescue Exception => error # rubocop:disable Lint/RescueException
-      # A deferred seal that did not finish (events still queued, its own
-      # publish rejected or raised, or an interrupt such as Timeout unwound
-      # it) stays pending for the next successful publish, unless a newer
-      # request was made meanwhile (even one another publish has already
-      # claimed). The error always propagates, except "events still queued",
-      # which lets this publish return.
-      Thread.handle_interrupt(Object => :never) do
-        @publish_mutex.synchronize do
-          @close_pending = event_type unless @closed || @close_requests != request
+      finished = false
+      begin
+        seal(event_type)
+        finished = true
+      rescue EventsQueuedWhileClosing
+        # Events still queued: this publish returns, the seal stays pending.
+        nil
+      ensure
+        # A deferred seal that did not finish (events still queued, its own
+        # publish rejected or raised, or an interrupt such as Timeout or
+        # Thread#kill unwound it) stays pending for the next successful
+        # publish, unless a newer request was made meanwhile (even one another
+        # publish has already claimed). Any other error propagates.
+        unless finished
+          Thread.handle_interrupt(Object => :never) do
+            @publish_mutex.synchronize do
+              @close_pending = event_type unless @closed || @close_requests != request
+            end
+          end
         end
       end
-      raise unless error.is_a?(EventsQueuedWhileClosing)
     end
 
     def publish_failed?(result)
@@ -988,10 +1012,17 @@ class Context
       state = @state
       key = key.to_s.to_sym
       (state.index_variables[key] || []).each do |experiment|
-        assignment = assignment(experiment.data.name, state)
+        assignment = nil
+        loop do
+          assignment = assignment(experiment.data.name, state)
+          break if assignment.variables.nil? || !expose
+          # Resolved again if set_unit evicted it before its exposure claim. A
+          # read on a replaced snapshot is never cached, so it is not checked.
+          current = state.equal?(@state) ? experiment.data.name : nil
+          break unless queue_exposure(assignment, current) == :evicted
+        end
         next if assignment.variables.nil?
 
-        queue_exposure(assignment) if expose
         if assignment.variables.key?(key) && (assignment.assigned || assignment.overridden || assignment.rule_override)
           return assignment.variables[key]
         end

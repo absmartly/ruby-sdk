@@ -378,6 +378,41 @@ RSpec.describe "Context assignment rules" do
       expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 1]])
     end
 
+    it "re-resolves a no-unit assignment evicted by set_unit between its lookup and exposure" do
+      context = create_context(context_data([split_rule("0/100/0")]), units: {}, attributes: { country: "US" })
+      sid = session_id
+      armed = true
+      allow(context).to receive(:queue_exposure).and_wrap_original do |original, assignment, *rest|
+        if armed
+          armed = false
+          context.set_unit("session_id", sid)
+        end
+        original.call(assignment, *rest)
+      end
+
+      first = context.treatment("exp_test_abc")
+      expect(context.treatment("exp_test_abc")).to eq(first)
+      expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", first]])
+    end
+
+    it "re-resolves a variable read whose assignment set_unit evicted before its exposure" do
+      context = create_context(context_data([split_rule("0/100/0")]), units: {}, attributes: { country: "US" })
+      sid = session_id
+      armed = true
+      allow(context).to receive(:queue_exposure).and_wrap_original do |original, assignment, *rest|
+        if armed
+          armed = false
+          context.set_unit("session_id", sid)
+        end
+        original.call(assignment, *rest)
+      end
+
+      first = context.variable_value("button.color", "default")
+      expect(context.variable_value("button.color", "default")).to eq(first)
+      variants = published_exposures(context).map { |e| [e.name, e.variant] }
+      expect(variants.map(&:first)).to eq(["exp_test_abc"])
+    end
+
     it "uses the latest String or Symbol spelling of an attribute in the built-in evaluator" do
       staging = { and: [{ eq: [{ var: "environment" }, { value: "staging" }] }] }
       context = create_context(context_data([assign_rule(1, conditions: staging)]))

@@ -544,6 +544,37 @@ RSpec.describe Context do
     expect(seen).to eq("application" => "website", "environment" => "prod", name => "staging")
   end
 
+  describe "the built-in audience evaluator with an attribute set under both spellings" do
+    def strict_context
+      config = ContextConfig.create
+      config.set_units(units)
+      Context.create(clock, config, audience_strict_data_future_ready, data_provider, event_handler,
+                     event_logger, variable_parser, audience_matcher)
+    end
+
+    it "uses the latest value on first resolution" do
+      context = strict_context
+      context.set_attribute("age", 10)
+      context.set_attribute(:age, 25)
+      expect(context.peek_treatment("exp_test_ab")).not_to eq(0)
+
+      context = strict_context
+      context.set_attribute("age", 25)
+      context.set_attribute(:age, 10)
+      expect(context.peek_treatment("exp_test_ab")).to eq(0)
+    end
+
+    it "uses the latest value when revalidating a cached assignment" do
+      context = strict_context
+      context.set_attribute("age", 10)
+      expect(context.peek_treatment("exp_test_ab")).to eq(0)
+      context.set_attribute(:age, 25)
+      expect(context.peek_treatment("exp_test_ab")).not_to eq(0)
+      context.set_attribute("age", 10)
+      expect(context.peek_treatment("exp_test_ab")).to eq(0)
+    end
+  end
+
   it "keeps both String and Symbol user keys for a custom matcher, as in v1.3.0" do
     seen = nil
     matcher = Class.new do
@@ -835,6 +866,44 @@ RSpec.describe Context do
     expect(holder[:context].finalized?).to be true
     expect(holder[:context].pending_count).to eq(0)
     expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::FINALIZE)).to eq(1)
+  end
+
+  it "keeps a deferred finalize pending when its publishing thread is killed" do
+    config = ContextConfig.create
+    config.set_units(units)
+    holder = { goals: 0, events: [], calls: 0 }
+    blocked = Queue.new
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) do |event, _data|
+        holder[:events] << event
+        next unless event == ContextEventLogger::EVENT_TYPE::PUBLISH && holder[:goals] < 1
+
+        holder[:goals] += 1
+        holder[:context].track("followup", nil)
+        holder[:context].finalize
+      end
+    end.new
+    handler = Object.new
+    handler.define_singleton_method(:publish) do |_context, _event|
+      holder[:calls] += 1
+      if holder[:calls] == 2
+        blocked << true
+        sleep
+      end
+      OpenStruct.new(success?: true)
+    end
+    holder[:context] = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                                      variable_parser, audience_matcher)
+    holder[:context].track("goal1", nil)
+
+    publisher = Thread.new { holder[:context].publish }
+    Timeout.timeout(5) { blocked.pop }
+    publisher.kill
+    publisher.join(5)
+    expect(holder[:context].finalized?).to be false
+    Timeout.timeout(5) { holder[:context].publish }
+    expect(holder[:context].finalized?).to be true
+    expect(holder[:context].pending_count).to eq(0)
   end
 
   it "a close requested after another thread's rejected publish waits for a later success" do
