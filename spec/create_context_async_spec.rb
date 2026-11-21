@@ -1537,6 +1537,7 @@ RSpec.describe "create_context_async" do
         handler = Object.new
         handler.define_singleton_method(:publish) do |_context, event|
           sent.concat((event.goals || []).map(&:name))
+          sent.concat((event.exposures || []).map(&:name))
           OpenStruct.new(success?: true)
         end
         config = ContextConfig.create
@@ -1544,6 +1545,9 @@ RSpec.describe "create_context_async" do
         context = Context.create_async(clock, config, data_provider,
                                        handler, event_logger, variable_parser, audience_matcher)
         context.track("before_failure", nil)
+        early = Assignment.new
+        early.name = "before_failure_exp"
+        context.queue_exposure(early)
         # Each copy is part of the failure/selection transaction, including a
         # copy moved earlier than the scheduling gate below.
         %i[@achievements @exposures].each do |name|
@@ -1592,13 +1596,16 @@ RSpec.describe "create_context_async" do
           Timeout.timeout(5) { parked.pop }
           context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
           context.track("after_failure", nil)
+          late = Assignment.new
+          late.name = "after_failure_exp"
+          context.queue_exposure(late)
           resume << true
           Timeout.timeout(5) { publisher.join }
         ensure
           resume << true
           publisher.join(1) || publisher.kill
         end
-        expect(sent).to eq(["before_failure"])
+        expect(sent).to eq(["before_failure", "before_failure_exp"])
       end
     end
 

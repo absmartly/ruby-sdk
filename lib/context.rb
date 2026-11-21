@@ -432,7 +432,7 @@ class Context
           evicted = false
           # Waiting for the assignment lock stays interruptible; only the claim
           # bookkeeping under it is masked.
-          @assignment_mutex.synchronize do
+          claim = lambda do
             Thread.handle_interrupt(Object => :never) do
               @queue_mutex.synchronize do
                 check_not_closed?
@@ -452,6 +452,11 @@ class Context
                 end
               end
             end
+          end
+          if experiment_name.nil?
+            claim.call
+          else
+            @assignment_mutex.synchronize(&claim)
           end
           return :evicted if evicted
           break unless waiting
@@ -549,8 +554,10 @@ class Context
               next :retry
             end
 
-            @closed = true
-            @sealed_by = event_type
+            Thread.handle_interrupt(Object => :never) do
+              @sealed_by = event_type
+              @closed = true
+            end
             :sealed
           end
           return nil if sealed == :done

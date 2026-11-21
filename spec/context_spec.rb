@@ -661,6 +661,63 @@ RSpec.describe Context do
     expect(context.pending_count).to eq(1)
   end
 
+  it "lets a custom matcher directly queue a fresh exposure" do
+    holder = {}
+    matcher = Object.new
+    matcher.define_singleton_method(:evaluate) do |_audience, _attributes|
+      side = Assignment.new
+      side.name = "side-exposure"
+      holder[:context].queue_exposure(side)
+      Struct.new(:result).new(true)
+    end
+    config = ContextConfig.create
+    config.set_units(units)
+    context = Context.create(clock, config, audience_strict_data_future_ready, data_provider, event_handler,
+                             event_logger, variable_parser, matcher)
+    holder[:context] = context
+    expect(context.peek_treatment("exp_test_ab")).not_to eq(0)
+    expect(context.pending_count).to eq(1)
+    expect(context.instance_variable_get(:@exposures).map(&:name)).to eq(["side-exposure"])
+  end
+
+  %i[timeout kill].each do |cancel|
+    it "keeps close guards consistent when #{cancel} interrupts the final seal update" do
+      context = create_ready_context
+      source = Context.instance_method(:seal).source_location.first
+      target = File.readlines(source).index { |line| line.strip == "@closed = true" } + 1
+      parked = Queue.new
+      resume = Queue.new
+      trace = TracePoint.new(:line) do |tp|
+        if tp.path == source && tp.lineno == target && Thread.current[:gate]
+          Thread.current[:gate] = false
+          parked << true
+          resume.pop
+        end
+      end
+      trace.enable
+      worker = Thread.new do
+        Thread.current[:gate] = true
+        context.close
+      rescue Timeout::Error
+        nil
+      end
+      begin
+        Timeout.timeout(5) { parked.pop }
+        cancel == :kill ? worker.kill : worker.raise(Timeout::Error)
+        resume << true
+        Timeout.timeout(5) { worker.join }
+      ensure
+        trace.disable
+        resume << true
+        worker.join(1) || worker.kill
+      end
+      context.close unless context.closed?
+      expect(context.closed?).to be true
+      expect { context.set_override("exp_test_ab", 1) }.to raise_error(IllegalStateException)
+      expect { context.experiments }.to raise_error(IllegalStateException)
+    end
+  end
+
   it "keeps both String and Symbol user keys for a custom matcher, as in v1.3.0" do
     seen = nil
     matcher = Class.new do
