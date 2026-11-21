@@ -251,8 +251,6 @@ class Context
     end
   end
 
-  # Public as in 1.3.0: queues an exposure for assignment unless it is
-  # already exposed, and returns the exposure logger's result.
   def queue_exposure(assignment)
     result = nil
     claim_and_queue_exposure(assignment) { |logged| result = logged }
@@ -839,9 +837,15 @@ class Context
     # exposed and not being exposed: set_unit skipped evicting it because its
     # exposure was in progress, and that exposure did not complete.
     def stale_missing_unit?(assignment)
-      return false if assignment.exposed || !unit_now_set?(assignment)
+      return false unless unit_now_set?(assignment)
 
-      @queue_mutex.synchronize { !@exposing.key?(assignment) }
+      !exposed_or_exposing?(assignment)
+    end
+
+    # Read together under the queue lock: an exposure completing sets exposed
+    # and releases its claim under that lock, so a reader can't see neither.
+    def exposed_or_exposing?(assignment)
+      @queue_mutex.synchronize { assignment.exposed || @exposing.key?(assignment) }
     end
 
     def unit_now_set?(assignment)
@@ -867,8 +871,7 @@ class Context
         unless key.empty?
           # Exposed, or being exposed right now (its clock may set the unit):
           # the no-unit variant stays, so a unit arriving can't switch it.
-          pinned_missing = assignment.rule_missing_unit &&
-                           (assignment.exposed || @queue_mutex.synchronize { @exposing.key?(assignment) })
+          pinned_missing = assignment.rule_missing_unit && exposed_or_exposing?(assignment)
           rule = resolve_rule(entry, matcher_attributes(rule_matcher), pinned_missing)
           return false if rule&.first != assignment.rule_variant
 

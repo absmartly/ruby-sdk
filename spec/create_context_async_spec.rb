@@ -1544,24 +1544,37 @@ RSpec.describe "create_context_async" do
         context = Context.create_async(clock, config, data_provider,
                                        handler, event_logger, variable_parser, audience_matcher)
         context.track("before_failure", nil)
-        # Park the publisher on the first line after its locked failure check
-        # and batch selection, then fail the fetch and queue a goal. Any part
-        # of the batch copied from there on, under the queue lock or under no
-        # lock at all, would carry the late goal.
-        source = Context.instance_method(:flush).source_location.first
-        after_selection = File.readlines(source).index { |line| line.strip == "next failure if dropped" }
-        expect(after_selection).not_to be_nil, "flush no longer has a next failure if dropped line to park on"
-        after_selection += 1
+        # Park the publisher the moment it releases the readiness lock that
+        # covers its failure check and batch selection, then fail the fetch and
+        # queue a goal. Any part of the batch copied outside that lock (before
+        # or after the release, under the queue lock or under none) either sees
+        # the context failed or carries the late goal into the handler.
+        ready_mutex = context.instance_variable_get(:@ready_mutex)
+        publish_mutex = context.instance_variable_get(:@publish_mutex)
+        queue_mutex = context.instance_variable_get(:@queue_mutex)
         parked = Queue.new
         resume = Queue.new
-        trace = TracePoint.new(:line) do |tp|
-          if tp.path == source && tp.lineno == after_selection && Thread.current[:gate_selection]
+        released = false
+        allow(ready_mutex).to receive(:synchronize).and_wrap_original do |original, &block|
+          result = original.call(&block)
+          if Thread.current[:gate_selection] && publish_mutex.owned?
+            Thread.current[:gate_selection] = false
+            released = true
+            parked << true
+            resume.pop
+          end
+          result
+        end
+        # A copy taken under the queue lock alone, before that readiness lock
+        # is taken, would also be outside the boundary: park there too.
+        allow(queue_mutex).to receive(:synchronize).and_wrap_original do |original, &block|
+          if Thread.current[:gate_selection] && publish_mutex.owned? && !ready_mutex.owned? && !released
             Thread.current[:gate_selection] = false
             parked << true
             resume.pop
           end
+          original.call(&block)
         end
-        trace.enable
         publisher = Thread.new do
           Thread.current[:gate_selection] = true
           context.public_send(operation)
@@ -1573,7 +1586,6 @@ RSpec.describe "create_context_async" do
           resume << true
           Timeout.timeout(5) { publisher.join }
         ensure
-          trace.disable
           resume << true
           publisher.join(1) || publisher.kill
         end

@@ -704,6 +704,35 @@ RSpec.describe "Context assignment rules" do
       end
     end
 
+    %i[evicted logged].each do |returned|
+      it "a first treatment serves and exposes the same when the exposure logger returns #{returned.inspect}" do
+        holder = { calls: 0 }
+        logger = Class.new(ContextEventLogger) do
+          define_method(:handle_event) do |event, _data|
+            next unless event == ContextEventLogger::EVENT_TYPE::EXPOSURE
+
+            holder[:calls] += 1
+            next unless holder[:calls] == 1
+
+            holder[:context].set_override("exp_test_abc", 0)
+            returned
+          end
+        end.new
+        config = ContextConfig.create
+        config.set_units(session_id: session_id)
+        config.set_attributes(country: "US")
+        context = Context.create(clock, config, OpenStruct.new(data_future: context_data(nil), success?: true),
+                                 data_provider, event_handler, logger, variable_parser, audience_matcher,
+                                 application: "website", environment: "production")
+        holder[:context] = context
+
+        expect(context.treatment("exp_test_abc")).to eq(2)
+        expect(context.treatment("exp_test_abc")).to eq(0)
+        expect(published_exposures(context).map { |e| [e.name, e.variant] })
+          .to eq([["exp_test_abc", 2], ["exp_test_abc", 0]])
+      end
+    end
+
     it "the public queue_exposure queues any assignment it is given, as in 1.3.0" do
       context = create_context(context_data([split_rule("0/100/0")]), units: {}, attributes: { country: "US" })
       no_unit = context.send(:assignment, "exp_test_abc")
@@ -712,6 +741,65 @@ RSpec.describe "Context assignment rules" do
       context.queue_exposure(no_unit)
       expect(context.pending_count).to eq(1)
       expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
+    end
+
+    # A concurrent read checks an assignment just as its exposure completes:
+    # it must not see it as neither exposed nor being exposed.
+    [false, true].each do |with_attribute|
+      it "keeps the no-unit variant when a read overlaps its exposure completing#{" after an attribute update" if with_attribute}" do
+        holder = { in_clock: Queue.new, resume: Queue.new }
+        sid = session_id
+        clock_object = Object.new
+        clock_object.define_singleton_method(:to_i) do
+          if Thread.current[:arm]
+            Thread.current[:arm] = false
+            holder[:context].set_unit("session_id", sid)
+            holder[:context].set_attribute("age", 30) if with_attribute
+            holder[:in_clock] << true
+            holder[:resume].pop
+          end
+          123
+        end
+        context = clocked_context(context_data([split_rule("0/100/0")]), clock_object, attributes: { country: "US" })
+        holder[:context] = context
+        queue_mutex = context.instance_variable_get(:@queue_mutex)
+        checking = Queue.new
+        proceed = Queue.new
+        # Park the reader as it takes the queue lock to check the assignment's
+        # exposure state, until the owner has completed its exposure.
+        allow(queue_mutex).to receive(:synchronize).and_wrap_original do |original, &block|
+          if Thread.current[:gate]
+            Thread.current[:gate] = false
+            checking << true
+            proceed.pop
+          end
+          original.call(&block)
+        end
+        owner = Thread.new do
+          Thread.current[:arm] = true
+          context.treatment("exp_test_abc")
+        end
+        reader = nil
+        begin
+          Timeout.timeout(5) { holder[:in_clock].pop }
+          reader = Thread.new do
+            Thread.current[:gate] = true
+            context.peek_treatment("exp_test_abc")
+          end
+          Timeout.timeout(5) { checking.pop }
+          holder[:resume] << true
+          expect(Timeout.timeout(5) { owner.value }).to eq(0)
+          proceed << true
+          expect(Timeout.timeout(5) { reader.value }).to eq(0)
+        ensure
+          holder[:resume] << true
+          proceed << true
+          owner.join(1) || owner.kill
+          reader&.join(1) || reader&.kill
+        end
+        expect(context.treatment("exp_test_abc")).to eq(0)
+        expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
+      end
     end
 
     it "uses the latest String or Symbol spelling of an attribute in the built-in evaluator" do

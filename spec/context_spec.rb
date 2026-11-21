@@ -817,8 +817,6 @@ RSpec.describe Context do
         holder[:context].close if holder[:goals] == 1
       end
     end.new
-    # Publishes 1-3 run inside the first publish (the close hits the pass
-    # limit); the 4th is rejected and must not drop the carried close.
     responses = [nil, nil, nil, failure_future, nil]
     handler = instance_double(Absmartly::ContextPublisher)
     allow(handler).to receive(:publish) { responses.shift }
@@ -1021,7 +1019,6 @@ RSpec.describe Context do
                                         variable_parser, audience_matcher)
       holder[:context].track("goal1", nil)
 
-      # Park the publisher on the line that starts the claimed seal.
       source = Context.instance_method(:flush).source_location.first
       handoff = File.readlines(source).index { |line| line.strip == "run_deferred_seal(claimed)" }
       expect(handoff).not_to be_nil, "flush no longer has a run_deferred_seal(claimed) line to park on"
