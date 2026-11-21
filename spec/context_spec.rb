@@ -1267,6 +1267,43 @@ RSpec.describe Context do
     expect(context.pending_count).to eq(1)
   end
 
+  it "finishes seal-counter cleanup when interrupted waiting for the queue lock" do
+    context = create_ready_context
+    mutex = context.instance_variable_get(:@queue_mutex)
+    cleaning = Queue.new
+    resume = Queue.new
+    allow(mutex).to receive(:synchronize).and_wrap_original do |original, &block|
+      # The cleanup block is the only queue operation after the seal logger.
+      if Thread.current[:cleanup_gate]
+        Thread.current[:cleanup_gate] = false
+        cleaning << true
+        resume.pop
+      end
+      original.call(&block)
+    end
+    logger = Object.new
+    logger.define_singleton_method(:handle_event) do |event, _data|
+      Thread.current[:cleanup_gate] = true if event == ContextEventLogger::EVENT_TYPE::FINALIZE
+    end
+    context.instance_variable_set(:@event_logger, logger)
+    worker = Thread.new do
+      context.finalize
+    rescue Timeout::Error
+      nil
+    end
+    begin
+      Timeout.timeout(5) { cleaning.pop }
+      worker.raise(Timeout::Error)
+      sleep 0.05
+      resume << true
+      worker.join(5)
+    ensure
+      resume << true
+      worker.join(1) || worker.kill
+    end
+    expect(context.instance_variable_get(:@sealing)).to eq(0)
+  end
+
   it "a close requested after another thread's rejected publish waits for a later success" do
     config = ContextConfig.create
     config.set_units(units)
