@@ -704,6 +704,16 @@ RSpec.describe "Context assignment rules" do
       end
     end
 
+    it "the public queue_exposure queues any assignment it is given, as in 1.3.0" do
+      context = create_context(context_data([split_rule("0/100/0")]), units: {}, attributes: { country: "US" })
+      no_unit = context.send(:assignment, "exp_test_abc")
+      context.set_unit("session_id", session_id)
+
+      context.queue_exposure(no_unit)
+      expect(context.pending_count).to eq(1)
+      expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
+    end
+
     it "uses the latest String or Symbol spelling of an attribute in the built-in evaluator" do
       staging = { and: [{ eq: [{ var: "environment" }, { value: "staging" }] }] }
       context = create_context(context_data([assign_rule(1, conditions: staging)]))

@@ -440,10 +440,12 @@ class Context
                 check_not_closed?
                 waiting = @exposing.key?(assignment) && @exposing[assignment] != Thread.current
                 unless waiting || assignment.exposed || @exposing.key?(assignment)
-                  # A no-unit split assignment whose unit has since been set is
-                  # stale too (a failed exposure left it cached): resolved again.
-                  if (experiment_name.nil? || @assignment_cache[experiment_name.to_s].equal?(assignment)) &&
-                     !unit_now_set?(assignment)
+                  # On the SDK's read paths (experiment_name given), a no-unit
+                  # split assignment whose unit has since been set is stale too
+                  # (a failed exposure left it cached): resolved again. A
+                  # direct queue_exposure call queues what it is given.
+                  if experiment_name.nil? ||
+                     (@assignment_cache[experiment_name.to_s].equal?(assignment) && !unit_now_set?(assignment))
                     @exposing[assignment] = Thread.current
                     claimed = true
                   else

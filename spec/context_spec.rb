@@ -644,6 +644,23 @@ RSpec.describe Context do
     end
   end
 
+  it "keeps the 1.3.0 contract of the public queue_exposure" do
+    logger = Class.new(ContextEventLogger) do
+      define_method(:handle_event) { |event, _data| event == ContextEventLogger::EVENT_TYPE::EXPOSURE ? :sentinel : nil }
+    end.new
+    config = ContextConfig.create
+    config.set_units(units)
+    context = Context.create(clock, config, data_future_ready, data_provider, event_handler, logger,
+                             variable_parser, audience_matcher)
+    assignment = context.send(:assignment, "exp_test_ab")
+
+    expect(Context.public_method_defined?(:queue_exposure)).to be true
+    expect(Context.instance_method(:queue_exposure).arity).to eq(1)
+    expect(context.queue_exposure(assignment)).to eq(:sentinel)
+    expect(context.queue_exposure(assignment)).to be_nil
+    expect(context.pending_count).to eq(1)
+  end
+
   it "keeps both String and Symbol user keys for a custom matcher, as in v1.3.0" do
     seen = nil
     matcher = Class.new do
@@ -1006,7 +1023,9 @@ RSpec.describe Context do
 
       # Park the publisher on the line that starts the claimed seal.
       source = Context.instance_method(:flush).source_location.first
-      handoff = File.readlines(source).index { |line| line.strip == "run_deferred_seal(claimed)" } + 1
+      handoff = File.readlines(source).index { |line| line.strip == "run_deferred_seal(claimed)" }
+      expect(handoff).not_to be_nil, "flush no longer has a run_deferred_seal(claimed) line to park on"
+      handoff += 1
       parked = Queue.new
       trace = TracePoint.new(:line) do |tp|
         if tp.path == source && tp.lineno == handoff && Thread.current[:gate]
@@ -1035,6 +1054,59 @@ RSpec.describe Context do
       Timeout.timeout(5) { holder[:context].publish }
       expect(holder[:context].finalized?).to be true
       expect(holder[:context].pending_count).to eq(0)
+      expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::FINALIZE)).to eq(1)
+    end
+  end
+
+  # The interrupt lands the moment take_close_pending hands over the claim,
+  # before flush has recorded it; the claim must not be lost.
+  { "a successful publish" => true, "an empty publish" => false }.each do |label, queue_goal|
+    it "keeps a deferred finalize pending when a timeout lands as #{label} takes its claim" do
+      config = ContextConfig.create
+      config.set_units(units)
+      holder = { events: [] }
+      logger = Class.new(ContextEventLogger) do
+        define_method(:handle_event) { |event, _data| holder[:events] << event }
+      end.new
+      handler = Object.new
+      handler.define_singleton_method(:publish) { |_context, _event| OpenStruct.new(success?: true) }
+      context = Context.create(clock, config, data_future_ready, data_provider, handler, logger,
+                               variable_parser, audience_matcher)
+      context.instance_variable_set(:@close_pending, ContextEventLogger::EVENT_TYPE::FINALIZE)
+      context.instance_variable_set(:@close_requests, 1)
+      context.track("goal1", nil) if queue_goal
+      taken = Queue.new
+      resume = Queue.new
+      allow(context).to receive(:take_close_pending).and_wrap_original do |original|
+        result = original.call
+        if Thread.current[:gate] && result
+          Thread.current[:gate] = false
+          taken << true
+          # The injected interrupt lands here unless the caller masked it.
+          resume.pop
+        end
+        result
+      end
+      publisher = Thread.new do
+        Thread.current[:gate] = true
+        context.publish
+      rescue Timeout::Error
+        nil
+      end
+      begin
+        Timeout.timeout(5) { taken.pop }
+        publisher.raise(Timeout::Error)
+        sleep 0.05
+        resume << true
+        publisher.join(5)
+      ensure
+        resume << true
+        publisher.join(1) || publisher.kill
+      end
+
+      expect(context.finalized?).to be(true).or(satisfy { context.instance_variable_get(:@close_pending) })
+      Timeout.timeout(5) { context.publish } unless context.finalized?
+      expect(context.finalized?).to be true
       expect(holder[:events].count(ContextEventLogger::EVENT_TYPE::FINALIZE)).to eq(1)
     end
   end

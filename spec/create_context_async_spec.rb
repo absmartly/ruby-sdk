@@ -1549,7 +1549,9 @@ RSpec.describe "create_context_async" do
         # of the batch copied from there on, under the queue lock or under no
         # lock at all, would carry the late goal.
         source = Context.instance_method(:flush).source_location.first
-        after_selection = File.readlines(source).index { |line| line.strip == "next failure if dropped" } + 1
+        after_selection = File.readlines(source).index { |line| line.strip == "next failure if dropped" }
+        expect(after_selection).not_to be_nil, "flush no longer has a next failure if dropped line to park on"
+        after_selection += 1
         parked = Queue.new
         resume = Queue.new
         trace = TracePoint.new(:line) do |tp|
