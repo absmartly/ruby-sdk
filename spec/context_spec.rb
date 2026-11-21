@@ -684,7 +684,10 @@ RSpec.describe Context do
     it "keeps close guards consistent when #{cancel} interrupts the final seal update" do
       context = create_ready_context
       source = Context.instance_method(:seal).source_location.first
-      target = File.readlines(source).index { |line| line.strip == "@closed = true" } + 1
+      lines = File.readlines(source)
+      writes = lines.each_index.select { |index| ["@closed = true", "@sealed_by = event_type"].include?(lines[index].strip) }
+      expect(writes.size).to eq(2)
+      target = writes.max + 1
       parked = Queue.new
       resume = Queue.new
       trace = TracePoint.new(:line) do |tp|
@@ -711,7 +714,7 @@ RSpec.describe Context do
         resume << true
         worker.join(1) || worker.kill
       end
-      context.close unless context.closed?
+      # No retry may repair a partial state before these assertions.
       expect(context.closed?).to be true
       expect { context.set_override("exp_test_ab", 1) }.to raise_error(IllegalStateException)
       expect { context.experiments }.to raise_error(IllegalStateException)
