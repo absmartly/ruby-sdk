@@ -13,7 +13,16 @@ require "timeout"
 RSpec.describe "Context assignment rules" do
   # Reads retry when an assignment is evicted before its exposure claim; a
   # regression that never stops retrying fails here instead of hanging CI.
-  around { |example| Timeout.timeout(10) { example.run } }
+  # Threads an example started are killed afterwards, so a timed-out example
+  # can't leave one spinning and slow the rest of the suite.
+  around do |example|
+    before = Thread.list
+    begin
+      Timeout.timeout(10) { example.run }
+    ensure
+      (Thread.list - before).each(&:kill).each { |thread| thread.join(1) }
+    end
+  end
 
   let(:clock) { Time.at(1620000000000 / 1000) }
   let(:session_id) { "e791e240fcd3df7d238cfc285f475e8152fcc0ec" }
@@ -475,8 +484,8 @@ RSpec.describe "Context assignment rules" do
         expect(Timeout.timeout(5) { reader.value }).to eq(:evicted)
       ensure
         resume << true
-        setter.join(5) || setter.kill
-        reader&.join(5) || reader&.kill
+        setter.join(1) || setter.kill
+        reader&.join(1) || reader&.kill
       end
 
       expect(context.treatment("exp_test_abc")).to eq(1)
@@ -521,8 +530,8 @@ RSpec.describe "Context assignment rules" do
         expect(Timeout.timeout(5) { reader.value }).to be < 1
       ensure
         release << true
-        locker&.join(5) || locker&.kill
-        reader.join(5) || reader.kill
+        locker&.join(1) || locker&.kill
+        reader.join(1) || reader.kill
       end
       expect(context.treatment("exp_test_abc")).to eq(1)
       expect(context.instance_variable_get(:@exposing)).to be_empty
@@ -568,8 +577,8 @@ RSpec.describe "Context assignment rules" do
           expect(Timeout.timeout(5) { waiter.value }).to eq(expected)
         ensure
           holder[:resume] << true
-          owner.join(5) || owner.kill
-          waiter&.join(5) || waiter&.kill
+          owner.join(1) || owner.kill
+          waiter&.join(1) || waiter&.kill
         end
         expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 1]])
       end
@@ -591,7 +600,7 @@ RSpec.describe "Context assignment rules" do
         expect(Timeout.timeout(5) { owner.value }).to eq(0)
       ensure
         holder[:resume] << true
-        owner.join(5) || owner.kill
+        owner.join(1) || owner.kill
       end
       expect(context.treatment("exp_test_abc")).to eq(0)
       expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
@@ -628,6 +637,20 @@ RSpec.describe "Context assignment rules" do
         expect(call.call).to eq(expected)
         expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
       end
+    end
+
+    it "takes no exposure claim or stale check on a warm read of an exposed experiment" do
+      context = create_context(context_data([assign_rule(1)]), attributes: { country: "US" })
+      context.treatment("exp_test_abc")
+      context.variable_value("button.color", "d")
+      allow(context).to receive(:queue_exposure).and_call_original
+      allow(context).to receive(:stale_missing_unit?).and_call_original
+
+      context.variable_value("button.color", "d")
+      context.peek_treatment("exp_test_abc")
+
+      expect(context).not_to have_received(:queue_exposure)
+      expect(context).not_to have_received(:stale_missing_unit?)
     end
 
     it "uses the latest String or Symbol spelling of an attribute in the built-in evaluator" do
