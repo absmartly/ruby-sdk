@@ -322,13 +322,15 @@ class Context
         end
       end
     ensure
+      # Only the claim is released here (no assignment lock, so an unwinding
+      # timeout is not held up). A no-unit assignment left unexposed after its
+      # unit was set is rebuilt by the next read (see cached_or_new_assignment).
       if claimed
         Thread.handle_interrupt(Object => :never) do
           @queue_mutex.synchronize do
             @exposing.delete(assignment)
             @exposure_condvar.broadcast
           end
-          evict_if_unit_now_set(assignment) unless assignment.exposed
         end
       end
     end
@@ -796,13 +798,14 @@ class Context
       end
     end
 
-    def evict_if_unit_now_set(assignment)
-      return unless assignment.rule_missing_unit && !assignment.unit_type.nil?
-      return if @units[assignment.unit_type.to_sym].nil?
+    # A no-unit split assignment whose unit has since been set, that is not
+    # exposed and not being exposed: set_unit skipped evicting it because its
+    # exposure was in progress, and that exposure did not complete.
+    def stale_missing_unit?(assignment)
+      return false if assignment.exposed || !assignment.rule_missing_unit || assignment.unit_type.nil?
+      return false if @units[assignment.unit_type.to_sym].nil?
 
-      @assignment_mutex.synchronize do
-        @assignment_cache.delete_if { |_name, cached| cached.equal?(assignment) && !cached.exposed }
-      end
+      @queue_mutex.synchronize { !@exposing.key?(assignment) }
     end
 
     def audience_matches(entry, assignment)
@@ -896,6 +899,7 @@ class Context
       if !assignment.nil? && !experiment.nil? && !@failed_built.empty? && @failed_built.key?(assignment)
         assignment = nil
       end
+      assignment = nil if !assignment.nil? && stale_missing_unit?(assignment)
 
       if !assignment.nil?
         if !override.nil?
@@ -1014,13 +1018,9 @@ class Context
         assignment = nil
         while true # rubocop:disable Style/InfiniteLoop -- no block allocation on the read path
           assignment = assignment(experiment.data.name, state)
-          break if assignment.variables.nil? || !expose
-          # Resolved again if set_unit evicted it before its exposure claim. A
-          # read on a failed snapshot that a refresh has since replaced is the
-          # one kind never cached (see cached_or_new_assignment), so it is not
-          # checked; any other assignment read here was cached.
-          late_failed_read = state.equal?(@failed_state) && !@state.equal?(@failed_state)
-          break unless queue_exposure(assignment, late_failed_read ? nil : experiment.data.name) == :evicted
+          break if assignment.variables.nil? || !expose || assignment.exposed
+          # Resolved again if set_unit evicted it before its exposure claim.
+          break unless queue_exposure(assignment, experiment.data.name) == :evicted
         end
         next if assignment.variables.nil?
 

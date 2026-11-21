@@ -413,24 +413,30 @@ RSpec.describe "Context assignment rules" do
       expect(variants.map(&:first)).to eq(["exp_test_abc"])
     end
 
-    it "re-resolves when a refresh and set_unit land between the lookup and the exposure" do
-      data = context_data([split_rule("0/100/0")])
-      allow(data_provider).to receive(:context_data).and_return(OpenStruct.new(data_future: data, success?: true))
-      context = create_context(data, units: {}, attributes: { country: "US" })
-      sid = session_id
-      armed = true
-      allow(context).to receive(:queue_exposure).and_wrap_original do |original, assignment, *rest|
-        if armed
-          armed = false
-          context.refresh
-          context.set_unit("session_id", sid)
+    # The refresh and set_unit land right after the lookup returns, before
+    # the caller decides which assignment its exposure claim must match.
+    %i[treatment variable_value].each do |read|
+      it "re-resolves a #{read} when a refresh and set_unit land right after its lookup" do
+        data = context_data([split_rule("0/100/0")])
+        allow(data_provider).to receive(:context_data).and_return(OpenStruct.new(data_future: data, success?: true))
+        context = create_context(data, units: {}, attributes: { country: "US" })
+        sid = session_id
+        armed = true
+        allow(context).to receive(:assignment).and_wrap_original do |original, *args|
+          result = original.call(*args)
+          if armed
+            armed = false
+            context.refresh
+            context.set_unit("session_id", sid)
+          end
+          result
         end
-        original.call(assignment, *rest)
-      end
+        call = read == :treatment ? -> { context.treatment("exp_test_abc") } : -> { context.variable_value("button.color", "d") }
 
-      first = context.treatment("exp_test_abc")
-      expect(context.treatment("exp_test_abc")).to eq(first)
-      expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", first]])
+        first = call.call
+        expect(call.call).to eq(first)
+        expect(published_exposures(context).map(&:name)).to eq(["exp_test_abc"])
+      end
     end
 
     it "does not claim an exposure that set_unit is evicting" do
@@ -470,6 +476,51 @@ RSpec.describe "Context assignment rules" do
 
       expect(context.treatment("exp_test_abc")).to eq(1)
       expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 1]])
+    end
+
+    it "lets a timeout interrupt an exposure's cleanup waiting for the assignment lock" do
+      holder = {}
+      sid = session_id
+      in_clock = Queue.new
+      clock_object = Object.new
+      clock_object.define_singleton_method(:to_i) do
+        if holder[:arm]
+          holder[:arm] = false
+          holder[:context].set_unit("session_id", sid)
+          in_clock << true
+          sleep
+        end
+        123
+      end
+      context = clocked_context(context_data([split_rule("0/100/0")]), clock_object, attributes: { country: "US" })
+      holder[:context] = context
+      lock = context.instance_variable_get(:@assignment_mutex)
+      locked = Queue.new
+      release = Queue.new
+      reader = Thread.new do
+        holder[:arm] = true
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        begin
+          Timeout.timeout(0.3) { context.treatment("exp_test_abc") }
+        rescue Timeout::Error
+          nil
+        end
+        Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+      end
+      locker = nil
+      begin
+        Timeout.timeout(5) { in_clock.pop }
+        # Held when the timeout unwinds the clock, so cleanup must wait for it.
+        locker = Thread.new { lock.synchronize { locked << true; Timeout.timeout(1.5) { release.pop } rescue nil } }
+        Timeout.timeout(5) { locked.pop }
+        expect(Timeout.timeout(5) { reader.value }).to be < 1
+      ensure
+        release << true
+        locker&.join(5) || locker&.kill
+        reader.join(5) || reader.kill
+      end
+      expect(context.treatment("exp_test_abc")).to eq(1)
+      expect(context.instance_variable_get(:@exposing)).to be_empty
     end
 
     it "uses the latest String or Symbol spelling of an attribute in the built-in evaluator" do

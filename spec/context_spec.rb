@@ -594,15 +594,20 @@ RSpec.describe Context do
     expect(seen).to eq("age" => 10, :age => 25)
   end
 
-  it "allocates no more on a warmed treatment than one exposed read needs" do
+  it "allocates no more on warmed treatment and variable reads than one exposed read needs" do
     context = create_ready_context
     context.treatment("exp_test_ab")
-    GC.disable
-    before = GC.stat(:total_allocated_objects)
-    100.times { context.treatment("exp_test_ab") }
-    allocated = GC.stat(:total_allocated_objects) - before
-    GC.enable
-    expect(allocated).to be <= 100
+    context.variable_value("banner.size", "default")
+    measure = lambda do |&read|
+      GC.disable
+      before = GC.stat(:total_allocated_objects)
+      100.times(&read)
+      GC.stat(:total_allocated_objects) - before
+    ensure
+      GC.enable
+    end
+    expect(measure.call { context.treatment("exp_test_ab") }).to be <= 100
+    expect(measure.call { context.variable_value("banner.size", "default") }).to be <= 100
   end
 
   it "lets a timeout interrupt a treatment waiting for the assignment lock" do
@@ -928,9 +933,10 @@ RSpec.describe Context do
                                       variable_parser, audience_matcher)
     holder[:context].track("goal1", nil)
 
-    publisher = Thread.new { Timeout.timeout(5) { holder[:context].publish } }
+    # A real Timeout.timeout, which unwinds with a non-StandardError
+    # (Timeout::ExitException) before surfacing as Timeout::Error.
+    publisher = Thread.new { Timeout.timeout(0.5) { holder[:context].publish } }
     Timeout.timeout(5) { blocked.pop }
-    publisher.raise(Timeout::Error)
     expect { publisher.join(5) }.to raise_error(Timeout::Error)
     expect(holder[:context].finalized?).to be false
     expect(holder[:context].pending_count).to eq(1)
