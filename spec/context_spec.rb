@@ -1233,6 +1233,40 @@ RSpec.describe Context do
     end
   end
 
+  it "balances finalizing state when cancellation lands during seal registration" do
+    context = create_ready_context
+    context.track("pending", nil)
+    source = Context.instance_method(:seal).source_location.first
+    target = File.readlines(source).index { |line| line.include?("@sealing += 1") } + 1
+    parked = Queue.new
+    resume = Queue.new
+    trace = TracePoint.new(:line) do |tp|
+      if tp.path == source && tp.lineno == target + 1 && Thread.current[:gate]
+        Thread.current[:gate] = false
+        parked << true
+        resume.pop
+      end
+    end
+    trace.enable
+    worker = Thread.new do
+      Thread.current[:gate] = true
+      context.finalize
+    end
+    begin
+      Timeout.timeout(5) { parked.pop }
+      worker.kill
+      resume << true
+      worker.join(5)
+    ensure
+      trace.disable
+      resume << true
+      worker.join(1) || worker.kill
+    end
+    expect(context.closed?).to be false
+    expect(context.finalizing?).to be false
+    expect(context.pending_count).to eq(1)
+  end
+
   it "a close requested after another thread's rejected publish waits for a later success" do
     config = ContextConfig.create
     config.set_units(units)

@@ -535,8 +535,12 @@ class Context
       end
 
       close = event_type == ContextEventLogger::EVENT_TYPE::CLOSE
-      @queue_mutex.synchronize { @sealing += 1 }
+      registered = false
       begin
+        Thread.handle_interrupt(Object => :never) do
+          @queue_mutex.synchronize { @sealing += 1 }
+          registered = true
+        end
         # One extra pass sends events a logger callback queued during the
         # first publish; after that raise with the remaining events queued,
         # so a callback can't keep close publishing forever or lose events.
@@ -570,7 +574,11 @@ class Context
         end
         nil
       ensure
-        @queue_mutex.synchronize { @sealing -= 1 }
+        if registered
+          Thread.handle_interrupt(Object => :never) do
+            @queue_mutex.synchronize { @sealing -= 1 }
+          end
+        end
       end
     end
 
@@ -1080,6 +1088,10 @@ class Context
           assignment = assignment(experiment.data.name, state)
           break if assignment.variables.nil? || !expose || assignment.exposed
           break unless claim_and_queue_exposure(assignment, experiment.data.name) == :evicted
+
+          # A refresh overtook this read: retry against its current snapshot,
+          # never reinstall an old assignment over an already-exposed new one.
+          state = @state
         end
         next if assignment.variables.nil?
 

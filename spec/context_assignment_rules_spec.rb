@@ -816,6 +816,27 @@ RSpec.describe "Context assignment rules" do
       expect(context.send(:exposed_or_exposing?, assignment)).to be true
     end
 
+    it "does not reinstall an old variable assignment after refresh exposes the new one" do
+      old_data = context_data([assign_rule(2)])
+      new_data = context_data([assign_rule(1)])
+      allow(data_provider).to receive(:context_data).and_return(OpenStruct.new(data_future: new_data, success?: true))
+      context = create_context(old_data, attributes: { country: "US" })
+      armed = true
+      allow(context).to receive(:assignment).and_wrap_original do |original, *args|
+        result = original.call(*args)
+        if armed
+          armed = false
+          context.refresh
+          expect(context.variable_value("button.color", "d")).to eq("blue")
+        end
+        result
+      end
+      context.variable_value("button.color", "d")
+      expect(context.variable_value("button.color", "d")).to eq("blue")
+      variants = published_exposures(context).select { |e| e.name == "exp_test_abc" }.map(&:variant)
+      expect(variants.count(1)).to eq(1)
+    end
+
     it "uses the latest String or Symbol spelling of an attribute in the built-in evaluator" do
       staging = { and: [{ eq: [{ var: "environment" }, { value: "staging" }] }] }
       context = create_context(context_data([assign_rule(1, conditions: staging)]))
