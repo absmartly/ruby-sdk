@@ -1292,6 +1292,19 @@ module ContextSwitchbackSpec
       expect(published_exposures(context).map(&:unit)).to eq([UNIT_TYPE])
     end
 
+    # A peeked (unexposed) override of a switchback without a linked unit is resolved again once a
+    # linked unit is set, so its exposure goes under that unit, not the first linked type.
+    it "publishes a peeked override under the linked unit set later" do
+      experiment = switchback(switchbackClusters: { UNIT_TYPE => "city", "city_id" => "ccity" })
+      context = create_context([experiment], units: { "user_id" => "u1" }, overrides: { "exp_sb" => 1 })
+      clock.now = ANCHOR + 10
+      expect(context.peek_treatment("exp_sb")).to eq(1)
+      context.set_unit("city_id", "c1")
+      context.set_attribute("ccity", "Lisboa")
+      expect(context.treatment("exp_sb")).to eq(1)
+      expect(published_exposures(context).map(&:unit)).to eq(["city_id"])
+    end
+
     # Revalidating a split rule after set_attribute randomizes over the serving unit again, not the
     # declared unitType (which has no unit here, and would give the no-unit variant 0).
     it "revalidates a split rule over the serving unit" do

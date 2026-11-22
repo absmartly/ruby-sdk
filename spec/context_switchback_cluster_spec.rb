@@ -783,7 +783,7 @@ module ContextSwitchbackClusterSpec
     end
 
     # A subclass whose []= rewrites keys (an indifferent-access Hash) is copied without going
-    # through []=, and one whose dup raises is used as set; neither fails the read.
+    # through []=, and one that dup does not copy or whose copy raises is used as set; none fails the read.
     it "serves a cluster from Hash subclasses that rewrite keys or cannot be copied" do
       symbolizing = Class.new(Hash) do
         def []=(key, value)
@@ -795,14 +795,27 @@ module ContextSwitchbackClusterSpec
           raise "no dup"
         end
       end
-      [symbolizing, undupable].each do |klass|
+      self_dup = Class.new(Hash) do
+        def dup
+          self
+        end
+      end
+      raising_replace = Class.new(Hash) do
+        def transform_values!
+          raise "no replace"
+        end
+      end
+      [symbolizing, undupable, self_dup, raising_replace].each do |klass|
         geo = klass.new
-        geo.store("city", +"Lisboa")
+        city = +"Lisboa"
+        geo.store("city", city)
         context = create_context(attribute_switchback("geo/city"))
         clock.now = ANCHOR + 10
         context.set_attribute("geo", geo)
         expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
         expect(context.pending_count).to eq(1)
+        # The caller's object is never changed by the copy.
+        expect(geo.fetch("city")).to equal(city)
       end
     end
 

@@ -1339,18 +1339,16 @@ class Context
     # proc are kept; a shared or cyclic part is copied once. Values are
     # replaced in place, never through []=, so a subclass that rewrites keys
     # is copied as is. Nesting deeper than a cluster path reads, and a value
-    # whose copy raises, are kept as they are.
+    # that dup does not copy or whose copy raises, are kept as they are.
     def copy_attribute_value(value, copies = {}.compare_by_identity, depth = 0)
       return value unless value.is_a?(String) || value.is_a?(Array) || value.is_a?(Hash)
       return value if value.frozen? && value.is_a?(String)
       return copies[value] if copies.key?(value)
       return value if depth > Absmartly::Switchback::AttributePath::MAX_DEPTH
 
-      begin
-        copy = value.dup
-      rescue StandardError
-        return value
-      end
+      copy = value.dup
+      return value if copy.equal?(value) || copy.frozen?
+
       copies[value] = copy
       if copy.is_a?(Array)
         copy.map! { |item| copy_attribute_value(item, copies, depth + 1) }
@@ -1358,6 +1356,8 @@ class Context
         copy.transform_values! { |item| copy_attribute_value(item, copies, depth + 1) }
       end
       copy
+    rescue StandardError
+      copies[value] = value
     end
 
     # The attribute the Collector records with an exposure at now: among those
