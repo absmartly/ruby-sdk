@@ -42,6 +42,15 @@ RSpec.describe "create_context_async" do
   let(:audience_matcher) { AudienceMatcher.new(DefaultAudienceDeserializer.new) }
   let(:failure) { Exception.new("FAILED") }
 
+  # A read still holding a snapshot a refresh has since replaced: resolved
+  # against that snapshot under the assignment lock, as a read that captured
+  # it before the refresh would be.
+  def stale_read(context, name, state)
+    context.instance_variable_get(:@assignment_mutex).synchronize do
+      context.send(:cached_or_new_assignment, name, state)
+    end
+  end
+
   def slow_client_mock(delay: 0.1)
     client = instance_double(Client)
     allow(client).to receive(:context_data) do
@@ -911,7 +920,7 @@ RSpec.describe "create_context_async" do
       # finishes only after the recovery installed the recovered data.
       cache = context.instance_variable_get(:@assignment_cache)
       expect(cache).to be_empty
-      context.send(:assignment, "exp_test_ab", failed_state)
+      stale_read(context, "exp_test_ab", failed_state)
       expect(cache).to be_empty
 
       expect(context.variable_value("banner.size", "default")).to eq("large")
@@ -936,7 +945,7 @@ RSpec.describe "create_context_async" do
       old_state = context.instance_variable_get(:@state)
       context.refresh
       %w[exp_test_ab not_found].each do |name|
-        context.send(:queue_exposure, context.send(:assignment, name, old_state))
+        context.send(:queue_exposure, stale_read(context, name, old_state))
         context.treatment(name)
       end
       context.publish
@@ -999,7 +1008,7 @@ RSpec.describe "create_context_async" do
       it "does not cause a second exposure of a recovered assignment" do
         context, failed_state = recovered_context
         context.treatment("exp_test_ab")
-        context.send(:assignment, "exp_test_ab", failed_state)
+        stale_read(context, "exp_test_ab", failed_state)
         context.treatment("exp_test_ab")
         context.publish
 
@@ -1009,7 +1018,7 @@ RSpec.describe "create_context_async" do
 
       it "keeps it when the recovered data lacks the experiment too" do
         context, failed_state = recovered_context
-        context.send(:queue_exposure, context.send(:assignment, "not_found", failed_state))
+        context.send(:queue_exposure, stale_read(context, "not_found", failed_state))
         context.treatment("not_found")
         context.publish
 
@@ -1018,7 +1027,7 @@ RSpec.describe "create_context_async" do
 
       it "keeps a forced one when the recovered data lacks the experiment too" do
         context, failed_state = recovered_context { |ctx| ctx.set_override("not_found", 2) }
-        context.send(:queue_exposure, context.send(:assignment, "not_found", failed_state))
+        context.send(:queue_exposure, stale_read(context, "not_found", failed_state))
         expect(context.treatment("not_found")).to eq(2)
         context.publish
 
@@ -1027,7 +1036,7 @@ RSpec.describe "create_context_async" do
 
       it "reuses the assignment exposed while failed" do
         context, failed_state = recovered_context { |ctx| ctx.treatment("exp_test_ab") }
-        context.send(:queue_exposure, context.send(:assignment, "exp_test_ab", failed_state))
+        context.send(:queue_exposure, stale_read(context, "exp_test_ab", failed_state))
         context.publish
 
         expect(exposures).to eq([["exp_test_ab", 0, 0]])

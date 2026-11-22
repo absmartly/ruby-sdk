@@ -21,6 +21,8 @@ class Context
   private_constant :SEAL_FLUSH_PASSES
   class EventsQueuedWhileClosing < StandardError; end
   private_constant :EventsQueuedWhileClosing
+  NO_HOLDOUTS = {}.freeze
+  private_constant :NO_HOLDOUTS
 
   attr_reader :pending_count
 
@@ -251,6 +253,10 @@ class Context
     end
   end
 
+  # A held-out experiment publishes no exposure of its own, unless an override
+  # or rule chose its variant. The holdouts covering it then expose once each,
+  # in id order, from the arms pinned when the assignment was made, so a
+  # refresh in between can't publish another holdout epoch (as in JS).
   def queue_exposure(assignment)
     result = nil
     claim_and_queue_exposure(assignment) { |logged| result = logged }
@@ -475,6 +481,7 @@ class Context
         # supplied clock; distinct nested or concurrent exposures can proceed.
         exposed_at = @clock.to_i
         exposure = nil
+        holdout_exposures = nil
         @queue_mutex.synchronize do
           # Checked under the queue lock so an exposure cannot slip in after close
           # sealed the queue and be stranded.
@@ -483,22 +490,19 @@ class Context
           unless assignment.exposed
             assignment.exposed = true
 
-            exposure = Exposure.new
-            exposure.id = assignment.id || 0
-            exposure.name = assignment.name
-            exposure.unit = assignment.unit_type
-            exposure.variant = assignment.variant
-            exposure.exposed_at = exposed_at
-            exposure.assigned = assignment.assigned
-            exposure.eligible = assignment.eligible
-            exposure.overridden = assignment.overridden
-            exposure.full_on = assignment.full_on
-            exposure.custom = assignment.custom
-            exposure.audience_mismatch = assignment.audience_mismatch
-            exposure.rule_override = assignment.rule_override
+            # A held-out experiment publishes no exposure of its own, unless an
+            # override or rule chose its variant. The holdouts covering it then
+            # expose once each, in id order, from the arms pinned when the
+            # assignment was made (as in JS).
+            if !assignment.suppressed || assignment.overridden || assignment.rule_override
+              exposure = enqueue_exposure(assignment.name, assignment, exposed_at)
+            end
+            assignment.holdout_assignments&.each_with_index do |holdout_assignment, i|
+              next if holdout_assignment.nil? || holdout_assignment.exposed
 
-            @pending_count += 1
-            @exposures.push(exposure)
+              holdout_assignment.exposed = true
+              (holdout_exposures ||= []) << enqueue_exposure(assignment.holdouts[i].name, holdout_assignment, exposed_at)
+            end
           end
         end
       ensure
@@ -515,12 +519,12 @@ class Context
         end
       end
       # User callbacks run outside the lock so they can call publish/track.
-      return nil if exposure.nil?
-
-      logged = log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposure)
-      yield logged if block_given?
+      logged = log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposure) unless exposure.nil?
+      holdout_exposures&.each { |e| log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, e) }
+      yield logged if block_given? && !exposure.nil?
       nil
     end
+
     def seal(event_type)
       return nil if @closed
 
@@ -764,6 +768,28 @@ class Context
       end
     end
 
+    # Called under the queue lock; exposed_at is read before taking it, since a
+    # supplied clock may call back into the context.
+    def enqueue_exposure(name, assignment, exposed_at)
+      exposure = Exposure.new
+      exposure.id = assignment.id || 0
+      exposure.name = name
+      exposure.unit = assignment.unit_type
+      exposure.variant = assignment.variant
+      exposure.exposed_at = exposed_at
+      exposure.assigned = assignment.assigned
+      exposure.eligible = assignment.eligible
+      exposure.overridden = assignment.overridden
+      exposure.full_on = assignment.full_on
+      exposure.custom = assignment.custom
+      exposure.audience_mismatch = assignment.audience_mismatch
+      exposure.rule_override = assignment.rule_override
+
+      @pending_count += 1
+      @exposures.push(exposure)
+      exposure
+    end
+
     def check_not_closed?
       if @closed
         raise IllegalStateException.new("ABSmartly Context is closed")
@@ -836,8 +862,8 @@ class Context
       matcher.instance_of?(AudienceMatcher) ? evaluator_attributes : attributes_map
     end
 
-    # A split rule resolved while its unit was missing gave the no-unit
-    # variant; once the unit is set, unexposed ones are rebuilt. Exposed ones
+    # A split rule or a holdout resolved while its unit was missing gave the
+    # no-unit result; once the unit is set, unexposed ones are rebuilt. Exposed ones
     # stay, so the user never switches variant or gets a second exposure.
     # One being exposed right now (its clock is running) is kept: it is
     # about to be queued with its variant, so evicting it would serve one
@@ -847,7 +873,7 @@ class Context
       @assignment_mutex.synchronize do
         exposing = @queue_mutex.synchronize { @exposing.keys }
         @assignment_cache.delete_if do |_name, assignment|
-          assignment.unit_type.to_s == unit_type && !assignment.exposed && assignment.rule_missing_unit &&
+          assignment.unit_type.to_s == unit_type && !assignment.exposed && missing_unit?(assignment) &&
             exposing.none? { |claimed| claimed.equal?(assignment) }
         end
       end
@@ -871,8 +897,65 @@ class Context
       @queue_mutex.synchronize { assignment.exposed || @exposing.key?(assignment) }
     end
 
+    # Resolved while its unit was missing: a no-unit split rule, or a holdout
+    # whose arm could not be computed yet.
+    def missing_unit?(assignment)
+      assignment.rule_missing_unit || (!assignment.holdout_assignments.nil? && assignment.holdout_assignments.include?(nil))
+    end
+
     def unit_now_set?(assignment)
-      assignment.rule_missing_unit && !assignment.unit_type.nil? && !@units[assignment.unit_type.to_sym].nil?
+      missing_unit?(assignment) && !assignment.unit_type.nil? && !@units[assignment.unit_type.to_sym].nil?
+    end
+
+    # Arm 0 always holds the unit out. In a 3-arm holdout arm 1 is "full-on
+    # only", so it holds out experiments that are not full-on. The arm count
+    # comes from the split, never from holdoutType.
+    def held_out_by?(variant, arm_count, full_on_variant)
+      return true if variant == 0
+
+      arm_count == 3 && variant == 1 && full_on_variant == 0
+    end
+
+    # Only (id, iteration) per holdout: a same-iteration seed or split edit
+    # must not rebuild an exposed assignment and expose it again.
+    def holdout_set_matches(entry, assignment)
+      fresh = entry.holdouts
+      pinned = assignment.holdouts
+      return true if fresh.equal?(pinned) || (!fresh.nil? && fresh.equal?(assignment.matched_holdouts))
+      return false if fresh.nil? || pinned.nil?
+      return false unless fresh.length == pinned.length
+
+      matches = fresh.each_with_index.all? do |holdout, i|
+        holdout_id(holdout.id) == holdout_id(pinned[i].id) && holdout.iteration == pinned[i].iteration
+      end
+      # The pinned list still names the exposures, so an equivalent list from a
+      # refresh is remembered apart and later reads compare it by identity.
+      assignment.matched_holdouts = fresh if matches
+      matches
+    end
+
+    # The arm is computed with the covered experiment's unit type, cached per
+    # (holdout id, unit type) and kept while the holdout's iteration is
+    # unchanged, together with the arm count it was computed against. nil
+    # means the unit is not set yet; it is never cached.
+    def holdout_assignment(holdout, unit_type)
+      id = holdout_id(holdout.id)
+      key = [id, unit_type]
+      cached = @holdout_assignments&.[](key)
+      return cached if cached && cached.iteration == holdout.iteration
+
+      uid = @units[unit_type.to_sym]
+      return nil if uid.nil?
+
+      assignment = Assignment.new
+      assignment.id = id
+      assignment.iteration = holdout.iteration
+      assignment.unit_type = unit_type
+      assignment.variant = variant_assigner(unit_type, uid).assign(holdout.split, holdout.seed_hi || 0,
+                                                                   holdout.seed_lo || 0)
+      assignment.assigned = true
+      assignment.holdout_arm_count = holdout.split.length
+      (@holdout_assignments ||= {})[key] = assignment
     end
 
     def audience_matches(entry, assignment)
@@ -901,7 +984,10 @@ class Context
           assignment.rule_missing_unit = rule ? rule.last : false
         end
 
-        if !assignment.rule_override && !experiment.audience.nil? && experiment.audience.size > 0
+        # A held-out unit skipped the audience when assigned, so it is not
+        # evaluated here either; only a rule can take it out of suppression.
+        if !assignment.rule_override && !assignment.suppressed &&
+           !experiment.audience.nil? && experiment.audience.size > 0
           match = @audience_matcher.evaluate(experiment.audience, matcher_attributes(@audience_matcher))
           # An indeterminate result (no filter, bad JSON) keeps the cached flag.
           new_audience_mismatch = match.nil? ? assignment.audience_mismatch : !match.result
@@ -949,8 +1035,12 @@ class Context
       [assigner.assign(action.split, experiment.seed_hi, experiment.seed_lo), false]
     end
 
-    def assignment(experiment_name, state = @state)
-      @assignment_mutex.synchronize { cached_or_new_assignment(experiment_name, state) }
+    # The state is read under the lock, so each holder sees data at least as
+    # new as the previous one: a read that started before a refresh can't
+    # overwrite assignments (or holdout arms) already built from newer data,
+    # which would reset their exposed flag and expose them again.
+    def assignment(experiment_name)
+      @assignment_mutex.synchronize { cached_or_new_assignment(experiment_name, @state) }
     end
 
     def cached_or_new_assignment(experiment_name, state)
@@ -968,22 +1058,31 @@ class Context
       if !assignment.nil? && !experiment.nil? && !@failed_built.empty? && @failed_built.key?(assignment)
         assignment = nil
       end
-      assignment = nil if !assignment.nil? && assignment.rule_missing_unit && stale_missing_unit?(assignment)
+      if !assignment.nil? && (assignment.rule_missing_unit || assignment.holdout_assignments) &&
+         stale_missing_unit?(assignment)
+        assignment = nil
+      end
 
       if !assignment.nil?
         if !override.nil?
-          return assignment if assignment.overridden && assignment.variant == override
+          if assignment.overridden && assignment.variant == override &&
+             (experiment.nil? || holdout_set_matches(experiment, assignment))
+            return assignment
+          end
         elsif experiment.nil?
           # A rule-won assignment came from the experiment's rules, so it is
           # rebuilt once the experiment is gone.
           return assignment if !assignment.assigned && !assignment.rule_override && !assignment.overridden
-        elsif (custom.nil? || assignment.rule_override ||
+        elsif (custom.nil? || assignment.rule_override || assignment.suppressed ||
                (custom == assignment.variant && (assignment.custom || assignment.exposed))) &&
               experiment_matches(experiment.data, assignment) &&
+              # Inline nil check: a method call here costs ~4% on the no-holdout path.
+              (experiment.holdouts.nil? ? assignment.holdouts.nil? : holdout_set_matches(experiment, assignment)) &&
               ((experiment.unconditional && assignment.rule_key.equal?(NO_RULES)) ||
                audience_matches(experiment, assignment))
-          # A rule wins over a custom assignment. An unexposed assignment that
-          # merely equals a new custom variant is rebuilt to flag it custom.
+          # A rule wins over a custom assignment, and a held-out unit never
+          # takes one. An unexposed assignment that merely equals a new custom
+          # variant is rebuilt to flag it custom.
           return assignment
         end
       end
@@ -991,6 +1090,19 @@ class Context
       assignment = Assignment.new
       assignment.name = experiment_name
       assignment.eligible = true
+
+      if !experiment.nil? && !experiment.holdouts.nil?
+        data = experiment.data
+        unit_type = data.unit_type
+        assignment.holdouts = experiment.holdouts
+        assignment.holdout_assignments = experiment.holdouts.map do |holdout|
+          unit_type.nil? ? nil : holdout_assignment(holdout, unit_type)
+        end
+        assignment.suppressed = assignment.holdout_assignments.any? do |holdout_assignment|
+          !holdout_assignment.nil? &&
+            held_out_by?(holdout_assignment.variant, holdout_assignment.holdout_arm_count, data.full_on_variant)
+        end
+      end
 
       if !override.nil?
         unless experiment.nil?
@@ -1011,9 +1123,13 @@ class Context
         assignment.rule_variant = rule&.first
         assignment.rule_missing_unit = rule ? rule.last : false
 
+        # A matching rule wins over holdout suppression, as an override does;
+        # suppression skips the audience, full-on, traffic and custom paths.
         if rule
           assignment.rule_override = true
           assignment.variant = rule.first
+        elsif assignment.suppressed
+          assignment.variant = 0
         else
           if !data.audience.nil? && data.audience.size > 0
             match = @audience_matcher.evaluate(data.audience, matcher_attributes(@audience_matcher))
@@ -1079,27 +1195,34 @@ class Context
 
     # Like the JavaScript SDK, a key shared by several experiments reads from
     # the first one, in experiment id order, that the unit is assigned to or
-    # overridden in; each experiment visited on the way is exposed.
+    # overridden in; each experiment visited on the way is exposed. When none
+    # wins, a held-out unit reads the control value of the first held-out
+    # experiment rather than the default.
     def resolve_variable_value(key, default_value, expose)
       state = @state
       key = key.to_s.to_sym
+      suppressed_fallback = nil
       (state.index_variables[key] || []).each do |experiment|
         assignment = nil
         while true # rubocop:disable Style/InfiniteLoop -- no block allocation on the read path
-          assignment = assignment(experiment.data.name, state)
+          # Resolved from the state current under the assignment lock, so a read
+          # that a refresh overtook can't reinstall an old assignment.
+          assignment = assignment(experiment.data.name)
           break if assignment.variables.nil? || !expose || assignment.exposed
           break unless claim_and_queue_exposure(assignment, experiment.data.name) == :evicted
-
-          # A refresh overtook this read: retry against its current snapshot,
-          # never reinstall an old assignment over an already-exposed new one.
-          state = @state
         end
         next if assignment.variables.nil?
 
         if assignment.variables.key?(key) && (assignment.assigned || assignment.overridden || assignment.rule_override)
           return assignment.variables[key]
         end
+
+        if assignment.suppressed && !assignment.overridden && !assignment.rule_override
+          suppressed_fallback ||= assignment.variables
+        end
       end
+
+      return suppressed_fallback[key] if !suppressed_fallback.nil? && suppressed_fallback.key?(key)
 
       default_value
     end
@@ -1150,6 +1273,23 @@ class Context
       index = {}
       index_variables = {}
       custom_fields = {}
+      holdouts_by_id = NO_HOLDOUTS
+
+      # Only holdouts with a numeric split and seeds can assign a unit; the
+      # others are ignored, and so are holdoutIds that name none of them.
+      # A custom deserializer's data may predate holdouts, so they are optional.
+      holdouts = data.holdouts if data.respond_to?(:holdouts)
+      holdouts.each do |holdout|
+        next unless holdout.is_a?(Experiment)
+
+        id = holdout_id(holdout.id)
+        split = holdout.split
+        next if id.nil? || !split.is_a?(Array) || split.empty? || !split.all?(Numeric)
+        next unless [holdout.seed_hi, holdout.seed_lo].all? { |seed| seed.nil? || seed.is_a?(Integer) }
+
+        holdouts_by_id = {} if holdouts_by_id.frozen?
+        holdouts_by_id[id] = holdout
+      end if holdouts.is_a?(Array)
 
       if data && !data.experiments.nil? && !data.experiments.empty?
         data.experiments.each do |experiment|
@@ -1166,6 +1306,11 @@ class Context
           end
           experiment_variables.unconditional = experiment_variables.rule_key.equal?(NO_RULES) &&
                                                (experiment.audience.nil? || experiment.audience.empty?)
+          holdout_ids = experiment.holdout_ids unless holdouts_by_id.empty? || !experiment.respond_to?(:holdout_ids)
+          if holdout_ids.is_a?(Array) && !holdout_ids.empty?
+            holdouts = holdout_ids.filter_map { |id| holdouts_by_id[holdout_id(id)] }.uniq.sort_by { |h| holdout_id(h.id) }
+            experiment_variables.holdouts = holdouts unless holdouts.empty?
+          end
           experiment_variables.variables ||= []
           experiment.variants.each do |variant|
             if !variant.config.nil? && !variant.config.empty?
@@ -1219,6 +1364,16 @@ class Context
       State.new(data, index, index_variables, custom_fields)
     end
 
+    # Collector IDs are integers; integral floats and canonical decimal text
+    # are accepted too. Other text is ignored, even when identical on both sides.
+    def holdout_id(id)
+      case id
+      when Integer then id
+      when Float then id.to_i if id.finite? && id == id.floor
+      when String then Integer(id, 10) if id.match?(/\A(?:0|-?[1-9]\d*)\z/)
+      end
+    end
+
     def set_data_failed(exception)
       @data_failed = exception
       @ready_error = exception
@@ -1248,6 +1403,7 @@ class Context
       @achievements = []
       @assignment_cache = {}
       @failed_built = {}.compare_by_identity
+      @holdout_assignments = nil
       @assignment_mutex = Mutex.new
       @exposing = {}.compare_by_identity
       @exposure_condvar = ConditionVariable.new
@@ -1338,7 +1494,8 @@ class Assignment
   attr_accessor :id, :iteration, :full_on_variant, :name, :unit_type,
                 :traffic_split, :variant, :assigned, :overridden, :eligible,
                 :full_on, :custom, :audience_mismatch, :variables, :exposed, :attrs_seq,
-                :rule_override, :rule_variant, :rule_missing_unit, :rule_key
+                :rule_override, :rule_variant, :rule_missing_unit, :rule_key,
+                :suppressed, :holdouts, :matched_holdouts, :holdout_assignments, :holdout_arm_count
 
   def initialize
     @variant = 0
@@ -1354,11 +1511,24 @@ class Assignment
     @rule_override = false
     @rule_missing_unit = false
     @attrs_seq = 0
+    @holdouts = nil
+    @matched_holdouts = nil
   end
 end
 
 class ExperimentVariables
-  attr_accessor :data, :variables, :rules, :rule_key, :unconditional
+  attr_accessor :data, :variables, :rules, :rule_key, :unconditional, :holdouts
+
+  # Every field is set up front so all instances share one object shape and
+  # the cached read path's attribute reads stay monomorphic.
+  def initialize
+    @data = nil
+    @variables = nil
+    @rules = nil
+    @rule_key = nil
+    @unconditional = nil
+    @holdouts = nil
+  end
 end
 
 class ContextCustomFieldValues
