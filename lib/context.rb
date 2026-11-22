@@ -1058,7 +1058,10 @@ class Context
       if !assignment.nil? && !experiment.nil? && !@failed_built.empty? && @failed_built.key?(assignment)
         assignment = nil
       end
-      if !assignment.nil? && (assignment.rule_missing_unit || assignment.holdout_assignments) &&
+      # Inline guard: only an unexposed no-unit result can be stale, and the
+      # check itself takes the queue lock.
+      if !assignment.nil? && !assignment.exposed &&
+         (assignment.rule_missing_unit || assignment.holdout_assignments&.include?(nil)) &&
          stale_missing_unit?(assignment)
         assignment = nil
       end
