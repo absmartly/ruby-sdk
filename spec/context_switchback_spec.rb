@@ -462,25 +462,30 @@ module ContextSwitchbackSpec
 
       # The same worker raises on first, then makes its own first read of second, which this thread
       # holds back until a refresh installs second's switchback.
+      # It is started while this thread holds first's lock, so it can only reach the lock once
+      # the refresh below has installed first's switchback.
       go = Queue.new
-      worker = Thread.new do
-        error = begin
-          first.peek_treatment("exp_sb")
-          nil
-        rescue RuntimeError => e
-          e.message
-        end
-        leftovers = Thread.current.keys.grep(/absmartly/).map { |k| Thread.current[k] }.compact
-        go.pop
-        [error, leftovers, second.variable_value("sb.arm", -1)]
-      end
+      worker = nil
       blocked_in = lambda do |method|
+        in_method = lambda do
+          worker.status == "sleep" && worker.backtrace.to_a.any? { |l| l.include?("`#{method}'") || l.include?("##{method}'") }
+        end
         deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
-        Thread.pass until (worker.status == "sleep" && worker.backtrace.to_a.any? { |l| l.include?("`#{method}'") || l.include?("##{method}'") }) ||
-                          !worker.alive? || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
-        expect(worker.status).to eq("sleep")
+        Thread.pass until in_method.call || !worker.alive? || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        expect(in_method.call).to be(true), "worker is not blocked in #{method}"
       end
       first.instance_variable_get(:@assignment_mutex).synchronize do
+        worker = Thread.new do
+          error = begin
+            first.peek_treatment("exp_sb")
+            nil
+          rescue RuntimeError => e
+            e.message
+          end
+          leftovers = Thread.current.keys.grep(/absmartly/).map { |k| Thread.current[k] }.compact
+          go.pop
+          [error, leftovers, second.variable_value("sb.arm", -1)]
+        end
         blocked_in.call("peek_treatment")
         refresh_to(first, [switchback(audience: audience)])
         clock.now = ANCHOR + HOUR - 1
