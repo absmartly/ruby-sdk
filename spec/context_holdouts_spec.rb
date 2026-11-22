@@ -1115,6 +1115,17 @@ module ContextHoldoutsSpec
         expect(sent.map(&:exposed_at).uniq.size).to eq(1)
       end
 
+      it "skips the stale no-unit check on warm reads of an exposed holdout-covered experiment" do
+        context = create_context(data_of([experiment(2, "exp_warm", holdout_ids: [11])], [holdout(11, "h11", HOLDOUT_A)]))
+        context.treatment("exp_warm")
+        allow(context).to receive(:stale_missing_unit?).and_call_original
+        5.times do
+          context.treatment("exp_warm")
+          context.peek_treatment("exp_warm")
+        end
+        expect(context).not_to have_received(:stale_missing_unit?)
+      end
+
       it "keeps an exposed assignment so the experiment is not exposed twice" do
         context = create_context(data_of([experiment(1, "exp_exposed", unit_type: "user_id", full_on_variant: 2,
                                                                          holdout_ids: [11])],
