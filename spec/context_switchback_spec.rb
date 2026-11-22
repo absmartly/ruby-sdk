@@ -460,29 +460,39 @@ module ContextSwitchbackSpec
       second = create_context([unit_twin(switchback)])
       second.peek_treatment("exp_sb")
 
-      worker = nil
-      first.instance_variable_get(:@assignment_mutex).synchronize do
-        worker = Thread.new do
-          begin
-            first.peek_treatment("exp_sb")
-          rescue StandardError
-            nil
-          end
-          leftovers = Thread.current.keys.grep(/absmartly/).map { |k| Thread.current[k] }.compact
-          inner = nil
-          second.instance_variable_get(:@assignment_mutex).synchronize do
-            inner = Thread.new { second.variable_value("sb.arm", -1) }
-            Thread.pass until inner.status == "sleep" || !inner.alive?
-            refresh_to(second, [switchback])
-            clock.now = ANCHOR + HOUR
-          end
-          [leftovers, inner.value]
+      # The same worker raises on first, then makes its own first read of second, which this thread
+      # holds back until a refresh installs second's switchback.
+      go = Queue.new
+      worker = Thread.new do
+        error = begin
+          first.peek_treatment("exp_sb")
+          nil
+        rescue RuntimeError => e
+          e.message
         end
-        Thread.pass until worker.status == "sleep" || !worker.alive?
+        leftovers = Thread.current.keys.grep(/absmartly/).map { |k| Thread.current[k] }.compact
+        go.pop
+        [error, leftovers, second.variable_value("sb.arm", -1)]
+      end
+      blocked_in = lambda do |method|
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+        Thread.pass until (worker.status == "sleep" && worker.backtrace.to_a.any? { |l| l.include?("`#{method}'") || l.include?("##{method}'") }) ||
+                          !worker.alive? || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        expect(worker.status).to eq("sleep")
+      end
+      first.instance_variable_get(:@assignment_mutex).synchronize do
+        blocked_in.call("peek_treatment")
         refresh_to(first, [switchback(audience: audience)])
         clock.now = ANCHOR + HOUR - 1
       end
-      leftovers, value = worker.value
+      second.instance_variable_get(:@assignment_mutex).synchronize do
+        go << true
+        blocked_in.call("variable_value")
+        refresh_to(second, [switchback])
+        clock.now = ANCHOR + HOUR
+      end
+      error, leftovers, value = worker.value
+      expect(error).to eq("matcher failed")
       expect(leftovers).to eq([])
       expect(value).to eq(EXPECTED_2_ARMS[1])
       expect(published_exposures(second).map(&:exposed_at)).to eq([ANCHOR + HOUR])
@@ -1253,14 +1263,18 @@ module ContextSwitchbackSpec
       expect(draw("Faro", 1, SEED_HI, SEED_LO, 2)).not_to eq(lisboa)
       expect(context.peek_treatment("exp_sb")).to eq(lisboa)
 
-      stop = false
+      stop = Queue.new
       writer = Thread.new do
-        context.set_attribute("city", "Faro") until stop
+        context.set_attribute("city", "Faro") while stop.empty?
       end
-      readers = Array.new(4) { Thread.new { Array.new(200) { context.treatment("exp_sb") } } }
-      variants = readers.flat_map(&:value)
-      stop = true
-      writer.join
+      begin
+        readers = Array.new(4) { Thread.new { Array.new(200) { context.treatment("exp_sb") } } }
+        variants = readers.flat_map(&:value)
+      ensure
+        # A failing reader still stops the writer, and a stalled writer fails the example.
+        stop << true
+        expect(writer.join(10)).not_to be_nil
+      end
 
       expect(variants.uniq).to eq([lisboa])
       expect(context.pending_count).to eq(1)
