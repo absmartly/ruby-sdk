@@ -782,6 +782,64 @@ module ContextSwitchbackClusterSpec
       expect(value["missing"]).to eq("default-missing")
     end
 
+    # A subclass whose []= rewrites keys (an indifferent-access Hash) is copied without going
+    # through []=, and one whose dup raises is used as set; neither fails the read.
+    it "serves a cluster from Hash subclasses that rewrite keys or cannot be copied" do
+      symbolizing = Class.new(Hash) do
+        def []=(key, value)
+          super(key.to_s.to_sym, value)
+        end
+      end
+      undupable = Class.new(Hash) do
+        def dup
+          raise "no dup"
+        end
+      end
+      [symbolizing, undupable].each do |klass|
+        geo = klass.new
+        geo.store("city", +"Lisboa")
+        context = create_context(attribute_switchback("geo/city"))
+        clock.now = ANCHOR + 10
+        context.set_attribute("geo", geo)
+        expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
+        expect(context.pending_count).to eq(1)
+      end
+    end
+
+    # A slot rebuilt within its period (here by a custom assignment) keeps the period's snapshot.
+    it "keeps the period's snapshot when the slot is rebuilt within the period" do
+      context = create_context(attribute_switchback("city"))
+      clock.now = ANCHOR + 10
+      city = +"Lisboa"
+      context.set_attribute("city", city)
+      expect(context.peek_treatment("exp_sb")).to eq(expected("Lisboa", 0))
+      city.replace("Faro")
+      context.set_custom_assignment("exp_sb", 2)
+      expect(context.treatment("exp_sb")).to eq(2)
+
+      context.publish
+      body = context.send(:event_handler).events.last
+      expect(body.exposures.length).to eq(1)
+      expect(collector_cluster(body, body.exposures[0], "city")).to eq("Lisboa")
+    end
+
+    # The cluster value is copied whatever name form set it: a Symbol, or one with spaces trimmed.
+    it "copies a cluster value set under a Symbol or a padded name" do
+      [:city, " city "].each do |name|
+        context = create_context(attribute_switchback("city"))
+        clock.now = ANCHOR + 10
+        city = +"Lisboa"
+        context.set_attribute(name, city)
+        expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
+        city.replace("Faro")
+
+        context.publish
+        body = context.send(:event_handler).events.last
+        expect(body.exposures.length).to eq(1)
+        expect(collector_cluster(body, body.exposures[0], "city")).to eq("Lisboa")
+      end
+    end
+
     # Nesting deeper than a cluster path reads is kept as is rather than copied without bound.
     it "serves a cluster from a value nested deeper than a path reads" do
       deep = [+"Lisboa"]

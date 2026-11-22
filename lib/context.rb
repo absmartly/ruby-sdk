@@ -1180,6 +1180,7 @@ class Context
             experiment_variables.switchback_grid = switchback_grid(experiment)
             experiment_variables.switchback_source_types = Absmartly::Switchback::Serving.source_types(clusters)
             experiment_variables.switchback_source_paths = Absmartly::Switchback::Serving.source_paths(clusters)
+            experiment_variables.switchback_source_roots = experiment_variables.switchback_source_paths&.to_set(&:root_key)&.freeze
           end
           holdout_ids = experiment.holdout_ids unless holdouts_by_id.empty? || experiment_variables.switchback ||
                                                       !experiment.respond_to?(:holdout_ids)
@@ -1324,9 +1325,9 @@ class Context
     # so a caller that later changes the object it set can't change the
     # cluster the slot served or the body its exposure is published with.
     def serving_snapshot(entry)
-      return @attributes.dup if entry.switchback_source_paths.nil?
+      roots = entry.switchback_source_roots
+      return @attributes.dup if roots.nil?
 
-      roots = entry.switchback_source_paths.map(&:root_key)
       @attributes.map do |attribute|
         next attribute unless roots.include?(attribute.name.to_s.strip)
 
@@ -1335,19 +1336,26 @@ class Context
     end
 
     # A String, Array or Hash is copied with dup, so a subclass and a default
-    # proc are kept; a shared or cyclic part is copied once. Nesting deeper
-    # than a cluster path reads is kept as is.
+    # proc are kept; a shared or cyclic part is copied once. Values are
+    # replaced in place, never through []=, so a subclass that rewrites keys
+    # is copied as is. Nesting deeper than a cluster path reads, and a value
+    # whose copy raises, are kept as they are.
     def copy_attribute_value(value, copies = {}.compare_by_identity, depth = 0)
       return value unless value.is_a?(String) || value.is_a?(Array) || value.is_a?(Hash)
       return value if value.frozen? && value.is_a?(String)
       return copies[value] if copies.key?(value)
       return value if depth > Absmartly::Switchback::AttributePath::MAX_DEPTH
 
-      copy = copies[value] = value.dup
+      begin
+        copy = value.dup
+      rescue StandardError
+        return value
+      end
+      copies[value] = copy
       if copy.is_a?(Array)
         copy.map! { |item| copy_attribute_value(item, copies, depth + 1) }
       elsif copy.is_a?(Hash)
-        copy.each_key { |key| copy[key] = copy_attribute_value(copy[key], copies, depth + 1) }
+        copy.transform_values! { |item| copy_attribute_value(item, copies, depth + 1) }
       end
       copy
     end
@@ -1704,8 +1712,8 @@ end
 
 class ExperimentVariables
   attr_accessor :data, :variables, :rules, :rule_key, :unconditional, :holdouts,
-                :switchback, :switchback_source_types, :switchback_source_paths, :switchback_generation,
-                :switchback_grid
+                :switchback, :switchback_source_types, :switchback_source_paths, :switchback_source_roots,
+                :switchback_generation, :switchback_grid
 
   # Every field is set up front so all instances share one object shape and
   # the cached read path's attribute reads stay monomorphic.
@@ -1719,6 +1727,7 @@ class ExperimentVariables
     @switchback = false
     @switchback_source_types = nil
     @switchback_source_paths = nil
+    @switchback_source_roots = nil
     @switchback_generation = nil
     @switchback_grid = nil
   end
