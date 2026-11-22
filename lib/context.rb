@@ -233,7 +233,7 @@ class Context
   def set_attribute(name, value)
     check_not_closed?
 
-    @attributes.push(Attribute.new(name, value, now_millis))
+    @attributes.push(Attribute.new(name, copy_attribute_value(value), now_millis))
     @attrs_seq += 1
   end
 
@@ -534,12 +534,16 @@ class Context
         published_at = now_millis
         events = []
         batch_exposures = exposures
-        separate = separate_switchback_exposures(exposures, published_at) unless @switchback_exposures.nil?
+        # The batch body is the snapshot the exposures were checked against, so
+        # a set_unit or set_attribute racing this publish can't change it.
+        batch_units = @units.dup
+        batch_attributes = @attributes.dup
+        separate = separate_switchback_exposures(exposures, published_at, batch_units, batch_attributes) unless @switchback_exposures.nil?
         unless separate.nil? || separate.empty?
           batch_exposures = exposures.reject { |exposure| separate.key?(exposure) }
         end
         unless batch_exposures.empty? && achievements.empty?
-          events << publish_event(published_at, @units, @attributes, batch_exposures, achievements)
+          events << publish_event(published_at, batch_units, batch_attributes, batch_exposures, achievements)
         end
         separate&.each { |exposure, (units, attributes)| events << publish_event(published_at, units, attributes, [exposure], []) }
 
@@ -592,6 +596,31 @@ class Context
     # A publish body: hashed units, the attributes and the events. Its
     # publishedAt is never before one of its events, which the Collector would
     # reject with the whole batch, if the wall clock stepped back.
+    # A String, Array or Hash value is copied, down to the depth a switchback
+    # resolves (a shared or cyclic part stays shared), so changing the caller's
+    # object later can't change what was set: the cluster a switchback served
+    # from it and the attribute it publishes. Hash keys are frozen already.
+    def copy_attribute_value(value, copies = {}.compare_by_identity, depth = 0)
+      return value if depth > Absmartly::Switchback::AttributePath::MAX_DEPTH
+
+      case value
+      when String then value.frozen? ? value : value.dup
+      when Array
+        copies.fetch(value) do
+          copy = copies[value] = []
+          value.each { |item| copy << copy_attribute_value(item, copies, depth + 1) }
+          copy
+        end
+      when Hash
+        copies.fetch(value) do
+          copy = copies[value] = {}
+          value.each { |key, item| copy[key] = copy_attribute_value(item, copies, depth + 1) }
+          copy
+        end
+      else value
+      end
+    end
+
     def publish_event(published_at, units, attributes, exposures, achievements)
       event = PublishEvent.new
       event.hashed = true
@@ -631,15 +660,16 @@ class Context
     # batch would credit to another unit or cluster (a later set_unit, an
     # attribute written in its millisecond, a clock rewind) is sent in a body
     # of its own, with the units and the attributes its slot read; exposedAt
-    # is kept. Returns exposure => [units, attributes].
-    def separate_switchback_exposures(exposures, published_at)
-      batch_units = @units.transform_keys(&:to_s)
+    # is kept. units and attributes are the batch body's. Returns
+    # exposure => [units, attributes].
+    def separate_switchback_exposures(exposures, published_at, units, attributes)
+      batch_units = units.transform_keys(&:to_s)
       separate = nil
       @assignment_mutex.synchronize do
         exposures.each do |exposure|
           assignment = @switchback_exposures[exposure]
           next if assignment.nil? || assignment.serving.status != Absmartly::Switchback::Serving::ELIGIBLE
-          next if served_at?(assignment, exposure.exposed_at, batch_units, @attributes)
+          next if served_at?(assignment, exposure.exposed_at, batch_units, attributes)
 
           payload = served_payload(assignment, exposure.exposed_at)
           (separate ||= {}.compare_by_identity)[exposure] = payload unless payload.nil?

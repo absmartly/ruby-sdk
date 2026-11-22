@@ -694,6 +694,63 @@ module ContextSwitchbackClusterSpec
       expect(collector_cluster(body, body.exposures.first, "city")).to eq("Lisboa")
     end
 
+    # A caller that changes its own String in place after the read does not change the cluster the
+    # slot served or the attribute published with its exposure.
+    it "keeps the served cluster when the caller mutates the String it set" do
+      context = create_context(attribute_switchback("city"))
+      clock.now = ANCHOR + 10
+      city = +"Lisboa"
+      context.set_attribute("city", city)
+      expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
+      city.replace("Faro")
+      expect(expected("Faro", 0)).not_to eq(expected("Lisboa", 0))
+
+      expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
+      context.publish
+      body = context.send(:event_handler).events.last
+      expect(collector_cluster(body, body.exposures[0], "city")).to eq("Lisboa")
+      expect(body.attributes.map(&:value)).to eq(%w[Lisboa])
+    end
+
+    # The same for a nested value: the Hash the caller set is copied, a shared child once.
+    it "keeps the served cluster when the caller mutates the Hash it set" do
+      context = create_context(attribute_switchback("geo/city"))
+      clock.now = ANCHOR + 10
+      shared = { "name" => +"x" }
+      geo = { "city" => +"Lisboa", "a" => shared, "b" => shared }
+      context.set_attribute("geo", geo)
+      expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
+      geo["city"] = "Faro"
+      shared["name"] << "y"
+      expect(expected("Lisboa", 0)).not_to eq(expected("Faro", 0))
+
+      context.publish
+      body = context.send(:event_handler).events.last
+      value = body.attributes[0].value
+      expect(value["city"]).to eq("Lisboa")
+      expect(value["a"]).to equal(value["b"])
+      expect(value["a"]).to eq({ "name" => "x" })
+      expect(body.exposures.length).to eq(1)
+    end
+
+    # A set_attribute that lands after the batch's attributes were checked (another thread, same
+    # millisecond, so it would win the Collector's setAt tie) stays out of the checked body.
+    it "publishes the batch body its switchback exposures were checked against" do
+      context = create_context(attribute_switchback("city"))
+      clock.now = ANCHOR + 10
+      context.set_attribute("city", "Lisboa")
+      expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
+      allow(context).to receive(:separate_switchback_exposures).and_wrap_original do |original, *args|
+        original.call(*args).tap { context.set_attribute("city", "Faro") }
+      end
+
+      context.publish
+      events = context.send(:event_handler).events
+      expect(events.length).to eq(1)
+      expect(events[0].attributes.map(&:value)).to eq(%w[Lisboa])
+      expect(collector_cluster(events[0], events[0].exposures[0], "city")).to eq("Lisboa")
+    end
+
     # A switchback is separated out of a batch that also holds an ordinary exposure.
     it "separates a switchback out of a batch with another exposure" do
       unit = attribute_switchback("city", id: 2, name: "exp_unit", randomizationType: nil,
