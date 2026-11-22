@@ -1066,6 +1066,55 @@ module ContextHoldoutsSpec
         expect(exposures_of(context).map { |e| e[1] }).to eq(["holdout_a"])
       end
 
+      it "rebuilds a held-out no-unit result whose exposure failed after its clock set the unit" do
+        holder = {}
+        clock_object = Object.new
+        clock_object.define_singleton_method(:to_i) do
+          if holder[:arm]
+            holder[:arm] = false
+            holder[:context].set_unit("user_id", UID)
+            raise "clock failed"
+          end
+          1_620_000_000
+        end
+        config = ContextConfig.create
+        data = data_of([experiment(1, "exp_fail", unit_type: "user_id", holdout_ids: [11])],
+                       [holdout(11, "holdout_user_id", HOLDOUT_A, unit_type: "user_id")])
+        context = Context.create(clock_object, config, OpenStruct.new(data_future: data, success?: true), data_provider,
+                                 event_handler, event_logger, variable_parser, audience_matcher)
+        holder[:context] = context
+        holder[:arm] = true
+
+        expect { Timeout.timeout(5) { context.treatment("exp_fail") } }.to raise_error("clock failed")
+        expect(Timeout.timeout(5) { context.treatment("exp_fail") }).to eq(0)
+        expect(exposures_of(context).map { |e| e[1] }).to eq(["holdout_user_id"])
+      end
+
+      it "stamps an experiment and its holdout exposures with one clock read" do
+        reads = []
+        holder = {}
+        clock_object = Object.new
+        clock_object.define_singleton_method(:to_i) do
+          holder[:context]&.set_unit("user_id", UID) unless holder[:context]&.get_unit("user_id")
+          reads << (1_620_000_000 + reads.size)
+          reads.last
+        end
+        config = ContextConfig.create
+        config.set_unit(UNIT_TYPE, UID_NOT_HELD_OUT)
+        data = data_of([experiment(2, "exp_two", holdout_ids: [11])],
+                       [holdout(11, "h11", HOLDOUT_A)])
+        context = Context.create(clock_object, config, OpenStruct.new(data_future: data, success?: true), data_provider,
+                                 event_handler, event_logger, variable_parser, audience_matcher)
+        holder[:context] = context
+        reads.clear
+
+        Timeout.timeout(5) { context.treatment("exp_two") }
+        context.publish
+        sent = published.flat_map { |event| event.exposures || [] }
+        expect(sent.map(&:name)).to eq(%w[exp_two h11])
+        expect(sent.map(&:exposed_at).uniq.size).to eq(1)
+      end
+
       it "keeps an exposed assignment so the experiment is not exposed twice" do
         context = create_context(data_of([experiment(1, "exp_exposed", unit_type: "user_id", full_on_variant: 2,
                                                                          holdout_ids: [11])],
@@ -1106,6 +1155,9 @@ module ContextHoldoutsSpec
         expect(context.pending_count).to eq(2)
 
         context.set_unit("user_id", UID)
+        cache = context.instance_variable_get(:@assignment_cache)
+        expect(cache).not_to have_key("exp_late")
+        expect(cache).to have_key("exp_present")
 
         expect(context.treatment("exp_late")).to eq(2)
         expect(context.pending_count).to eq(4)
