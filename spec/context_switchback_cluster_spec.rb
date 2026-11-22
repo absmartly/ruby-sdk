@@ -751,6 +751,102 @@ module ContextSwitchbackClusterSpec
       expect(collector_cluster(events[0], events[0].exposures[0], "city")).to eq("Lisboa")
     end
 
+    # An Array value is copied too, and a subclass and a default proc stay as set.
+    it "keeps the served cluster when the caller mutates the Array it set" do
+      context = create_context(attribute_switchback("cities/0/name"))
+      clock.now = ANCHOR + 10
+      cities = [{ "name" => "Lisboa" }]
+      context.set_attribute("cities", cities)
+      expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
+      cities[0]["name"] = "Faro"
+
+      context.publish
+      body = context.send(:event_handler).events.last
+      expect(body.exposures.length).to eq(1)
+      expect(collector_cluster(body, body.exposures[0], "cities")).to eq([{ "name" => "Lisboa" }])
+    end
+
+    it "copies a cluster value without losing its class or default proc" do
+      subclass = Class.new(Hash)
+      geo = subclass.new { |_, key| "default-#{key}" }
+      geo["city"] = +"Lisboa"
+      context = create_context(attribute_switchback("geo/city"))
+      clock.now = ANCHOR + 10
+      context.set_attribute("geo", geo)
+      expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
+      geo["city"] = "Faro"
+
+      context.publish
+      value = context.send(:event_handler).events.last.attributes[0].value
+      expect(value).to be_a(subclass)
+      expect(value["missing"]).to eq("default-missing")
+    end
+
+    # Nesting deeper than a cluster path reads is kept as is rather than copied without bound.
+    it "serves a cluster from a value nested deeper than a path reads" do
+      deep = [+"Lisboa"]
+      10_000.times { deep = [deep] }
+      context = create_context(attribute_switchback("city"))
+      clock.now = ANCHOR + 10
+      context.set_attribute("deep", deep)
+      context.set_attribute("city", "Lisboa")
+      context.set_attribute("city", deep)
+      expect { context.treatment("exp_sb") }.not_to raise_error
+    end
+
+    # Only cluster-source attributes are copied; others are published as the caller set them.
+    it "does not copy attributes that are not cluster sources" do
+      context = create_context(attribute_switchback("city"))
+      clock.now = ANCHOR + 10
+      tier = +"gold"
+      context.set_attribute("tier", tier)
+      context.set_attribute("city", +"Lisboa")
+      context.treatment("exp_sb")
+      snapshot = context.send(:assignment_cache).values.find(&:switchback).serving_attributes
+      expect(snapshot[0].value).to equal(tier)
+      expect(snapshot[1].value).not_to equal(context.send(:attributes)[1].value)
+    end
+
+    # A set_unit that lands after the batch's units were checked stays out of the checked body.
+    it "publishes the batch units its switchback exposures were checked against" do
+      context = create_context(attribute_switchback("city", switchbackClusters: { UNIT_TYPE => "city", "user_id" => "ucity" }))
+      clock.now = ANCHOR + 10
+      context.set_attribute("city", "Lisboa")
+      context.set_attribute("ucity", "Faro")
+      expect(context.treatment("exp_sb")).to eq(expected("Lisboa", 0))
+      allow(context).to receive(:separate_switchback_exposures).and_wrap_original do |original, *args|
+        original.call(*args).tap { context.set_unit("user_id", "u1") }
+      end
+
+      context.publish
+      events = context.send(:event_handler).events
+      expect(events.length).to eq(1)
+      expect(events[0].units.map(&:type)).to eq([UNIT_TYPE])
+    end
+
+    # A custom assignment is part of the slot, so repeated reads in a period expose once.
+    it "exposes a custom-assigned switchback once per period" do
+      context = create_context(attribute_switchback("city"))
+      clock.now = ANCHOR + 10
+      context.set_attribute("city", "Lisboa")
+      context.set_custom_assignment("exp_sb", 2)
+      3.times { expect(context.treatment("exp_sb")).to eq(2) }
+      expect(context.variable_value("sb.arm", -1)).to eq(2)
+      expect(context.pending_count).to eq(1)
+      expect(published_exposures(context).map(&:variant)).to eq([2])
+    end
+
+    # An override is published under the unit that serves the cluster, not the first linked type.
+    it "publishes an override under the serving unit" do
+      experiment = attribute_switchback("city", switchbackClusters: { UNIT_TYPE => "city", "device_id" => "dcity" })
+      context = build_context(data_of([experiment]), units: { "device_id" => "d1" }, provider: provider,
+                                                     overrides: { "exp_sb" => 1 })
+      clock.now = ANCHOR + 10
+      context.set_attribute("dcity", "Lisboa")
+      expect(context.treatment("exp_sb")).to eq(1)
+      expect(published_exposures(context)).to eq([exposure(1, "exp_sb", "device_id", 1, ANCHOR + 10, false, true, true)])
+    end
+
     # A switchback is separated out of a batch that also holds an ordinary exposure.
     it "separates a switchback out of a batch with another exposure" do
       unit = attribute_switchback("city", id: 2, name: "exp_unit", randomizationType: nil,

@@ -343,7 +343,7 @@ context.treatment("delivery_fee_test")        # the variant of cluster "lisbon" 
 - A cluster value is a non-empty string, used as is, or an Integer, keyed by its decimal text. A Float (even `3.0`), `true`/`false`, a Hash, an Array, `""` and `nil` give no value.
 - With no value, linked units that disagree, or a value the experiment does not allow, the unit gets control (variant 0) and no exposure is sent. Without a unit of a linked type, the experiment does not apply.
 - Before the experiment's start the unit gets control and no exposure is sent; an assignment rule, a strict audience mismatch and full-on still apply.
-- `set_attribute` keeps a copy of a String, Array or Hash value, so changing the object afterwards does not change the attribute.
+- A period keeps a copy of the cluster attribute values it read, so changing the object you passed to `set_attribute` in place does not change the cluster served. Set a new value with `set_attribute` instead.
 - Set the cluster attribute before the first read in a period. Changing it mid-period, before the exposure, is not supported: the period keeps the value it first read, and the change takes effect in the next period.
 - One exposure is sent per experiment and period. The attribute is read once per period: setting it again takes effect in the next period. An exposure whose cluster or serving unit the later attributes or units would change is published in a request of its own, with what its period read, so the Collector credits the cluster that was served.
 - `set_override`, assignment rules, strict audiences, full-on and `set_custom_assignment` apply as for other experiments. Holdouts never apply to a switchback.

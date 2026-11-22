@@ -233,7 +233,7 @@ class Context
   def set_attribute(name, value)
     check_not_closed?
 
-    @attributes.push(Attribute.new(name, copy_attribute_value(value), now_millis))
+    @attributes.push(Attribute.new(name, value, now_millis))
     @attrs_seq += 1
   end
 
@@ -596,31 +596,6 @@ class Context
     # A publish body: hashed units, the attributes and the events. Its
     # publishedAt is never before one of its events, which the Collector would
     # reject with the whole batch, if the wall clock stepped back.
-    # A String, Array or Hash value is copied, down to the depth a switchback
-    # resolves (a shared or cyclic part stays shared), so changing the caller's
-    # object later can't change what was set: the cluster a switchback served
-    # from it and the attribute it publishes. Hash keys are frozen already.
-    def copy_attribute_value(value, copies = {}.compare_by_identity, depth = 0)
-      return value if depth > Absmartly::Switchback::AttributePath::MAX_DEPTH
-
-      case value
-      when String then value.frozen? ? value : value.dup
-      when Array
-        copies.fetch(value) do
-          copy = copies[value] = []
-          value.each { |item| copy << copy_attribute_value(item, copies, depth + 1) }
-          copy
-        end
-      when Hash
-        copies.fetch(value) do
-          copy = copies[value] = {}
-          value.each { |key, item| copy[key] = copy_attribute_value(item, copies, depth + 1) }
-          copy
-        end
-      else value
-      end
-    end
-
     def publish_event(published_at, units, attributes, exposures, achievements)
       event = PublishEvent.new
       event.hashed = true
@@ -683,7 +658,7 @@ class Context
     # sent stamped at exposedAt instead.
     def served_payload(assignment, exposed_at)
       units = assignment.serving_units
-      read = @attributes.first(assignment.serving_attribute_count)
+      read = assignment.serving_attributes
       return [units, read] if served_at?(assignment, exposed_at, units, read)
 
       selected = assignment.switchback_entry.switchback_source_paths.filter_map do |path|
@@ -1345,6 +1320,38 @@ class Context
       end
     end
 
+    # The attributes set so far, with the value of each cluster source copied,
+    # so a caller that later changes the object it set can't change the
+    # cluster the slot served or the body its exposure is published with.
+    def serving_snapshot(entry)
+      return @attributes.dup if entry.switchback_source_paths.nil?
+
+      roots = entry.switchback_source_paths.map(&:root_key)
+      @attributes.map do |attribute|
+        next attribute unless roots.include?(attribute.name.to_s.strip)
+
+        Attribute.new(attribute.name, copy_attribute_value(attribute.value), attribute.set_at)
+      end.freeze
+    end
+
+    # A String, Array or Hash is copied with dup, so a subclass and a default
+    # proc are kept; a shared or cyclic part is copied once. Nesting deeper
+    # than a cluster path reads is kept as is.
+    def copy_attribute_value(value, copies = {}.compare_by_identity, depth = 0)
+      return value unless value.is_a?(String) || value.is_a?(Array) || value.is_a?(Hash)
+      return value if value.frozen? && value.is_a?(String)
+      return copies[value] if copies.key?(value)
+      return value if depth > Absmartly::Switchback::AttributePath::MAX_DEPTH
+
+      copy = copies[value] = value.dup
+      if copy.is_a?(Array)
+        copy.map! { |item| copy_attribute_value(item, copies, depth + 1) }
+      elsif copy.is_a?(Hash)
+        copy.each_key { |key| copy[key] = copy_attribute_value(copy[key], copies, depth + 1) }
+      end
+      copy
+    end
+
     # The attribute the Collector records with an exposure at now: among those
     # set at or before now with that (trimmed) name, the latest setAt, and on a
     # tie the one set last. System attributes are never read.
@@ -1374,14 +1381,14 @@ class Context
       serving = cached&.serving
       read_at = cached&.serving_read_at
       units = cached&.serving_units
-      attribute_count = cached&.serving_attribute_count
+      attributes = cached&.serving_attributes
       if serving.nil? || serving.status == Absmartly::Switchback::Serving::ABSENT
         # The units and the attributes set so far, as the read sees them; an
         # exposure that the final payload no longer resolves to this cluster is
         # published with these.
         units = @units.transform_keys(&:to_s).freeze
-        attribute_count = @attributes.length
-        serving = resolve_switchback_serving(entry, now, units)
+        attributes = serving_snapshot(entry)
+        serving = resolve_switchback_serving(entry, now, units, attributes)
         read_at = now
       end
 
@@ -1393,7 +1400,7 @@ class Context
       assignment.serving = serving
       assignment.serving_read_at = read_at
       assignment.serving_units = units
-      assignment.serving_attribute_count = attribute_count
+      assignment.serving_attributes = attributes
       assignment.switchback_entry = entry
       assignment.id = entry.data.id
       if override.nil?
@@ -1672,7 +1679,7 @@ class Assignment
                 :rule_override, :rule_variant, :rule_missing_unit, :rule_key,
                 :suppressed, :holdouts, :matched_holdouts, :holdout_assignments, :holdout_arm_count,
                 :switchback, :serving, :switchback_silent, :custom_assignment,
-                :serving_read_at, :switchback_entry, :serving_units, :serving_attribute_count
+                :serving_read_at, :switchback_entry, :serving_units, :serving_attributes
 
   def initialize
     @variant = 0
