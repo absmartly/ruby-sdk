@@ -326,6 +326,28 @@ Experiments can be covered by holdouts set up on the Web Console. A holdout keep
 - Peeking (`peek_treatment`, `peek_variable_value`) never queues exposures.
 - Set the unit before reading a covered experiment. An experiment read with `treatment` or `variable_value` before its unit type is set gets no holdout arm; `set_unit` alone does not change that exposed assignment or expose the holdout for it. A later refresh that changes the experiment or its coverage can rebuild the assignment.
 
+### Switchback Experiments
+
+A switchback experiment is randomized over clusters and time: a variant is drawn for each cluster (for example, a store's region) and each period of a fixed time grid, and every unit in that cluster shares the period's draw; overrides, assignment rules, strict audiences, full-on, traffic and custom assignments can still change the variant a unit gets. Consecutive periods can draw the same variant. The SDK serves switchbacks set up on the Web Console with no code changes, as the Collector and the Java SDK do. Set the attribute that holds each unit's cluster value:
+
+```ruby
+context.set_unit(:store_id, "store-123")
+context.set_attribute(:region, "lisbon")       # cluster attribute path "region"
+# or a nested value, with the cluster attribute path "region/city":
+# context.set_attribute(:region, { "city" => "lisbon" })
+
+context.treatment("delivery_fee_test")        # the variant of cluster "lisbon" in the current period
+```
+
+- The experiment names, in order, the unit types it is linked to and the attribute path holding each one's cluster value. The first linked unit, in that order, whose attribute has a value serves the experiment; its exposure is sent under that unit.
+- A cluster value is a non-empty string, used as is, or an Integer, keyed by its decimal text. A Float (even `3.0`), `true`/`false`, a Hash, an Array, `""` and `nil` give no value.
+- With no value, linked units that disagree, or a value the experiment does not allow, the unit gets control (variant 0) and no exposure is sent. Without a unit of a linked type, the experiment does not apply.
+- Before the experiment's start the unit gets control and no exposure is sent; an assignment rule, a strict audience mismatch and full-on still apply.
+- A period keeps a copy of the cluster attribute values it read, so changing a value you passed to `set_attribute` in place (a String's text, a Hash or Array entry) does not change the cluster served. Changing a key of an identity-compared Hash (`compare_by_identity`) in place is not supported. Set a new value with `set_attribute` instead.
+- Set the cluster attribute before the first read in a period. Changing it mid-period, before the exposure, is not supported: the period keeps the value it first read, and the change takes effect in the next period.
+- One exposure is sent per experiment and period while its assignment is unchanged. A change within the period that rebuilds it (a new custom assignment or override, a refresh that changes the experiment) sends one more. So does a period the clock returns to after it stopped being one of the two most recent. The attribute is read once per period: setting it again takes effect in the next period. An exposure whose cluster or serving unit the later attributes or units would change is published in a request of its own, with what its period read, so the Collector credits the cluster that was served.
+- `set_override`, assignment rules, strict audiences, full-on and `set_custom_assignment` apply as for other experiments. Holdouts never apply to a switchback.
+
 ### Custom Assignments
 
 Sometimes it may be necessary to override the automatic selection of a variant. For example, if you wish to have your variant chosen based on data from an API call. This can be accomplished using the `set_custom_assignment` method.

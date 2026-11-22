@@ -114,7 +114,7 @@ class ABSmartly
 
   def create_context(config)
     validate_params(config)
-    Context.create(get_utc_format, config, @context_data_provider.context_data,
+    Context.create(system_clock, config, @context_data_provider.context_data,
                    @context_data_provider, @context_event_handler, @context_event_logger, @variable_parser,
                    AudienceMatcher.new(@audience_deserializer),
                    application: client_application, environment: client_environment)
@@ -122,7 +122,7 @@ class ABSmartly
 
   def create_context_async(config)
     validate_params(config)
-    context = Context.create_async(get_utc_format, config, @context_data_provider,
+    context = Context.create_async(system_clock, config, @context_data_provider,
                                    @context_event_handler, @context_event_logger, @variable_parser,
                                    AudienceMatcher.new(@audience_deserializer),
                                    application: client_application, environment: client_environment)
@@ -138,7 +138,7 @@ class ABSmartly
 
   def create_context_with(config, data)
     validate_params(config)
-    Context.create(get_utc_format, config, data,
+    Context.create(system_clock, config, data,
                    @context_data_provider, @context_event_handler, @context_event_logger, @variable_parser,
                    AudienceMatcher.new(@audience_deserializer),
                    application: client_application, environment: client_environment)
@@ -149,9 +149,12 @@ class ABSmartly
   end
 
   private
-    def get_utc_format
-      Time.now.utc.iso8601(3)
+    def system_clock
+      SYSTEM_CLOCK
     end
+
+    SYSTEM_CLOCK = -> { Process.clock_gettime(Process::CLOCK_REALTIME, :millisecond) }
+    private_constant :SYSTEM_CLOCK
 
     # The application and environment names configured on the client seed the
     # audience evaluation map (the collector adds them server-side for publish).
