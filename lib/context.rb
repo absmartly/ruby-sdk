@@ -415,13 +415,6 @@ class Context
   end
 
   private
-    # Claims and queues assignment's exposure. With experiment_name, the claim
-    # is taken only while the assignment is still the cached one for that
-    # experiment (checked under the assignment lock, which set_unit also
-    # takes to evict), and a no-unit split assignment whose unit has since
-    # been set counts as stale; then nothing is queued and :evicted is
-    # returned so the caller resolves it again. Returns nil otherwise, never
-    # the logger's result (that is passed to the block).
     # SDK reads check the cache under the assignment lock; a direct
     # queue_exposure call has nothing to check and may already hold it (from a
     # custom matcher), so it skips it.
@@ -429,6 +422,13 @@ class Context
       locked ? @assignment_mutex.synchronize(&block) : yield
     end
 
+    # Claims and queues assignment's exposure. With experiment_name, the claim
+    # is taken only while the assignment is still the cached one for that
+    # experiment (checked under the assignment lock, which set_unit also
+    # takes to evict), and a no-unit split assignment whose unit has since
+    # been set counts as stale; then nothing is queued and :evicted is
+    # returned so the caller resolves it again. Returns nil otherwise, never
+    # the logger's result (that is passed to the block).
     def claim_and_queue_exposure(assignment, experiment_name = nil)
       return if assignment.exposed
 

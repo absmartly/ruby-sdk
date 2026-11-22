@@ -597,10 +597,13 @@ RSpec.describe Context do
   it "builds no per-claim block on a first exposure" do
     contexts = Array.new(50) { create_ready_context.tap { |c| c.peek_treatment("exp_test_ab") } }
     GC.disable
-    before = ObjectSpace.each_object(Proc).count
-    contexts.each { |c| c.treatment("exp_test_ab") }
-    created = ObjectSpace.each_object(Proc).count - before
-    GC.enable
+    begin
+      before = ObjectSpace.each_object(Proc).count
+      contexts.each { |c| c.treatment("exp_test_ab") }
+      created = ObjectSpace.each_object(Proc).count - before
+    ensure
+      GC.enable
+    end
     expect(created).to be < 50
   end
 
