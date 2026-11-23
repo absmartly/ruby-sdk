@@ -1420,8 +1420,9 @@ module ContextHoldoutsSpec
         context.set_attribute("country", "US")
 
         expect(context.variable_value("color", "default")).to eq("treatment")
-        expect(exposures_of(context)).to eq([own_exposure(1, "exp_holdout_rules", 1, assigned: false, rule_override: true),
-                                             holdout_exposure(11, "holdout_rules_suppression", 0)])
+        # java-sdk variableValueOnHeldOutRuleWonExperiment: the holdout first.
+        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_rules_suppression", 0),
+                                             own_exposure(1, "exp_holdout_rules", 1, assigned: false, rule_override: true)])
       end
 
       it "prefers a rule-won experiment over a suppressed one" do

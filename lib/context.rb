@@ -1225,16 +1225,18 @@ class Context
         # Resolved from the state current under the assignment lock, so a read
         # that a refresh overtook can't reinstall an old assignment.
         assignment = assignment(experiment.data.name)
+        # As in java-sdk, each visited candidate's holdouts, the winner's
+        # included, are queued before the winner's own exposure.
+        queue_holdout_exposures(assignment) if expose
         return assignment if assignment.assigned || assignment.overridden || assignment.rule_override
 
-        queue_holdout_exposures(assignment) if expose
         suppressed_fallback ||= assignment if assignment.suppressed
       end
       suppressed_fallback
     end
 
-    # Exposes the holdouts covering a candidate that did not win, from the
-    # arms pinned in its assignment, without exposing the candidate itself.
+    # Exposes the holdouts covering a visited candidate, from the arms pinned
+    # in its assignment, without exposing the candidate itself.
     def queue_holdout_exposures(assignment)
       holdout_assignments = assignment.holdout_assignments
       # Checked again under the lock; this keeps warm reads off the clock and lock.

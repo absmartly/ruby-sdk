@@ -269,6 +269,28 @@ module ContextSharedVariableKeysSpec
         expect(exposures_of(context)).to eq([assigned("holdout_a"), assigned("exp_high")])
       end
 
+      it "exposes only a loser's still-unexposed holdout when another is already exposed" do
+        context = create_context([strict_mismatch(1, "exp_low").merge(holdoutIds: [11, 12]), experiment(2, "exp_high"),
+                                  experiment(5, "exp_other", configs: ['{"size":1}', '{"size":2}'], holdoutIds: [11])],
+                                 holdouts: [holdout(11, "holdout_a", NOT_HOLDING_OUT),
+                                            holdout(12, "holdout_b", NOT_HOLDING_OUT)])
+        context.treatment("exp_other")
+
+        expect(context.variable_value("color", "default")).to eq("treatment_2")
+        expect(exposures_of(context)).to eq([assigned("exp_other"), assigned("holdout_a"), assigned("holdout_b"),
+                                             assigned("exp_high")])
+      end
+
+      it "queues the winner's holdouts before the winner, as java-sdk does" do
+        context = create_context([strict_mismatch(1, "exp_low").merge(holdoutIds: [11]),
+                                  experiment(2, "exp_high", holdoutIds: [12])],
+                                 holdouts: [holdout(11, "holdout_a", NOT_HOLDING_OUT),
+                                            holdout(12, "holdout_b", NOT_HOLDING_OUT)])
+
+        expect(context.variable_value("color", "default")).to eq("treatment_2")
+        expect(exposures_of(context)).to eq([assigned("holdout_a"), assigned("holdout_b"), assigned("exp_high")])
+      end
+
       it "reads the clock only for the first exposures, not on warm reads past a covered loser" do
         context = create_context([strict_mismatch(1, "exp_low").merge(holdoutIds: [11]), experiment(2, "exp_high")],
                                  holdouts: [holdout(11, "holdout_a", NOT_HOLDING_OUT)])
