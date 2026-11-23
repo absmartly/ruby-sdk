@@ -324,7 +324,7 @@ Rule conditions are audience expressions, so they can use your attributes, `appl
 
 Experiments can be covered by holdouts set up on the Web Console. A holdout keeps a share of units out of every experiment it covers, so you can measure the combined effect of those experiments. The SDK handles this for you: no code changes are needed.
 
-- A held-out unit gets control (variant 0; control variable values are a fallback when no assigned, overridden or rule-won experiment supplies the key) for each covered experiment, and no exposure is queued for that experiment.
+- A held-out unit gets control (variant 0; for a shared variable key its control value is used only when no other experiment defining the key wins, see [Shared variable keys](#shared-variable-keys)) for each covered experiment, and no exposure is queued for that experiment.
 - The holdout queues its own exposure, once per unit type, the first time the unit sees a covered experiment, whether it is held out or not. Like every exposure, it reaches the collector on `publish` or `close`.
 - A unit held out by any of the holdouts covering an experiment is held out of it.
 - A holdout with three arms holds full-on experiments out only in its first arm, and other experiments in its first two arms.

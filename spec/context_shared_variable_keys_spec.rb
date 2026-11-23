@@ -261,6 +261,38 @@ module ContextSharedVariableKeysSpec
         expect(exposures_of(context)).to eq([["holdout_a", 0, true, false, false]])
       end
 
+      it "exposes a visited loser's holdout once across repeated reads" do
+        context = create_context([strict_mismatch(1, "exp_low").merge(holdoutIds: [11]), experiment(2, "exp_high")],
+                                 holdouts: [holdout(11, "holdout_a", NOT_HOLDING_OUT)])
+
+        3.times { expect(context.variable_value("color", "default")).to eq("treatment_2") }
+        expect(exposures_of(context)).to eq([assigned("holdout_a"), assigned("exp_high")])
+      end
+
+      it "reads the clock only for the first exposures, not on warm reads past a covered loser" do
+        context = create_context([strict_mismatch(1, "exp_low").merge(holdoutIds: [11]), experiment(2, "exp_high")],
+                                 holdouts: [holdout(11, "holdout_a", NOT_HOLDING_OUT)])
+        context.variable_value("color", "default")
+
+        expect(clock).not_to receive(:to_i)
+        3.times { context.variable_value("color", "default") }
+      end
+
+      it "queues no loser holdout exposure once a logger callback closed the context" do
+        context = create_context([strict_mismatch(1, "exp_low").merge(holdoutIds: [11]),
+                                  strict_mismatch(2, "exp_mid").merge(holdoutIds: [12]), experiment(3, "exp_high")],
+                                 holdouts: [holdout(11, "holdout_a", NOT_HOLDING_OUT),
+                                            holdout(12, "holdout_b", NOT_HOLDING_OUT)])
+        allow(event_logger).to receive(:handle_event) do |_type, data|
+          context.close if data.is_a?(Exposure) && data.name == "holdout_a"
+        end
+
+        expect { context.variable_value("color", "default") }.to raise_error(IllegalStateException, /closed/)
+        # close published what was queued before it; nothing was queued after.
+        expect(published.flat_map(&:exposures).map(&:name)).to eq(["holdout_a"])
+        expect(context.pending_count).to eq(0)
+      end
+
       it "fires nothing on peek" do
         context = create_context([strict_mismatch(1, "exp_low").merge(holdoutIds: [11]), experiment(2, "exp_high")],
                                  holdouts: [holdout(11, "holdout_a", NOT_HOLDING_OUT)])

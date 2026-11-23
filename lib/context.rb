@@ -1236,13 +1236,16 @@ class Context
     # Exposes the holdouts covering a candidate that did not win, from the
     # arms pinned in its assignment, without exposing the candidate itself.
     def queue_holdout_exposures(assignment)
-      return if assignment.exposed || assignment.holdout_assignments.nil?
+      holdout_assignments = assignment.holdout_assignments
+      # Checked again under the lock; this keeps warm reads off the clock and lock.
+      return if assignment.exposed || holdout_assignments.nil? ||
+                holdout_assignments.all? { |holdout_assignment| holdout_assignment.nil? || holdout_assignment.exposed }
 
       exposed_at = @clock.to_i
       holdout_exposures = nil
       @queue_mutex.synchronize do
         check_not_closed?
-        assignment.holdout_assignments.each_with_index do |holdout_assignment, i|
+        holdout_assignments.each_with_index do |holdout_assignment, i|
           next if holdout_assignment.nil? || holdout_assignment.exposed
 
           holdout_assignment.exposed = true
