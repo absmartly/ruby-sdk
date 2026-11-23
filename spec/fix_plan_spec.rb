@@ -425,7 +425,7 @@ RSpec.describe "Fix Plan Validations" do
     end
   end
 
-  describe "shared variable keys resolve like the JavaScript SDK" do
+  describe "shared variable keys resolve like java-sdk Context.getVariableAssignment" do
     def shared_experiment(id, name, unit_type, full_on_variant)
       {
         "id" => id, "name" => name, "unitType" => unit_type,
@@ -461,7 +461,7 @@ RSpec.describe "Fix Plan Validations" do
       expect(published.map(&:name)).to eq(%w[exp_a])
     end
 
-    it "falls through to the next experiment when the unit isn't assigned in the first" do
+    it "reads from and exposes only the next experiment when the unit isn't assigned in the first" do
       published = []
       context = shared_context(published)
 
@@ -469,7 +469,7 @@ RSpec.describe "Fix Plan Validations" do
       expect(context.pending_count).to eq(0)
       expect(context.variable_value("shared.key", "default")).to eq("from_exp_b")
       context.publish
-      expect(published.map { |e| [e.name, e.assigned] }).to eq([["exp_a", false], ["exp_b", true]])
+      expect(published.map { |e| [e.name, e.assigned] }).to eq([["exp_b", true]])
     end
 
     it "reads from an experiment the unit is overridden in" do
@@ -479,7 +479,7 @@ RSpec.describe "Fix Plan Validations" do
       expect(context.peek_variable_value("shared.key", "default")).to eq("from_exp_a")
     end
 
-    it "falls through when the assigned variant's config lacks the key" do
+    it "gives the default, not a later experiment's value, when the winner's variant lacks the key" do
       exp_a = shared_experiment(1, "exp_a", "session_id", 1)
       exp_a["variants"] = [{ "name" => "A", "config" => %({"other.key":"from_exp_a"}) },
                            { "name" => "B", "config" => %({"shared.key":"from_exp_a"}) }]
@@ -494,10 +494,10 @@ RSpec.describe "Fix Plan Validations" do
                                variable_parser, audience_matcher)
       context.set_override("exp_a", 0)
 
-      expect(context.peek_variable_value("shared.key", "default")).to eq("from_exp_b")
-      expect(context.variable_value("shared.key", "default")).to eq("from_exp_b")
+      expect(context.peek_variable_value("shared.key", "default")).to eq("default")
+      expect(context.variable_value("shared.key", "default")).to eq("default")
       context.publish
-      expect(published.map(&:name)).to eq(%w[exp_a exp_b])
+      expect(published.map(&:name)).to eq(%w[exp_a])
     end
 
     it "orders experiments by id, not payload order" do

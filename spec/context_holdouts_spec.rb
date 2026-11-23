@@ -881,13 +881,14 @@ module ContextHoldoutsSpec
       end
 
       # variable_value walks the key's candidates from the state it started
-      # with; a logger callback on the first candidate's exposure refreshes
-      # and exposes the second one under the new data before the walk reaches
-      # it, the interleaving of a read overlapping a refresh.
+      # with. exp_a fails its strict audience, so it loses but the walk still
+      # exposes its holdout_g; a logger callback on that exposure refreshes
+      # and exposes exp_b under the new data before the walk reaches it, the
+      # interleaving of a read overlapping a refresh.
       def overlapping_read(context, steps)
         fired = false
         allow(event_logger).to receive(:handle_event) do |_type, data|
-          next if fired || !(data.is_a?(Exposure) && data.id == 1)
+          next if fired || !(data.is_a?(Exposure) && data.id == 12)
 
           fired = true
           steps.call
@@ -895,52 +896,57 @@ module ContextHoldoutsSpec
         context.variable_value("color", "default")
       end
 
-      def shared_key_experiments
-        first = experiment(1, "exp_a")
-        first[:variants] = [{ name: "A", config: '{"color":"a_control"}' }, { name: "B", config: '{"other":"x"}' }]
-        [first, with_variables(experiment(2, "exp_b", holdout_ids: [11]), "color")]
+      def shared_key_experiments(covered: true)
+        first = with_variables(experiment(1, "exp_a", holdout_ids: [12], audienceStrict: true,
+                                                      audience: '{"filter":[{"gte":[{"var":"age"},{"value":20}]}]}'),
+                               "color")
+        second = with_variables(experiment(2, "exp_b", holdout_ids: covered ? [11] : nil), "color")
+        [first, second]
+      end
+
+      def shared_key_holdouts(seeds, iteration: 1)
+        [holdout(11, "holdout_h", seeds, iteration: iteration), holdout(12, "holdout_g", HOLDOUT_B)]
       end
 
       it "does not let a read that started before a refresh expose the new arm again" do
-        context = create_context(data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_B)]))
+        context = create_context(data_of(shared_key_experiments, shared_key_holdouts(HOLDOUT_B)))
         result = overlapping_read(context, lambda {
-          refresh(context, data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_A, iteration: 2)]))
+          refresh(context, data_of(shared_key_experiments, shared_key_holdouts(HOLDOUT_A, iteration: 2)))
           expect(context.treatment("exp_b")).to eq(0)
         })
         context.treatment("exp_b")
 
         expect(result).to eq("control")
-        expect(exposures_of(context)).to eq([own_exposure(1, "exp_a", NORMAL_VARIANT), holdout_exposure(11, "holdout_h", 0)])
+        expect(exposures_of(context)).to eq([holdout_exposure(12, "holdout_g", 1), holdout_exposure(11, "holdout_h", 0)])
       end
 
       it "does not expose an experiment again when a read meets a non-suppressing new arm" do
-        context = create_context(data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_A)]))
+        context = create_context(data_of(shared_key_experiments, shared_key_holdouts(HOLDOUT_A)))
         result = overlapping_read(context, lambda {
-          refresh(context, data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_B, iteration: 2)]))
+          refresh(context, data_of(shared_key_experiments, shared_key_holdouts(HOLDOUT_B, iteration: 2)))
           expect(context.treatment("exp_b")).to eq(NORMAL_VARIANT)
         })
         context.treatment("exp_b")
 
         expect(result).to eq("treatment")
-        expect(exposures_of(context)).to eq([own_exposure(1, "exp_a", NORMAL_VARIANT),
+        expect(exposures_of(context)).to eq([holdout_exposure(12, "holdout_g", 1),
                                              own_exposure(2, "exp_b", NORMAL_VARIANT), holdout_exposure(11, "holdout_h", 1)])
       end
 
       it "does not expose an old arm again when a read resumes after the holdout is removed" do
-        context = create_context(data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_A)]))
+        context = create_context(data_of(shared_key_experiments, shared_key_holdouts(HOLDOUT_A)))
         expect(context.treatment("exp_b")).to eq(0)
-        uncovered = shared_key_experiments.tap { |e| e[1].delete(:holdoutIds) }
         result = overlapping_read(context, lambda {
-          refresh(context, data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_B, iteration: 2)]))
+          refresh(context, data_of(shared_key_experiments, shared_key_holdouts(HOLDOUT_B, iteration: 2)))
           expect(context.treatment("exp_b")).to eq(NORMAL_VARIANT)
-          refresh(context, data_of(uncovered, []))
+          refresh(context, data_of(shared_key_experiments(covered: false), shared_key_holdouts(HOLDOUT_B, iteration: 2)))
         })
         context.treatment("exp_b")
 
         expect(result).to eq("treatment")
         # Removing the coverage re-resolves exp_b once (scenario 225); the
         # iteration 1 arm is never exposed again.
-        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_h", 0), own_exposure(1, "exp_a", NORMAL_VARIANT),
+        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_h", 0), holdout_exposure(12, "holdout_g", 1),
                                              own_exposure(2, "exp_b", NORMAL_VARIANT), holdout_exposure(11, "holdout_h", 1),
                                              own_exposure(2, "exp_b", NORMAL_VARIANT)])
       end
@@ -1379,24 +1385,24 @@ module ContextHoldoutsSpec
         expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0)])
       end
 
-      it "skips an overridden held-out experiment when picking the control fallback" do
+      it "lets an overridden held-out experiment win, giving the default when its variant lacks the key" do
         first = experiment(1, "exp_ov", holdout_ids: [11])
         first[:variants] = [{ name: "A", config: '{"color":"ov_control"}' }, { name: "B", config: '{"other":"x"}' }]
         second = with_variables(experiment(2, "exp_second", holdout_ids: [11]), "color")
         context = create_context(data_of([first, second], [holdout(11, "holdout_a", HOLDOUT_A)]),
                                  overrides: { "exp_ov" => 1 })
 
-        expect(context.peek_variable_value("color", "default")).to eq("control")
+        expect(context.peek_variable_value("color", "default")).to eq("default")
       end
 
-      it "skips a rule-won held-out experiment when picking the control fallback" do
+      it "lets a rule-won held-out experiment win, giving the default when its variant lacks the key" do
         first = experiment(1, "exp_rule", holdout_ids: [11], assignmentRules: US_RULE)
         first[:variants] = [{ name: "A", config: '{"color":"rule_control"}' }, { name: "B", config: '{"other":"x"}' }]
         second = with_variables(experiment(2, "exp_second", holdout_ids: [11]), "color")
         context = create_context(data_of([first, second], [holdout(11, "holdout_a", HOLDOUT_A)]))
         context.set_attribute("country", "US")
 
-        expect(context.peek_variable_value("color", "default")).to eq("control")
+        expect(context.peek_variable_value("color", "default")).to eq("default")
       end
 
       it "keeps the first suppressed experiment's control even when it lacks the key" do

@@ -263,6 +263,10 @@ default_button_color = 'red'
 button_color = context.variable_value('button.color', default_button_color)
 ```
 
+#### Shared variable keys
+
+When several experiments define the same variable key, the SDK checks the experiments whose variants define it in experiment id order. The first one the unit is assigned to, overridden in or rule-assigned in wins, and only that experiment is exposed. If the winner's variant does not define the key, `variable_value` returns your default rather than reading a later experiment. If no experiment wins, a held-out unit reads the control value of the first held-out experiment; otherwise your default is returned and no experiment is exposed. `peek_variable_value` follows the same rule without exposing anything.
+
 ### Peek at Treatment Variants
 
 Although generally not recommended, it is sometimes necessary to peek at a treatment or variable without triggering an exposure. The ABsmartly SDK provides `peek_treatment` and `peek_variable_value` methods for that.

@@ -1196,38 +1196,60 @@ class Context
       assignment
     end
 
-    # Like the JavaScript SDK, a key shared by several experiments reads from
-    # the first one, in experiment id order, that the unit is assigned to or
-    # overridden in; each experiment visited on the way is exposed. When none
-    # wins, a held-out unit reads the control value of the first held-out
-    # experiment rather than the default.
+    # As java-sdk Context.getVariableAssignment resolves a key shared by
+    # several experiments: the first one, in experiment id order, that the
+    # unit is assigned to, overridden in or rule-assigned in wins, and only
+    # that one is exposed. A winner whose variant lacks the key gives the
+    # default; the walk never moves past it. When none wins, a held-out unit
+    # reads the first held-out experiment (control, or the default if its
+    # control lacks the key). A non-peek read still exposes the holdouts of
+    # each candidate it visits, as java-sdk does.
     def resolve_variable_value(key, default_value, expose)
-      state = @state
       key = key.to_s.to_sym
+      winner = nil
+      while true # rubocop:disable Style/InfiniteLoop -- no block allocation on the read path
+        winner = variable_assignment(key, expose)
+        break if winner.nil? || !expose || winner.exposed
+        # The unit was set in between, so the walk may now pick another
+        # candidate: it starts again, as java-sdk's settleExposure does.
+        break unless claim_and_queue_exposure(winner, winner.name) == :evicted
+      end
+      return default_value if winner.nil? || winner.variables.nil? || !winner.variables.key?(key)
+
+      winner.variables[key]
+    end
+
+    def variable_assignment(key, expose)
       suppressed_fallback = nil
-      (state.index_variables[key] || []).each do |experiment|
-        assignment = nil
-        while true # rubocop:disable Style/InfiniteLoop -- no block allocation on the read path
-          # Resolved from the state current under the assignment lock, so a read
-          # that a refresh overtook can't reinstall an old assignment.
-          assignment = assignment(experiment.data.name)
-          break if assignment.variables.nil? || !expose || assignment.exposed
-          break unless claim_and_queue_exposure(assignment, experiment.data.name) == :evicted
-        end
-        next if assignment.variables.nil?
+      (@state.index_variables[key] || []).each do |experiment|
+        # Resolved from the state current under the assignment lock, so a read
+        # that a refresh overtook can't reinstall an old assignment.
+        assignment = assignment(experiment.data.name)
+        return assignment if assignment.assigned || assignment.overridden || assignment.rule_override
 
-        if assignment.variables.key?(key) && (assignment.assigned || assignment.overridden || assignment.rule_override)
-          return assignment.variables[key]
-        end
+        queue_holdout_exposures(assignment) if expose
+        suppressed_fallback ||= assignment if assignment.suppressed
+      end
+      suppressed_fallback
+    end
 
-        if assignment.suppressed && !assignment.overridden && !assignment.rule_override
-          suppressed_fallback ||= assignment.variables
+    # Exposes the holdouts covering a candidate that did not win, from the
+    # arms pinned in its assignment, without exposing the candidate itself.
+    def queue_holdout_exposures(assignment)
+      return if assignment.exposed || assignment.holdout_assignments.nil?
+
+      exposed_at = @clock.to_i
+      holdout_exposures = nil
+      @queue_mutex.synchronize do
+        check_not_closed?
+        assignment.holdout_assignments.each_with_index do |holdout_assignment, i|
+          next if holdout_assignment.nil? || holdout_assignment.exposed
+
+          holdout_assignment.exposed = true
+          (holdout_exposures ||= []) << enqueue_exposure(assignment.holdouts[i].name, holdout_assignment, exposed_at)
         end
       end
-
-      return suppressed_fallback[key] if !suppressed_fallback.nil? && suppressed_fallback.key?(key)
-
-      default_value
+      holdout_exposures&.each { |e| log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, e) }
     end
 
     def experiment(experiment, state = @state)

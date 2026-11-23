@@ -2460,33 +2460,15 @@ RSpec.describe Context do
     expect(event_handler).to have_received(:publish).with(context, expected).once
   end
 
-  it "getVariableValueQueuesExposureWithAudienceMismatchFalseAndControlVariantOnAudienceMismatchInStrictMode" do
+  # As java-sdk: a strict audience mismatch leaves the unit unassigned, so the
+  # read gives the default and exposes nothing; treatment still exposes it.
+  it "getVariableValueDoesNotQueueExposureOnAudienceMismatchInStrictMode" do
     context = create_context(audience_strict_data_future_ready)
 
     expect(context.variable_value("banner.size", "small")).to eq("small")
+    expect(context.pending_count).to eq(0)
+    expect(context.treatment("exp_test_ab")).to eq(0)
     expect(context.pending_count).to eq(1)
-
-    publish_future = nil
-    allow(event_handler).to receive(:publish).and_return(publish_future)
-
-    context.publish
-
-    expected = PublishEvent.new
-    expected.hashed = true
-    expected.published_at = clock_in_millis
-    expected.units = publish_units
-
-    expected.exposures = [
-      Exposure.new(1, "exp_test_ab", "session_id", 0, clock_in_millis, false, true, false, false, false,
-                   true)
-    ]
-
-    allow(event_handler).to receive(:publish).and_return(publish_future)
-
-    context.publish
-
-    expect(event_handler).to have_received(:publish).once
-    expect(event_handler).to have_received(:publish).with(context, expected).once
   end
 
   it "getVariableValueCallsEventLogger" do
