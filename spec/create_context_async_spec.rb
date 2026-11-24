@@ -871,6 +871,9 @@ RSpec.describe "create_context_async" do
         context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
         context.set_override("exp_test_ab", 1)
         expect(context.peek_treatment("exp_test_ab")).to eq(1)
+        # A second assignment built while failed: marking one must not
+        # unmark another.
+        expect(context.peek_treatment("exp_test_abc")).to eq(0)
         release << true
         Timeout.timeout(5) { refresher.join }
       ensure
@@ -880,8 +883,11 @@ RSpec.describe "create_context_async" do
 
       expect(context.failed?).to be false
       expect(context.variable_value("banner.size", "default")).to eq("large")
+      expect(context.variable_value("button.color", "default")).not_to eq("default")
       context.publish
-      expect(exposures).to eq([["exp_test_ab", 1, 1]])
+      expect(exposures.map(&:first)).to eq(%w[exp_test_ab exp_test_abc])
+      expect(exposures.first).to eq(["exp_test_ab", 1, 1])
+      expect(exposures.last[1]).to eq(2)
     end
 
     it "does not keep an assignment a read built from the failed snapshot after recovery" do
