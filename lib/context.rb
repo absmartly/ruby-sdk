@@ -1258,11 +1258,15 @@ class Context
 
       @assignment_mutex.synchronize do
         arms = assignment.holdout_assignments
+        # The live holdouts (a refresh's equivalent list, if any): the arms are
+        # decided now, so they and their exposures' names come from those, as
+        # java-sdk resolves an override's holdouts against the installed data.
         holdouts = assignment.matched_holdouts || assignment.holdouts
         if arms.include?(nil)
           assignment.holdout_assignments = arms.each_with_index.map do |arm, i|
             arm || holdout_assignment(holdouts[i], assignment.unit_type)
           end
+          assignment.holdouts = holdouts
         end
       end
     end

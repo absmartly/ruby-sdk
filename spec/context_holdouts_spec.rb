@@ -1318,6 +1318,26 @@ module ContextHoldoutsSpec
         expect(exposures_of(context)).to eq([own, holdout_exposure(11, "holdout_override_var", 1, unit: "user_id")])
       end
 
+      # A refresh with the same holdout iteration keeps the override cached;
+      # its late arm is decided after it, so it uses the live seeds and name.
+      [["renamed", { name: "holdout_renamed" }, "holdout_renamed", 1],
+       ["reseeded", { seedHi: HOLDOUT_A[0], seedLo: HOLDOUT_A[1] }, "holdout_override_live", 0]].each do |label, edit, name, arm|
+        it "decides an override's late holdout arm from the #{label} live holdout, as java-sdk" do
+          exp = with_variables(experiment(1, "exp_override_live", unit_type: "user_id", holdout_ids: [11]), "my_var")
+          original = holdout(11, "holdout_override_live", HOLDOUT_B, unit_type: "user_id")
+          context = create_context(data_of([exp], [original]), units: {}, overrides: { "exp_override_live" => 1 })
+
+          expect(context.variable_value("my_var", "default")).to eq("treatment")
+          refresh(context, data_of([exp], [original.merge(edit)]))
+          context.set_unit("user_id", UID)
+          expect(context.variable_value("my_var", "default")).to eq("treatment")
+
+          expect(exposures_of(context)).to eq([own_exposure(1, "exp_override_live", 1, unit: "user_id", assigned: false,
+                                                                                        overridden: true),
+                                               holdout_exposure(11, name, arm, unit: "user_id")])
+        end
+      end
+
       it "exposes a treatment-exposed override's holdout on the next variable read after its unit arrives" do
         exp = with_variables(experiment(1, "exp_override_tr", unit_type: "user_id", holdout_ids: [11, 12]), "my_var")
         context = create_context(data_of([exp], [holdout(11, "holdout_a", HOLDOUT_A, unit_type: "user_id"),
