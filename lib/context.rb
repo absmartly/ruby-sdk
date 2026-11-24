@@ -90,7 +90,7 @@ class Context
   def wait_until_ready(timeout = nil)
     # Called from a variable parser while this thread builds the data that
     # would make the context ready: waiting here could never finish.
-    return self if @ready_mutex.synchronize { @building_threads.key?(Thread.current) }
+    return self if building?
 
     @ready_mutex.synchronize do
       unless ready? || failed?
@@ -1313,15 +1313,24 @@ class Context
     # Thread#raise), so one landing while it waits for the lock can't leave
     # this thread registered or unbalanced. The parsing keeps the caller's
     # interrupt mask: interruptible by default, deferred if the caller masked.
-    # An interrupt landing in the few instructions between the parse and the
-    # cleanup mask can still skip the cleanup; closing that gap would need a
-    # mask around the parse, which overrides the caller's own.
+    # Ruby can't run the parse under the caller's mask inside a masked
+    # cleanup, so an interrupt landing as the cleanup starts can skip it; a
+    # registration only counts while the thread is inside build_state (see
+    # building?), and the next build or wait drops one left behind.
     def build_state(data)
       thread = Thread.current
+      # Checked before entering a block, where a frame of this build would count.
+      nested = build_state_on_stack?(1)
       registered = false
       begin
         Thread.handle_interrupt(Object => :never) do
-          @ready_mutex.synchronize { @building_threads[thread] = (@building_threads[thread] || 0) + 1 }
+          @ready_mutex.synchronize do
+            count = @building_threads[thread]
+            # A count left by an interrupted cleanup, with no build of this
+            # thread still running further up its stack, is dropped first.
+            count = nil unless nested
+            @building_threads[thread] = (count || 0) + 1
+          end
           registered = true
         end
         build_state_maps(data)
@@ -1335,6 +1344,26 @@ class Context
           end
         end
       end
+    end
+
+    # True while this thread is building a snapshot (a variable parser calling
+    # back). A registration whose build has unwound without its cleanup is
+    # dropped here, so the thread waits like any other.
+    def building?
+      thread = Thread.current
+      return false unless @ready_mutex.synchronize { @building_threads.key?(thread) }
+      return true if build_state_on_stack?(0)
+
+      Thread.handle_interrupt(Object => :never) do
+        @ready_mutex.synchronize { @building_threads.delete(thread) }
+      end
+      false
+    end
+
+    # Whether more than skip build_state frames are on this thread's stack.
+    # Called only outside build_state's blocks, so each frame is one build.
+    def build_state_on_stack?(skip)
+      caller_locations.count { |location| location.path == __FILE__ && location.base_label == "build_state" } > skip
     end
 
     def build_state_maps(data)

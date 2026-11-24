@@ -1926,6 +1926,58 @@ RSpec.describe "create_context_async" do
       expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be >= 0.25
     end
 
+    # The interrupt is queued under a mask from a hook on the first line of
+    # build_state's cleanup, and is delivered before that line runs: the
+    # window before any cleanup there could be masked. The same thread then
+    # waits for readiness, which must block rather than return as a builder,
+    # or builds again, which must leave it unregistered afterwards.
+    [false, true].each do |rebuild|
+      it "does not treat a thread as a builder after an interrupt lands as its build cleanup starts#{rebuild ? " and it builds again" : ""}" do
+        context_config = ContextConfig.create
+        context_config.set_units(units)
+        context = Context.create_async(clock, context_config, data_provider, event_handler, event_logger,
+                                       variable_parser, audience_matcher)
+        source, first = Context.instance_method(:build_state).source_location
+        lines = File.readlines(source)
+        cleanup = (first...lines.size).find { |i| lines[i].strip == "ensure" }
+        expect(cleanup).not_to be_nil, "build_state no longer has an ensure"
+        cleanup_line = cleanup + 2
+        worker = Thread.new do
+          me = Thread.current
+          trace = TracePoint.new(:line) do |tp|
+            next unless tp.path == source && tp.lineno == cleanup_line && Thread.current[:arm]
+
+            Thread.current[:arm] = false
+            Thread.handle_interrupt(Object => :never) { Thread.new { me.raise(RuntimeError, "async") }.join }
+          end
+          trace.enable(target_thread: me)
+          Thread.current[:arm] = true
+          outcome = begin
+            context.set_data(OpenStruct.new(data_future: data, success?: true))
+            :completed
+          rescue RuntimeError => e
+            e.message
+          ensure
+            trace.disable
+          end
+          waited = nil
+          if rebuild
+            context.set_data(OpenStruct.new(data_future: data, success?: true))
+          else
+            started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+            context.wait_until_ready(0.3)
+            waited = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+          end
+          [outcome, waited, context.instance_variable_get(:@building_threads).key?(me)]
+        end
+        outcome, waited, still_registered = Timeout.timeout(5) { worker.value }
+
+        expect(outcome).to eq("async")
+        expect(waited).to be >= 0.25 unless rebuild
+        expect(still_registered).to be false
+      end
+    end
+
     it "finalize still raises a real rejection when recovery lands as its flush starts" do
       refresh_in = Queue.new
       refresh_out = Queue.new
