@@ -1056,10 +1056,10 @@ class Context
 
       # Built from the empty snapshot of a failed context that a refresh has
       # since recovered with the experiment: resolved again against the
-      # recovered data. Untagged only once a replacement is cached, so a
-      # rebuild that raises leaves it ineligible for reuse.
+      # recovered data. The marker stays on the old assignment, so a rebuild
+      # that raises leaves it ineligible for reuse.
       # (The failed snapshot has no experiments, so a read on it never matches.)
-      if !assignment.nil? && !experiment.nil? && !@failed_built.empty? && @failed_built.key?(assignment)
+      if !assignment.nil? && !experiment.nil? && assignment.instance_variable_defined?(:@failed_snapshot)
         assignment = nil
       end
       # Inline guard: only an unexposed no-unit result can be stale, and the
@@ -1185,19 +1185,11 @@ class Context
         return assignment
       end
 
-      replaced = @assignment_cache[experiment_name.to_s]
-      if failed_built || (!@failed_built.empty? && @failed_built.key?(replaced))
-        # Tagged and untagged together with the cache write, so an interrupt
-        # can't leave a failed assignment cached but untagged (reusable after
-        # recovery) or a tag without its entry; the tags never outgrow the cache.
-        Thread.handle_interrupt(Object => :never) do
-          @failed_built.delete(replaced) unless replaced.nil?
-          @failed_built[assignment] = true if failed_built
-          @assignment_cache[experiment_name.to_s] = assignment
-        end
-      else
-        @assignment_cache[experiment_name.to_s] = assignment
-      end
+      # Provenance belongs to the new assignment before the single cache
+      # write. An interrupted replacement leaves the old assignment marked;
+      # a marker on an uncached replacement has no effect on later reads.
+      assignment.instance_variable_set(:@failed_snapshot, true) if failed_built
+      @assignment_cache[experiment_name.to_s] = assignment
       assignment
     end
 
@@ -1444,7 +1436,6 @@ class Context
       @state = State.new(nil, {}, {}, {})
       @achievements = []
       @assignment_cache = {}
-      @failed_built = {}.compare_by_identity
       @holdout_assignments = nil
       @assignment_mutex = Mutex.new
       @exposing = {}.compare_by_identity

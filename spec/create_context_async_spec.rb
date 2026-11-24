@@ -1043,15 +1043,14 @@ RSpec.describe "create_context_async" do
       end
     end
 
-    it "skips the failed-snapshot tag lookup on cached reads of a context that never failed" do
+    it "does not mark assignments from a context that never failed" do
       context_config = ContextConfig.create
       context_config.set_units(units)
       context = Context.create(clock, context_config, OpenStruct.new(data_future: data, success?: true),
                                data_provider, event_handler, event_logger, variable_parser, audience_matcher)
-      tags = context.instance_variable_get(:@failed_built)
       context.peek_treatment("exp_test_ab")
-      expect(tags).not_to receive(:key?)
-      3.times { context.peek_treatment("exp_test_ab") }
+      assignment = context.instance_variable_get(:@assignment_cache)["exp_test_ab"]
+      expect(assignment.instance_variable_defined?(:@failed_snapshot)).to be false
     end
 
     it "keeps a failed-snapshot assignment ineligible for reuse when its rebuild raises" do
@@ -1244,9 +1243,10 @@ RSpec.describe "create_context_async" do
       end
       untagging = Queue.new
       resume = Queue.new
-      tags = context.instance_variable_get(:@failed_built)
-      tags.define_singleton_method(:delete) do |key|
-        result = super(key)
+      cache = context.instance_variable_get(:@assignment_cache)
+      old_assignment = cache["exp_test_ab"]
+      cache.define_singleton_method(:[]=) do |key, value|
+        result = super(key, value)
         if Thread.current[:gate]
           Thread.current[:gate] = false
           untagging << true
@@ -1265,12 +1265,13 @@ RSpec.describe "create_context_async" do
       resume << true
       Timeout.timeout(5) { reader.join }
 
+      expect(old_assignment.instance_variable_defined?(:@failed_snapshot)).to be true
       expect(context.variable_value("banner.size", "default")).to eq("large")
       context.publish
       expect(exposures).to eq([["exp_test_ab", 0, 1], ["exp_test_ab", 1, 1]])
     end
 
-    it "never keeps a tag without its cache entry when an interrupt lands while a failed read is cached" do
+    it "never caches an unmarked failed assignment when an interrupt lands while a failed read is cached" do
       context_config = ContextConfig.create
       context_config.set_units(units)
       context = Context.create_async(clock, context_config, data_provider,
@@ -1278,8 +1279,8 @@ RSpec.describe "create_context_async" do
       context.set_data(OpenStruct.new(exception: failure, success?: false, data_future: nil))
       tagging = Queue.new
       resume = Queue.new
-      tags = context.instance_variable_get(:@failed_built)
-      tags.define_singleton_method(:[]=) do |key, value|
+      cache = context.instance_variable_get(:@assignment_cache)
+      cache.define_singleton_method(:[]=) do |key, value|
         result = super(key, value)
         if Thread.current[:gate]
           Thread.current[:gate] = false
@@ -1300,7 +1301,8 @@ RSpec.describe "create_context_async" do
       Timeout.timeout(5) { reader.join }
 
       cache = context.instance_variable_get(:@assignment_cache)
-      expect(tags.keys).to all(satisfy { |tagged| cache.values.any? { |cached| cached.equal?(tagged) } })
+      expect(cache.values).not_to be_empty
+      expect(cache.values).to all(satisfy { |cached| cached.instance_variable_defined?(:@failed_snapshot) })
     end
 
     # Each gate parks refresh on a line and interrupts it there: just after the
@@ -1380,7 +1382,7 @@ RSpec.describe "create_context_async" do
       end
     end
 
-    it "does not mask an unrelated cache write while a failed-snapshot tag remains" do
+    it "does not mask an unrelated cache write while a failed-snapshot assignment remains" do
       in_refresh = Queue.new
       release = Queue.new
       ready_data = data
@@ -1406,7 +1408,8 @@ RSpec.describe "create_context_async" do
         refresher.join(5) || refresher.kill
       end
       expect(context.failed?).to be false
-      expect(context.instance_variable_get(:@failed_built)).not_to be_empty
+      cached = context.instance_variable_get(:@assignment_cache)["not_found"]
+      expect(cached.instance_variable_defined?(:@failed_snapshot)).to be true
 
       masks = 0
       allow(Thread).to receive(:handle_interrupt).and_wrap_original do |original, *args, &block|
@@ -1793,7 +1796,7 @@ RSpec.describe "create_context_async" do
       expect(context.pending_count).to eq(1)
     end
 
-    it "keeps one failed-snapshot tag per cached assignment" do
+    it "keeps failed-snapshot provenance on the cached assignment only" do
       context_config = ContextConfig.create
       context_config.set_units(units)
       context = Context.create_async(clock, context_config, data_provider,
@@ -1804,7 +1807,10 @@ RSpec.describe "create_context_async" do
         context.peek_treatment("exp_test_ab")
       end
 
-      expect(context.instance_variable_get(:@failed_built).size).to eq(1)
+      cache = context.instance_variable_get(:@assignment_cache)
+      expect(cache.size).to eq(1)
+      expect(cache.values.first.instance_variable_defined?(:@failed_snapshot)).to be true
+      expect(context.instance_variable_defined?(:@failed_built)).to be false
     end
 
     it "lets a timeout interrupt a slow variable parser" do
