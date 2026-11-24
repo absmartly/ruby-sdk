@@ -577,7 +577,7 @@ class Context
           next if sealed == :retry
 
           logged = log_event(event_type, nil)
-          return event_type == ContextEventLogger::EVENT_TYPE::CLOSE ? logged : nil
+          return close ? logged : nil
         end
         nil
       ensure
@@ -592,7 +592,7 @@ class Context
     # sealing: this flush is a seal's own pass, so it neither starts another
     # seal nor claims a deferred one. Any other publish (on any thread) may.
     def flush(sealing: false, drop_rejected: false)
-      dropped, failure = drop_if_failed(sealing)
+      dropped, failure = @failed ? @ready_mutex.synchronize { drop_if_failed(sealing) } : [false, nil]
       return failure if dropped
 
       # Serialize publishes so a queued event is part of at most one in-flight
@@ -609,7 +609,7 @@ class Context
           # Failure installation and recovery both take this lock. Keep the
           # decision and snapshot together, but never hold it across publishing.
           dropped, failure = @ready_mutex.synchronize do
-            failed_result = drop_if_failed(sealing, ready_locked: true)
+            failed_result = drop_if_failed(sealing)
             unless failed_result.first
               @queue_mutex.synchronize do
                 exposures = @exposures.dup
@@ -676,25 +676,26 @@ class Context
         end
 
         if claimed
-          run_deferred_seal(claimed)
-          claimed = nil
+          claimed = nil if run_deferred_seal(claimed)
         end
         result
       ensure
-        # A deferred seal claimed by this publish but not started (an interrupt
-        # landed after the claim) stays pending, as one that didn't finish does.
+        # A deferred seal claimed by this publish that did not finish stays
+        # pending for the next successful publish: one not started (an
+        # interrupt landed after the claim), one that left events queued, or
+        # one whose own publish was rejected, raised or was interrupted (a
+        # Timeout or Thread#kill). Any error still propagates.
         restore_close_pending(claimed) if claimed
       end
     end
 
-    # A failed context drops its queued events. Rechecked under the readiness
+    # A failed context drops its queued events. Called under the readiness
     # lock, which a recovering refresh also holds while it clears @failed, so
     # goals tracked after recovery are never dropped by a publish that saw the
     # context failed. publish gets the load error, as in v1.3.0; a seal's own
     # pass gets nil, since dropping them is not a publish failure.
-    def drop_if_failed(sealing, ready_locked: false)
+    def drop_if_failed(sealing)
       return [false, nil] unless @failed
-      return @ready_mutex.synchronize { drop_if_failed(sealing, ready_locked: true) } unless ready_locked
 
       @queue_mutex.synchronize do
         @exposures = []
@@ -724,20 +725,12 @@ class Context
       end
     end
 
+    # True once the seal finished; false when events were still queued.
     def run_deferred_seal(claimed)
-      finished = false
-      begin
-        seal(claimed.first)
-        finished = true
-      rescue EventsQueuedWhileClosing
-        nil
-      ensure
-        # A deferred seal that did not finish (events still queued, its own
-        # publish rejected or raised, or an interrupt such as Timeout or
-        # Thread#kill unwound it) stays pending for the next successful
-        # publish. Any other error propagates.
-        restore_close_pending(claimed) unless finished
-      end
+      seal(claimed.first)
+      true
+    rescue EventsQueuedWhileClosing
+      false
     end
 
     # Unless the context sealed or a newer request was made meanwhile (even
@@ -863,6 +856,14 @@ class Context
       matcher.instance_of?(AudienceMatcher) ? evaluator_attributes : attributes_map
     end
 
+    # A built-in audience matcher is also the rule matcher, and the evaluator
+    # never changes its input, so the map built for the rules is reused.
+    def audience_attributes(rule_attrs)
+      return rule_attrs if !rule_attrs.nil? && @audience_matcher.instance_of?(AudienceMatcher)
+
+      matcher_attributes(@audience_matcher)
+    end
+
     # A split rule or a holdout resolved while its unit was missing gave the
     # no-unit result; once the unit is set, unexposed ones are rebuilt. Exposed ones
     # stay, so the user never switches variant or gets a second exposure.
@@ -872,10 +873,10 @@ class Context
     # finds it stale and resolves it again.
     def invalidate_assignments_missing_unit(unit_type)
       @assignment_mutex.synchronize do
-        exposing = @queue_mutex.synchronize { @exposing.keys }
+        exposing = @queue_mutex.synchronize { @exposing.dup }
         @assignment_cache.delete_if do |_name, assignment|
           assignment.unit_type.to_s == unit_type && !assignment.exposed && missing_unit?(assignment) &&
-            exposing.none? { |claimed| claimed.equal?(assignment) }
+            !exposing.key?(assignment)
         end
       end
     end
@@ -975,11 +976,13 @@ class Context
       return false if key_changed && key.empty? && assignment.rule_override
 
       if @attrs_seq > (assignment.attrs_seq || 0) || key_changed
+        rule_attrs = nil
         unless key.empty?
           # Exposed, or being exposed right now (its clock may set the unit):
           # the no-unit variant stays, so a unit arriving can't switch it.
           pinned_missing = assignment.rule_missing_unit && exposed_or_exposing?(assignment)
-          rule = resolve_rule(entry, matcher_attributes(rule_matcher), pinned_missing)
+          rule_attrs = matcher_attributes(rule_matcher)
+          rule = resolve_rule(entry, rule_attrs, pinned_missing)
           return false if rule&.first != assignment.rule_variant
 
           assignment.rule_missing_unit = rule ? rule.last : false
@@ -989,7 +992,7 @@ class Context
         # evaluated here either; only a rule can take it out of suppression.
         if !assignment.rule_override && !assignment.suppressed &&
            !experiment.audience.nil? && experiment.audience.size > 0
-          match = @audience_matcher.evaluate(experiment.audience, matcher_attributes(@audience_matcher))
+          match = @audience_matcher.evaluate(experiment.audience, audience_attributes(rule_attrs))
           # An indeterminate result (no filter, bad JSON) keeps the cached flag.
           new_audience_mismatch = match.nil? ? assignment.audience_mismatch : !match.result
 
@@ -1123,7 +1126,8 @@ class Context
         assignment.traffic_split = data.traffic_split
         assignment.full_on_variant = data.full_on_variant
         assignment.rule_key = experiment.rule_key
-        rule = assignment.rule_key.empty? ? nil : resolve_rule(experiment, matcher_attributes(rule_matcher), false)
+        rule_attrs = assignment.rule_key.empty? ? nil : matcher_attributes(rule_matcher)
+        rule = rule_attrs.nil? ? nil : resolve_rule(experiment, rule_attrs, false)
         assignment.rule_variant = rule&.first
         assignment.rule_missing_unit = rule ? rule.last : false
 
@@ -1136,7 +1140,7 @@ class Context
           assignment.variant = 0
         else
           if !data.audience.nil? && data.audience.size > 0
-            match = @audience_matcher.evaluate(data.audience, matcher_attributes(@audience_matcher))
+            match = @audience_matcher.evaluate(data.audience, audience_attributes(rule_attrs))
             assignment.audience_mismatch = true if match && !match.result
           end
 

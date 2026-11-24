@@ -1093,8 +1093,8 @@ RSpec.describe Context do
       holder[:context].track("goal1", nil)
 
       source = Context.instance_method(:flush).source_location.first
-      handoff = File.readlines(source).index { |line| line.strip == "run_deferred_seal(claimed)" }
-      expect(handoff).not_to be_nil, "flush no longer has a run_deferred_seal(claimed) line to park on"
+      handoff = File.readlines(source).index { |line| line.strip == "claimed = nil if run_deferred_seal(claimed)" }
+      expect(handoff).not_to be_nil, "flush no longer has a run_deferred_seal(claimed) handoff line to park on"
       handoff += 1
       parked = Queue.new
       trace = TracePoint.new(:line) do |tp|
@@ -2541,12 +2541,16 @@ RSpec.describe Context do
     expect(context.custom_field_value("exp_test_no_custom_fields", "languages")).to be_nil
   end
 
-  it "reads a custom field with a missing or null type as untyped text" do
+  def untyped_custom_fields_payload
     raw = JSON.parse(json)
     fields = raw["experiments"].find { |e| e["name"] == "exp_test_ab" }["customFieldValues"]
     fields << { "name" => "untyped", "value" => "x" } << { "name" => "null_type", "value" => "y", "type" => nil }
     payload = JSON.generate(raw)
-    context = create_context(client_mock(descr.deserialize(payload, 0, payload.length)).context_data)
+    descr.deserialize(payload, 0, payload.length)
+  end
+
+  it "reads a custom field with a missing or null type as untyped text" do
+    context = create_context(client_mock(untyped_custom_fields_payload).context_data)
 
     expect(context.ready?).to be true
     expect(context.failed?).to be false
@@ -2557,11 +2561,7 @@ RSpec.describe Context do
   end
 
   it "reads a custom field with a missing or null type as untyped text after a refresh" do
-    raw = JSON.parse(json)
-    fields = raw["experiments"].find { |e| e["name"] == "exp_test_ab" }["customFieldValues"]
-    fields << { "name" => "untyped", "value" => "x" } << { "name" => "null_type", "value" => "y", "type" => nil }
-    payload = JSON.generate(raw)
-    untyped_provider = DefaultContextDataProvider.new(client_mock(descr.deserialize(payload, 0, payload.length)))
+    untyped_provider = DefaultContextDataProvider.new(client_mock(untyped_custom_fields_payload))
     context = create_context(data_future_ready, dt_provider: untyped_provider)
 
     expect { context.refresh }.not_to raise_error
