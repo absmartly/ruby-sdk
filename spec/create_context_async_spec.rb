@@ -1050,8 +1050,8 @@ RSpec.describe "create_context_async" do
                                data_provider, event_handler, event_logger, variable_parser, audience_matcher)
       context.peek_treatment("exp_test_ab")
       assignment = context.instance_variable_get(:@assignment_cache)["exp_test_ab"]
-      expect(assignment.instance_variable_defined?(:@failed_snapshot)).to be false
-      expect(assignment).not_to receive(:instance_variable_defined?)
+      expect(assignment.instance_variable_get(:@failed_snapshot)).to be false
+      expect(assignment).not_to receive(:instance_variable_get)
       3.times { context.peek_treatment("exp_test_ab") }
     end
 
@@ -1267,7 +1267,7 @@ RSpec.describe "create_context_async" do
       resume << true
       Timeout.timeout(5) { reader.join }
 
-      expect(old_assignment.instance_variable_defined?(:@failed_snapshot)).to be true
+      expect(old_assignment.instance_variable_get(:@failed_snapshot)).to be true
       expect(context.variable_value("banner.size", "default")).to eq("large")
       context.publish
       expect(exposures).to eq([["exp_test_ab", 0, 1], ["exp_test_ab", 1, 1]])
@@ -1304,7 +1304,7 @@ RSpec.describe "create_context_async" do
 
       cache = context.instance_variable_get(:@assignment_cache)
       expect(cache.values).not_to be_empty
-      expect(cache.values).to all(satisfy { |cached| cached.instance_variable_defined?(:@failed_snapshot) })
+      expect(cache.values).to all(satisfy { |cached| cached.instance_variable_get(:@failed_snapshot) })
     end
 
     # Each gate parks refresh on a line and interrupts it there: just after the
@@ -1411,7 +1411,7 @@ RSpec.describe "create_context_async" do
       end
       expect(context.failed?).to be false
       cached = context.instance_variable_get(:@assignment_cache)["not_found"]
-      expect(cached.instance_variable_defined?(:@failed_snapshot)).to be true
+      expect(cached.instance_variable_get(:@failed_snapshot)).to be true
 
       masks = 0
       allow(Thread).to receive(:handle_interrupt).and_wrap_original do |original, *args, &block|
@@ -1811,7 +1811,7 @@ RSpec.describe "create_context_async" do
 
       cache = context.instance_variable_get(:@assignment_cache)
       expect(cache.size).to eq(1)
-      expect(cache.values.first.instance_variable_defined?(:@failed_snapshot)).to be true
+      expect(cache.values.first.instance_variable_get(:@failed_snapshot)).to be true
       expect(context.instance_variable_defined?(:@failed_built)).to be false
     end
 

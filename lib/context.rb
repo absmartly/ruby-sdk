@@ -1064,7 +1064,7 @@ class Context
       # that raises leaves it ineligible for reuse.
       # (The failed snapshot has no experiments, so a read on it never matches.)
       if @failed_marked && !assignment.nil? && !experiment.nil? &&
-         assignment.instance_variable_defined?(:@failed_snapshot)
+         assignment.instance_variable_get(:@failed_snapshot)
         assignment = nil
       end
       # Inline guard: only an unexposed no-unit result can be stale, and the
@@ -1555,6 +1555,9 @@ class Assignment
     @attrs_seq = 0
     @holdouts = nil
     @matched_holdouts = nil
+    # Private: set by the context on an assignment built from a failed load's
+    # empty snapshot. Initialized so every assignment keeps one layout.
+    @failed_snapshot = false
   end
 end
 
