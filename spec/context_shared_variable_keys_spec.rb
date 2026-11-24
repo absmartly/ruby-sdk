@@ -177,6 +177,15 @@ module ContextSharedVariableKeysSpec
       expect(context.pending_count).to eq(1)
     end
 
+    it "does not call the holdout path for candidates without holdouts or already exposed" do
+      context = create_context([strict_mismatch(1, "exp_low"), experiment(2, "exp_high", holdoutIds: [11])],
+                               holdouts: [holdout(11, "holdout_a", NOT_HOLDING_OUT)])
+      context.variable_value("color", "default")
+
+      expect(context).not_to receive(:queue_holdout_exposures)
+      3.times { context.variable_value("color", "default") }
+    end
+
     it "queues the winner once across repeated reads" do
       context = create_context([strict_mismatch(1, "exp_low"), experiment(2, "exp_high")])
 
