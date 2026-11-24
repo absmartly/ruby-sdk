@@ -573,6 +573,21 @@ RSpec.describe Context do
       context.set_attribute("age", 10)
       expect(context.peek_treatment("exp_test_ab")).to eq(0)
     end
+
+    it "evaluates an attribute name that is neither a String nor a Symbol by its text" do
+      name = Object.new
+      def name.to_s
+        "age"
+      end
+      context = strict_context
+      context.set_attribute(name, 25)
+      expect(context.peek_treatment("exp_test_ab")).not_to eq(0)
+
+      context = strict_context
+      context.set_attribute("age", 25)
+      context.set_attribute(name, 10)
+      expect(context.peek_treatment("exp_test_ab")).to eq(0)
+    end
   end
 
   it "passes both String and Symbol user keys to an AudienceMatcher subclass, as in v1.3.0" do
