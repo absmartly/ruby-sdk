@@ -442,38 +442,42 @@ class Context
       claimed = false
       begin
         loop do
-          waiting = false
-          evicted = false
+          status = nil
           # Waiting for the assignment lock stays interruptible; only the claim
           # bookkeeping under it is masked.
           with_assignment_lock_if(experiment_name) do
             Thread.handle_interrupt(Object => :never) do
               @queue_mutex.synchronize do
                 check_not_closed?
-                waiting = @exposing.key?(assignment) && @exposing[assignment] != Thread.current
-                unless waiting || assignment.exposed || @exposing.key?(assignment)
+                owner = @exposing[assignment]
+                status =
+                  if owner
+                    # Another thread's exposure is in flight; this thread's own
+                    # (a reentrant read from its clock) uses the outer one.
+                    owner.equal?(Thread.current) ? :reentered : :waiting
+                  elsif assignment.exposed
+                    :exposed
                   # On the SDK's read paths (experiment_name given), a no-unit
                   # split assignment whose unit has since been set is stale too
                   # (a failed exposure left it cached): resolved again. A
                   # direct queue_exposure call queues what it is given.
-                  if experiment_name.nil? ||
-                     (@assignment_cache[experiment_name.to_s].equal?(assignment) && !unit_now_set?(assignment))
+                  elsif experiment_name.nil? ||
+                        (@assignment_cache[experiment_name.to_s].equal?(assignment) && !unit_now_set?(assignment))
                     @exposing[assignment] = Thread.current
                     claimed = true
+                    :claimed
                   else
-                    evicted = true
+                    :evicted
                   end
-                end
               end
             end
           end
-          return :evicted if evicted
-          break unless waiting
+          return :evicted if status == :evicted
+          break unless status == :waiting
 
           @queue_mutex.synchronize do
-            if @exposing.key?(assignment) && @exposing[assignment] != Thread.current
-              @exposure_condvar.wait(@queue_mutex)
-            end
+            owner = @exposing[assignment]
+            @exposure_condvar.wait(@queue_mutex) if owner && !owner.equal?(Thread.current)
           end
         end
         return unless claimed
