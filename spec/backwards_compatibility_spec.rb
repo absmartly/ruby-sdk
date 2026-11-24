@@ -169,7 +169,7 @@ RSpec.describe "Backwards Compatibility" do
 
   it "does not load ostruct, which is not a default gem from Ruby 3.5" do
     lib = File.expand_path("../lib", __dir__)
-    expect(Dir[File.join(lib, "**/*.rb")].grep_v(/_spec/).select { |f| File.read(f).match?(/require ["']ostruct["']|OpenStruct/) })
+    expect(Dir[File.join(lib, "**/*.rb")].grep_v(/_spec/).select { |f| File.read(f, encoding: "UTF-8").match?(/require ["']ostruct["']|OpenStruct/) })
       .to be_empty
   end
 

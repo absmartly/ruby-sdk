@@ -675,61 +675,39 @@ RSpec.describe "Context assignment rules" do
       expect(published_exposures(context).map { |e| [e.name, e.variant] }).to eq([["exp_test_abc", 0]])
     end
 
-    %i[evicted logged].each do |returned|
-      it "serves and exposes the same when the exposure logger returns #{returned.inspect}" do
-        holder = { calls: 0 }
-        logger = Class.new(ContextEventLogger) do
-          define_method(:handle_event) do |event, _data|
-            next unless event == ContextEventLogger::EVENT_TYPE::EXPOSURE
+    # The first exposure's logger sets an override and returns a value that
+    # looks like a claim status; neither changes what that read served.
+    [
+      ["serves and exposes the same", ->(context) { context.variable_value("button.color", "default") }, "red"],
+      ["a first treatment serves and exposes the same", ->(context) { context.treatment("exp_test_abc") }, 2]
+    ].each do |label, first_read, served|
+      %i[evicted logged].each do |returned|
+        it "#{label} when the exposure logger returns #{returned.inspect}" do
+          holder = { calls: 0 }
+          logger = Class.new(ContextEventLogger) do
+            define_method(:handle_event) do |event, _data|
+              next unless event == ContextEventLogger::EVENT_TYPE::EXPOSURE
 
-            holder[:calls] += 1
-            next unless holder[:calls] == 1
+              holder[:calls] += 1
+              next unless holder[:calls] == 1
 
-            holder[:context].set_override("exp_test_abc", 0)
-            returned
-          end
-        end.new
-        config = ContextConfig.create
-        config.set_units(session_id: session_id)
-        config.set_attributes(country: "US")
-        context = Context.create(clock, config, OpenStruct.new(data_future: context_data(nil), success?: true),
-                                 data_provider, event_handler, logger, variable_parser, audience_matcher,
-                                 application: "website", environment: "production")
-        holder[:context] = context
+              holder[:context].set_override("exp_test_abc", 0)
+              returned
+            end
+          end.new
+          config = ContextConfig.create
+          config.set_units(session_id: session_id)
+          config.set_attributes(country: "US")
+          context = Context.create(clock, config, OpenStruct.new(data_future: context_data(nil), success?: true),
+                                   data_provider, event_handler, logger, variable_parser, audience_matcher,
+                                   application: "website", environment: "production")
+          holder[:context] = context
 
-        expect(context.variable_value("button.color", "default")).to eq("red")
-        expect(context.treatment("exp_test_abc")).to eq(0)
-        expect(published_exposures(context).map { |e| [e.name, e.variant] })
-          .to eq([["exp_test_abc", 2], ["exp_test_abc", 0]])
-      end
-    end
-
-    %i[evicted logged].each do |returned|
-      it "a first treatment serves and exposes the same when the exposure logger returns #{returned.inspect}" do
-        holder = { calls: 0 }
-        logger = Class.new(ContextEventLogger) do
-          define_method(:handle_event) do |event, _data|
-            next unless event == ContextEventLogger::EVENT_TYPE::EXPOSURE
-
-            holder[:calls] += 1
-            next unless holder[:calls] == 1
-
-            holder[:context].set_override("exp_test_abc", 0)
-            returned
-          end
-        end.new
-        config = ContextConfig.create
-        config.set_units(session_id: session_id)
-        config.set_attributes(country: "US")
-        context = Context.create(clock, config, OpenStruct.new(data_future: context_data(nil), success?: true),
-                                 data_provider, event_handler, logger, variable_parser, audience_matcher,
-                                 application: "website", environment: "production")
-        holder[:context] = context
-
-        expect(context.treatment("exp_test_abc")).to eq(2)
-        expect(context.treatment("exp_test_abc")).to eq(0)
-        expect(published_exposures(context).map { |e| [e.name, e.variant] })
-          .to eq([["exp_test_abc", 2], ["exp_test_abc", 0]])
+          expect(first_read.call(context)).to eq(served)
+          expect(context.treatment("exp_test_abc")).to eq(0)
+          expect(published_exposures(context).map { |e| [e.name, e.variant] })
+            .to eq([["exp_test_abc", 2], ["exp_test_abc", 0]])
+        end
       end
     end
 
@@ -908,9 +886,48 @@ RSpec.describe "Context assignment rules" do
       expect(context.treatment("exp_test_abc")).to eq(1)
       expect(published_exposures(context).first.rule_override).to eq(true)
     end
+
+    it "passes the caller's attribute keys to the custom matcher when rules use the default engine" do
+      seen = []
+      matcher = LegacyAudienceMatcher.new
+      matcher.define_singleton_method(:evaluate) do |audience, attributes|
+        seen << attributes.keys
+        super(audience, attributes)
+      end
+      audience = JSON.generate(filter: [{ eq: [{ var: "country" }, { value: "US" }] }])
+      data = context_data([assign_rule(1)], audience: audience, audienceStrict: true)
+      context = create_with(matcher, data, attributes: { country: "GB" })
+
+      expect(context.treatment("exp_test_abc")).to eq(0)
+      context.set_attribute(:age, 30)
+      expect(context.treatment("exp_test_abc")).to eq(0)
+      expect(seen.map { |keys| keys.grep(Symbol) }).to eq([[:country], [:country, :age]])
+    end
   end
 
   describe "cached reads" do
+    it "builds one attribute map for the rules and the audience of each resolution and revalidation" do
+      audience = JSON.generate(filter: [{ eq: [{ var: "country" }, { value: "US" }] }])
+      context = create_context(context_data([assign_rule(1)], audience: audience), attributes: { country: "GB" })
+      builds = 0
+      allow(context).to receive(:evaluator_attributes).and_wrap_original do |original|
+        builds += 1
+        original.call
+      end
+      audience_inputs = []
+      allow(audience_matcher).to receive(:evaluate).and_wrap_original do |original, filter, attributes|
+        audience_inputs << attributes
+        original.call(filter, attributes)
+      end
+
+      expect(context.treatment("exp_test_abc")).to eq(2)
+      expect(builds).to eq(1)
+      context.set_attribute("age", 30)
+      expect(context.treatment("exp_test_abc")).to eq(2)
+      expect(builds).to eq(2)
+      expect(audience_inputs.map { |attributes| attributes["age"] }).to eq([nil, 30])
+    end
+
     it "parses rules once at install, not on resolution or attribute revalidation" do
       parses = 0
       allow(audience_matcher).to receive(:parse_rules).and_wrap_original do |original, *args|

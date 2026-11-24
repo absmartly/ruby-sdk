@@ -164,6 +164,7 @@ RSpec.describe "Local server integration (real HTTP)" do
     end
 
     expect(raised).to be_a(StandardError)
+    expect(context.closed?).to be(false)
     expect(context.finalized?).to be(false)
     expect(context.finalizing?).to be(false)
     expect(context.pending_count).to eq(1)
@@ -207,34 +208,5 @@ RSpec.describe "Local server integration (real HTTP)" do
     puts = server.requests.select { |r| r[:method] == "PUT" }
     expect(puts.size).to eq(1)
     expect(JSON.parse(puts.first[:body])["goals"].map { |g| g["name"] }).to eq(["payment"])
-  end
-
-  it "finalize raises a StandardError-catchable publish failure on a real 503" do
-    server.put_status = 503
-
-    sdk = ABSmartly.new(
-      server.base_url,
-      api_key: "test-api-key",
-      application: "website",
-      environment: "dev"
-    )
-
-    context_config = ContextConfig.create
-    context_config.set_unit("user_id", "123456789")
-
-    context = sdk.create_context(context_config)
-    context.wait_until_ready
-    context.track("payment", { value: 99 })
-
-    raised = nil
-    begin
-      context.finalize
-    rescue StandardError => e
-      raised = e
-    end
-
-    expect(raised).to be_a(StandardError)
-    expect(context.closed?).to be(false)
-    expect(context.pending_count).to eq(1)
   end
 end
