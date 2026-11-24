@@ -371,6 +371,30 @@ RSpec.describe "create_context_async" do
       expect(context.ready?).to be true
     end
 
+    it "lets a variable parser call wait_until_ready from a fiber while the initial async data is installed" do
+      holder = {}
+      calls = []
+      parser = Object.new
+      parser.define_singleton_method(:parse) do |context, _experiment, _variant, config|
+        calls << Fiber.new { context.wait_until_ready.equal?(holder[:context]) }.resume
+        JSON.parse(config, symbolize_names: true)
+      rescue JSON::ParserError
+        nil
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, data_provider,
+                                     event_handler, event_logger, parser, audience_matcher)
+      holder[:context] = context
+
+      expect { Timeout.timeout(5) { context.set_data(OpenStruct.new(data_future: data, success?: true)) } }
+        .not_to raise_error
+      expect(calls).not_to be_empty
+      expect(calls).to all(be true)
+      expect(context.ready?).to be true
+      expect(context.instance_variable_get(:@building_threads)).to be_empty
+    end
+
     it "does not hold the readiness lock while the variable parser runs" do
       in_parser = Queue.new
       release = Queue.new

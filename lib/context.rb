@@ -1325,11 +1325,13 @@ class Context
       begin
         Thread.handle_interrupt(Object => :never) do
           @ready_mutex.synchronize do
-            count = @building_threads[thread]
-            # A count left by an interrupted cleanup, with no build of this
-            # thread still running further up its stack, is dropped first.
-            count = nil unless nested
-            @building_threads[thread] = (count || 0) + 1
+            # [count, fiber that registered first]. A count left by an
+            # interrupted cleanup in this fiber, with no build of it still
+            # running further up the stack, is dropped first.
+            entry = @building_threads[thread]
+            # (The stack is checked above, before entering these blocks.)
+            entry = nil if entry && (entry[1].equal?(Fiber.current) ? !nested : !entry[1].alive?)
+            @building_threads[thread] = entry ? [entry[0] + 1, entry[1]] : [1, Fiber.current]
           end
           registered = true
         end
@@ -1338,8 +1340,12 @@ class Context
         if registered
           Thread.handle_interrupt(Object => :never) do
             @ready_mutex.synchronize do
-              @building_threads[thread] -= 1
-              @building_threads.delete(thread) if @building_threads[thread].zero?
+              entry = @building_threads[thread]
+              if entry && entry[0] > 1
+                @building_threads[thread] = [entry[0] - 1, entry[1]]
+              elsif entry
+                @building_threads.delete(thread)
+              end
             end
           end
         end
@@ -1351,13 +1357,24 @@ class Context
     # dropped here, so the thread waits like any other.
     def building?
       thread = Thread.current
-      return false unless @ready_mutex.synchronize { @building_threads.key?(thread) }
-      return true if build_state_on_stack?(0)
+      entry = @ready_mutex.synchronize { @building_threads[thread] }
+      return false if entry.nil?
+      return true unless stale_build_entry?(entry)
 
       Thread.handle_interrupt(Object => :never) do
-        @ready_mutex.synchronize { @building_threads.delete(thread) }
+        @ready_mutex.synchronize { @building_threads.delete(thread) if @building_threads[thread].equal?(entry) }
       end
       false
+    end
+
+    # A backtrace covers only the current fiber, so the stack is checked only
+    # from the fiber that registered; a parser that waits from a nested fiber
+    # still counts as building. A registering fiber that has ended is stale.
+    def stale_build_entry?(entry)
+      fiber = entry[1]
+      return !fiber.alive? unless fiber.equal?(Fiber.current)
+
+      !build_state_on_stack?(0)
     end
 
     # Whether more than skip build_state frames are on this thread's stack.
