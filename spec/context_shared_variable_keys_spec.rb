@@ -291,6 +291,18 @@ module ContextSharedVariableKeysSpec
         expect(exposures_of(context)).to eq([assigned("holdout_a"), assigned("holdout_b"), assigned("exp_high")])
       end
 
+      it "stamps a loser's holdout exposure with the read's clock" do
+        ticks = (1000..).step(1000).each
+        allow(clock).to receive(:to_i) { ticks.next }
+        context = create_context([strict_mismatch(1, "exp_low").merge(holdoutIds: [11]), experiment(2, "exp_high")],
+                                 holdouts: [holdout(11, "holdout_a", NOT_HOLDING_OUT)])
+
+        context.variable_value("color", "default")
+        context.publish
+        expect(published.flat_map(&:exposures).map { |e| [e.name, e.exposed_at] }).to eq([["holdout_a", 2000],
+                                                                                          ["exp_high", 3000]])
+      end
+
       it "reads the clock only for the first exposures, not on warm reads past a covered loser" do
         context = create_context([strict_mismatch(1, "exp_low").merge(holdoutIds: [11]), experiment(2, "exp_high")],
                                  holdouts: [holdout(11, "holdout_a", NOT_HOLDING_OUT)])

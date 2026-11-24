@@ -271,8 +271,9 @@ class Context
 
   alias peek peek_treatment
 
-  # Maps each variable key to the name of the experiment whose value
-  # variable_value returns for it, as in v1.3.0.
+  # Maps each variable key to one experiment name, as in v1.3.0: the
+  # lowest-id experiment defining it, which is not necessarily the one whose
+  # value variable_value returns (see variable_keys_list).
   def variable_keys
     check_ready?(true)
 
@@ -1220,17 +1221,24 @@ class Context
     end
 
     def variable_assignment(key, expose)
+      candidates = @state.index_variables[key]
+      return nil if candidates.nil?
+
       suppressed_fallback = nil
-      (@state.index_variables[key] || []).each do |experiment|
+      i = 0
+      # An index loop, not each: no block frame per candidate on the read path.
+      while i < candidates.length
         # Resolved from the state current under the assignment lock, so a read
         # that a refresh overtook can't reinstall an old assignment.
-        assignment = assignment(experiment.data.name)
+        assignment = assignment(candidates[i].data.name)
         # As in java-sdk, each visited candidate's holdouts, the winner's
         # included, are queued before the winner's own exposure.
-        queue_holdout_exposures(assignment) if expose
+        # Inline guard: most candidates have no holdouts.
+        queue_holdout_exposures(assignment) if expose && !assignment.holdout_assignments.nil? && !assignment.exposed
         return assignment if assignment.assigned || assignment.overridden || assignment.rule_override
 
         suppressed_fallback ||= assignment if assignment.suppressed
+        i += 1
       end
       suppressed_fallback
     end
