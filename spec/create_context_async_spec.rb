@@ -1043,7 +1043,7 @@ RSpec.describe "create_context_async" do
       end
     end
 
-    it "does not mark assignments from a context that never failed" do
+    it "does not mark or check assignments on cached reads of a context that never failed" do
       context_config = ContextConfig.create
       context_config.set_units(units)
       context = Context.create(clock, context_config, OpenStruct.new(data_future: data, success?: true),
@@ -1051,6 +1051,8 @@ RSpec.describe "create_context_async" do
       context.peek_treatment("exp_test_ab")
       assignment = context.instance_variable_get(:@assignment_cache)["exp_test_ab"]
       expect(assignment.instance_variable_defined?(:@failed_snapshot)).to be false
+      expect(assignment).not_to receive(:instance_variable_defined?)
+      3.times { context.peek_treatment("exp_test_ab") }
     end
 
     it "keeps a failed-snapshot assignment ineligible for reuse when its rebuild raises" do

@@ -1059,7 +1059,8 @@ class Context
       # recovered data. The marker stays on the old assignment, so a rebuild
       # that raises leaves it ineligible for reuse.
       # (The failed snapshot has no experiments, so a read on it never matches.)
-      if !assignment.nil? && !experiment.nil? && assignment.instance_variable_defined?(:@failed_snapshot)
+      if @failed_marked && !assignment.nil? && !experiment.nil? &&
+         assignment.instance_variable_defined?(:@failed_snapshot)
         assignment = nil
       end
       # Inline guard: only an unexposed no-unit result can be stale, and the
@@ -1188,7 +1189,10 @@ class Context
       # Provenance belongs to the new assignment before the single cache
       # write. An interrupted replacement leaves the old assignment marked;
       # a marker on an uncached replacement has no effect on later reads.
-      assignment.instance_variable_set(:@failed_snapshot, true) if failed_built
+      if failed_built
+        assignment.instance_variable_set(:@failed_snapshot, true)
+        @failed_marked = true
+      end
       @assignment_cache[experiment_name.to_s] = assignment
       assignment
     end
@@ -1438,6 +1442,7 @@ class Context
       @assignment_cache = {}
       @holdout_assignments = nil
       @assignment_mutex = Mutex.new
+      @failed_marked = false
       @exposing = {}.compare_by_identity
       @exposure_condvar = ConditionVariable.new
       @assignments = {}
