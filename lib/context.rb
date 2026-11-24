@@ -1237,8 +1237,11 @@ class Context
         assignment = assignment(candidates[i].data.name)
         # As in java-sdk, each visited candidate's holdouts, the winner's
         # included, are queued before the winner's own exposure.
-        # Inline guard: most candidates have no holdouts.
-        queue_holdout_exposures(assignment) if expose && !assignment.holdout_assignments.nil? && !assignment.exposed
+        # Inline guard: most candidates have no holdouts, and an exposed one
+        # has exposed them, unless it is an override (see below).
+        if expose && !assignment.holdout_assignments.nil? && (!assignment.exposed || assignment.overridden)
+          queue_holdout_exposures(assignment)
+        end
         return assignment if assignment.assigned || assignment.overridden || assignment.rule_override
 
         suppressed_fallback ||= assignment if assignment.suppressed
@@ -1247,12 +1250,35 @@ class Context
       suppressed_fallback
     end
 
+    # Replaces the arms of an override still missing them, once its unit is
+    # set; the holdout arm cache is written under the assignment lock.
+    def resolve_late_holdout_arms(assignment)
+      arms = assignment.holdout_assignments
+      return unless unit_now_set?(assignment) && arms.include?(nil)
+
+      @assignment_mutex.synchronize do
+        arms = assignment.holdout_assignments
+        holdouts = assignment.matched_holdouts || assignment.holdouts
+        if arms.include?(nil)
+          assignment.holdout_assignments = arms.each_with_index.map do |arm, i|
+            arm || holdout_assignment(holdouts[i], assignment.unit_type)
+          end
+        end
+      end
+    end
+
     # Exposes the holdouts covering a visited candidate, from the arms pinned
     # in its assignment, without exposing the candidate itself.
     def queue_holdout_exposures(assignment)
+      return if assignment.exposed && !assignment.overridden
+
+      # As java-sdk resolves an override's holdouts live on each visit, an
+      # arm an override could not get before its unit was set is resolved
+      # once the unit is, so its holdout is exposed even after the override.
+      resolve_late_holdout_arms(assignment) if assignment.overridden
       holdout_assignments = assignment.holdout_assignments
       # Checked again under the lock; this keeps warm reads off the clock and lock.
-      return if assignment.exposed || holdout_assignments.nil? ||
+      return if holdout_assignments.nil? ||
                 holdout_assignments.all? { |holdout_assignment| holdout_assignment.nil? || holdout_assignment.exposed }
 
       exposed_at = @clock.to_i

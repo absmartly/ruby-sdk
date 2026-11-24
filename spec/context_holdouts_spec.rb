@@ -1297,6 +1297,43 @@ module ContextHoldoutsSpec
                                              holdout_exposure(11, "holdout_override_late", 1, unit: "user_id")])
       end
 
+      # As java-sdk: an override has no pinned holdout arms; each non-peek
+      # variable read resolves them live, so the first one after set_unit
+      # exposes the holdout. treatment does not, once the override is exposed.
+      it "exposes an exposed override's holdout on the next variable read after its unit arrives" do
+        exp = with_variables(experiment(1, "exp_override_var", unit_type: "user_id", holdout_ids: [11]), "my_var")
+        context = create_context(data_of([exp], [holdout(11, "holdout_override_var", HOLDOUT_B, unit_type: "user_id")]),
+                                 units: { UNIT_TYPE => UID }, overrides: { "exp_override_var" => 1 })
+
+        expect(context.variable_value("my_var", "default")).to eq("treatment")
+        own = own_exposure(1, "exp_override_var", 1, unit: "user_id", assigned: false, overridden: true)
+        expect(exposures_of(context)).to eq([own])
+
+        context.set_unit("user_id", UID)
+        expect(context.treatment("exp_override_var")).to eq(1)
+        expect(context.peek_variable_value("my_var", "default")).to eq("treatment")
+        expect(context.pending_count).to eq(0)
+
+        2.times { expect(context.variable_value("my_var", "default")).to eq("treatment") }
+        expect(exposures_of(context)).to eq([own, holdout_exposure(11, "holdout_override_var", 1, unit: "user_id")])
+      end
+
+      it "exposes a treatment-exposed override's holdout on the next variable read after its unit arrives" do
+        exp = with_variables(experiment(1, "exp_override_tr", unit_type: "user_id", holdout_ids: [11, 12]), "my_var")
+        context = create_context(data_of([exp], [holdout(11, "holdout_a", HOLDOUT_A, unit_type: "user_id"),
+                                                 holdout(12, "holdout_b", HOLDOUT_B, unit_type: "user_id")]),
+                                 units: {}, overrides: { "exp_override_tr" => 1 })
+
+        expect(context.treatment("exp_override_tr")).to eq(1)
+        context.set_unit("user_id", UID)
+        expect(context.variable_value("my_var", "default")).to eq("treatment")
+
+        expect(exposures_of(context)).to eq([own_exposure(1, "exp_override_tr", 1, unit: "user_id", assigned: false,
+                                                                                    overridden: true),
+                                             holdout_exposure(11, "holdout_a", 0, unit: "user_id"),
+                                             holdout_exposure(12, "holdout_b", 1, unit: "user_id")])
+      end
+
       it "applies a custom assignment once the unit arrives" do
         context = create_context(data_of([experiment(1, "exp_custom_late", unit_type: "user_id", holdout_ids: [11])],
                                          [holdout(11, "holdout_custom_late", HOLDOUT_B, unit_type: "user_id")]),
