@@ -1243,8 +1243,7 @@ class Context
         # has exposed them, unless it is an override with an arm still missing
         # or not yet exposed (see queue_holdout_exposures).
         if expose && !assignment.holdout_assignments.nil? &&
-           (!assignment.exposed ||
-            (assignment.overridden && assignment.holdout_assignments.any? { |arm| arm.nil? || !arm.exposed }))
+           (!assignment.exposed || (assignment.overridden && !assignment.instance_variable_get(:@holdouts_done)))
           queue_holdout_exposures(assignment)
         end
         return assignment if assignment.assigned || assignment.overridden || assignment.rule_override
@@ -1286,9 +1285,18 @@ class Context
       # once the unit is, so its holdout is exposed even after the override.
       resolve_late_holdout_arms(assignment) if assignment.overridden
       holdout_assignments = assignment.holdout_assignments
+      return if holdout_assignments.nil?
+
       # Checked again under the lock; this keeps warm reads off the clock and lock.
-      return if holdout_assignments.nil? ||
-                holdout_assignments.all? { |holdout_assignment| holdout_assignment.nil? || holdout_assignment.exposed }
+      if holdout_assignments.all? { |holdout_assignment| holdout_assignment.nil? || holdout_assignment.exposed }
+        # An exposed override with every arm resolved and exposed has nothing
+        # left to expose: later reads skip this call (a rebuilt assignment,
+        # after a refresh, starts without the flag).
+        if assignment.overridden && assignment.exposed && !holdout_assignments.include?(nil)
+          assignment.instance_variable_set(:@holdouts_done, true)
+        end
+        return
+      end
 
       exposed_at = @clock.to_i
       holdout_exposures = nil
@@ -1639,6 +1647,8 @@ class Assignment
     # Private: set by the context on an assignment built from a failed load's
     # empty snapshot. Initialized so every assignment keeps one layout.
     @failed_snapshot = false
+    # Private: an exposed override whose holdout arms are all exposed.
+    @holdouts_done = false
   end
 end
 

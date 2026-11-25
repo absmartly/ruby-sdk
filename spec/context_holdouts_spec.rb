@@ -1305,7 +1305,9 @@ module ContextHoldoutsSpec
         context = create_context(data_of([exp], [holdout(11, "holdout_override_var", HOLDOUT_B, unit_type: "user_id")]),
                                  units: { UNIT_TYPE => UID }, overrides: { "exp_override_var" => 1 })
 
-        expect(context.variable_value("my_var", "default")).to eq("treatment")
+        # Read twice while the unit is unset: the exposed override's missing
+        # arm must not mark its holdouts done.
+        2.times { expect(context.variable_value("my_var", "default")).to eq("treatment") }
         own = own_exposure(1, "exp_override_var", 1, unit: "user_id", assigned: false, overridden: true)
         expect(exposures_of(context)).to eq([own])
 
@@ -1316,6 +1318,32 @@ module ContextHoldoutsSpec
 
         2.times { expect(context.variable_value("my_var", "default")).to eq("treatment") }
         expect(exposures_of(context)).to eq([own, holdout_exposure(11, "holdout_override_var", 1, unit: "user_id")])
+      end
+
+      it "stops entering the holdout path once an exposed override's holdouts are all exposed" do
+        exp = with_variables(experiment(1, "exp_override_warm", unit_type: "user_id", holdout_ids: [11]), "my_var")
+        context = create_context(data_of([exp], [holdout(11, "holdout_override_warm", HOLDOUT_B, unit_type: "user_id")]),
+                                 units: {}, overrides: { "exp_override_warm" => 1 })
+        context.variable_value("my_var", "default")
+        context.set_unit("user_id", UID)
+        context.variable_value("my_var", "default")
+        context.variable_value("my_var", "default")
+
+        expect(context).not_to receive(:queue_holdout_exposures)
+        3.times { expect(context.variable_value("my_var", "default")).to eq("treatment") }
+        expect(exposures_of(context).size).to eq(2)
+      end
+
+      it "does not resolve an override's missing holdout arms while its unit is still unset" do
+        exp = with_variables(experiment(1, "exp_override_nounit", unit_type: "user_id", holdout_ids: [11]), "my_var")
+        context = create_context(data_of([exp], [holdout(11, "holdout_override_nounit", HOLDOUT_B, unit_type: "user_id")]),
+                                 units: {}, overrides: { "exp_override_nounit" => 1 })
+        context.variable_value("my_var", "default")
+
+        arms = context.instance_variable_get(:@assignment_cache)["exp_override_nounit"].holdout_assignments
+        expect(context).not_to receive(:holdout_assignment)
+        3.times { expect(context.variable_value("my_var", "default")).to eq("treatment") }
+        expect(context.instance_variable_get(:@assignment_cache)["exp_override_nounit"].holdout_assignments).to equal(arms)
       end
 
       # Only an override's arms are resolved late, as java-sdk only resolves
