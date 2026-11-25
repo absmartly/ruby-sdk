@@ -1234,11 +1234,22 @@ RSpec.describe "create_context_async" do
       expect(context.variable_value("banner.size", "default")).to eq("default")
 
       release << true
-      context.refresh
-      expect(context.variable_value("banner.size", "default")).to eq("large")
+      expect { context.refresh }.not_to raise_error
+      expect(context.treatment("exp_test_ab")).to eq(1)
+      values = Array.new(3) { context.variable_value("banner.size", "default") }
+      expect(context.treatment("exp_test_ab")).to eq(1)
       context.publish
 
-      expect(exposures).to eq([["exp_test_ab", 0, 1], ["exp_test_ab", 1, 1]])
+      # Owner decision: after the later refresh either outcome is accepted.
+      # Resolved again: one new exposure with the real experiment id, and the
+      # recovered variant's variables. Kept (as java-sdk and javascript-sdk
+      # keep the cached id-0 assignment): no new exposure, and the default.
+      # The override's variant is served either way, reads stay stable, and
+      # nothing is exposed twice.
+      expect(exposures.first).to eq(["exp_test_ab", 0, 1])
+      expect(values.uniq.size).to eq(1)
+      expect([exposures.drop(1), values.first])
+        .to eq([[["exp_test_ab", 1, 1]], "large"]).or eq([[], "default"])
     end
 
     it "keeps a failed assignment ineligible when an interrupt lands while its replacement is cached" do
