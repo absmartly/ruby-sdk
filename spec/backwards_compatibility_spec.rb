@@ -20,6 +20,17 @@ RSpec.describe "Backwards Compatibility" do
     Open3.capture3(RbConfig.ruby, "-W:no-deprecated", "-I", lib, "-e", script)
   end
 
+  # Fiber.current and Fiber#alive? need require "fiber" before Ruby 3.1.
+  # A dependency (logger) may load it, but the library must not rely on that.
+  it "requires fiber itself where it uses Fiber.current" do
+    lib = File.expand_path("../lib", __dir__)
+    users = Dir[File.join(lib, "**/*.rb")].select { |f| File.read(f, encoding: "UTF-8").match?(/Fiber\.current|\.alive\?/) }
+    expect(users).not_to be_empty
+    users.each do |file|
+      expect(File.read(file, encoding: "UTF-8")).to match(/^require "fiber"$/), "#{file} uses Fiber.current without require \"fiber\""
+    end
+  end
+
   it "defines the public v1.3.0 classes after only require \"absmartly\"" do
     out, err, status = run_ruby(<<~RUBY)
       require "absmartly"

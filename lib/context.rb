@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+# Fiber.current and Fiber#alive? before Ruby 3.1.
+require "fiber"
 require_relative "hashing"
 require_relative "type_utils"
 require_relative "variant_assigner"
@@ -1238,8 +1240,11 @@ class Context
         # As in java-sdk, each visited candidate's holdouts, the winner's
         # included, are queued before the winner's own exposure.
         # Inline guard: most candidates have no holdouts, and an exposed one
-        # has exposed them, unless it is an override (see below).
-        if expose && !assignment.holdout_assignments.nil? && (!assignment.exposed || assignment.overridden)
+        # has exposed them, unless it is an override with an arm still missing
+        # or not yet exposed (see queue_holdout_exposures).
+        if expose && !assignment.holdout_assignments.nil? &&
+           (!assignment.exposed ||
+            (assignment.overridden && assignment.holdout_assignments.any? { |arm| arm.nil? || !arm.exposed }))
           queue_holdout_exposures(assignment)
         end
         return assignment if assignment.assigned || assignment.overridden || assignment.rule_override

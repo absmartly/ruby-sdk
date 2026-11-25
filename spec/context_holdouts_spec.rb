@@ -1318,6 +1318,23 @@ module ContextHoldoutsSpec
         expect(exposures_of(context)).to eq([own, holdout_exposure(11, "holdout_override_var", 1, unit: "user_id")])
       end
 
+      # Only an override's arms are resolved late, as java-sdk only resolves
+      # holdouts live for an override: an exposed assignment that was not
+      # overridden keeps the no-unit decision it was exposed with.
+      it "does not expose the holdout of an exposed, not overridden experiment after its unit arrives" do
+        exp = with_variables(experiment(1, "exp_plain_late", unit_type: "user_id", holdout_ids: [11]), "my_var")
+        context = create_context(data_of([exp], [holdout(11, "holdout_plain_late", HOLDOUT_B, unit_type: "user_id")]),
+                                 units: { UNIT_TYPE => UID })
+
+        # treatment exposes the no-unit assignment (variant 0, not assigned);
+        # set_unit then keeps it, and later variable reads find it exposed.
+        expect(context.treatment("exp_plain_late")).to eq(0)
+        context.set_unit("user_id", UID)
+        2.times { expect(context.variable_value("my_var", "default")).to eq("default") }
+
+        expect(exposures_of(context)).to eq([own_exposure(1, "exp_plain_late", 0, unit: "user_id", assigned: false)])
+      end
+
       # A refresh with the same holdout iteration keeps the override cached;
       # its late arm is decided after it, so it uses the live seeds and name.
       [["renamed", { name: "holdout_renamed" }, "holdout_renamed", 1],

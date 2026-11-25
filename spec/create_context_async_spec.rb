@@ -1966,8 +1966,8 @@ RSpec.describe "create_context_async" do
     # window before any cleanup there could be masked. The same thread then
     # waits for readiness, which must block rather than return as a builder,
     # or builds again, which must leave it unregistered afterwards.
-    [false, true].each do |rebuild|
-      it "does not treat a thread as a builder after an interrupt lands as its build cleanup starts#{rebuild ? " and it builds again" : ""}" do
+    [[false, false], [true, false], [false, true], [true, true]].each do |rebuild, in_fiber|
+      it "does not treat a thread as a builder after an interrupt lands as its build cleanup starts#{rebuild ? " and it builds again" : ""}#{in_fiber ? " in a fiber that then ends" : ""}" do
         context_config = ContextConfig.create
         context_config.set_units(units)
         context = Context.create_async(clock, context_config, data_provider, event_handler, event_logger,
@@ -1980,18 +1980,24 @@ RSpec.describe "create_context_async" do
         worker = Thread.new do
           me = Thread.current
           trace = TracePoint.new(:line) do |tp|
-            next unless tp.path == source && tp.lineno == cleanup_line && Thread.current[:arm]
+            # A thread variable, not a fiber-local: the build may run in a fiber.
+            next unless tp.path == source && tp.lineno == cleanup_line && me.thread_variable_get(:arm)
 
-            Thread.current[:arm] = false
+            me.thread_variable_set(:arm, false)
             Thread.handle_interrupt(Object => :never) { Thread.new { me.raise(RuntimeError, "async") }.join }
           end
-          trace.enable(target_thread: me)
-          Thread.current[:arm] = true
-          outcome = begin
+          trace.enable
+          me.thread_variable_set(:arm, true)
+          build = lambda do
             context.set_data(OpenStruct.new(data_future: data, success?: true))
             :completed
           rescue RuntimeError => e
             e.message
+          end
+          # A build interrupted in a fiber leaves an entry naming that fiber;
+          # once it has ended, the entry is stale from the thread's own fiber.
+          outcome = begin
+            in_fiber ? Fiber.new { build.call }.resume : build.call
           ensure
             trace.disable
           end
