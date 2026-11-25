@@ -1966,8 +1966,9 @@ RSpec.describe "create_context_async" do
     # window before any cleanup there could be masked. The same thread then
     # waits for readiness, which must block rather than return as a builder,
     # or builds again, which must leave it unregistered afterwards.
-    [[false, false], [true, false], [false, true], [true, true]].each do |rebuild, in_fiber|
-      it "does not treat a thread as a builder after an interrupt lands as its build cleanup starts#{rebuild ? " and it builds again" : ""}#{in_fiber ? " in a fiber that then ends" : ""}" do
+    [[false, false, false], [true, false, false], [false, true, false], [true, true, false],
+     [false, false, true]].each do |rebuild, in_fiber, nested_wait|
+      it "does not treat a thread as a builder after an interrupt lands as its build cleanup starts#{rebuild ? " and it builds again" : ""}#{in_fiber ? " in a fiber that then ends" : ""}#{nested_wait ? ", waiting from a nested fiber" : ""}" do
         context_config = ContextConfig.create
         context_config.set_units(units)
         context = Context.create_async(clock, context_config, data_provider, event_handler, event_logger,
@@ -2005,9 +2006,14 @@ RSpec.describe "create_context_async" do
           if rebuild
             context.set_data(OpenStruct.new(data_future: data, success?: true))
           else
-            started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-            context.wait_until_ready(0.3)
-            waited = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+            # From a nested fiber of the still-alive registering fiber too
+            # (Ruby 3.0+ can read that fiber's stack; 2.7 cannot).
+            wait = lambda do
+              started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+              context.wait_until_ready(0.3)
+              Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+            end
+            waited = nested_wait && Fiber.current.respond_to?(:backtrace_locations) ? Fiber.new { wait.call }.resume : wait.call
           end
           [outcome, waited, context.instance_variable_get(:@building_threads).key?(me)]
         end

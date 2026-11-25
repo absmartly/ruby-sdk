@@ -1389,15 +1389,19 @@ class Context
     # still counts as building. A registering fiber that has ended is stale.
     def stale_build_entry?(entry)
       fiber = entry[1]
-      return !fiber.alive? unless fiber.equal?(Fiber.current)
+      return !build_state_on_stack?(0) if fiber.equal?(Fiber.current)
+      return true unless fiber.alive?
+      # Ruby 3.0+ can read the registering fiber's stack from a fiber it
+      # resumed; 2.7 cannot, so there a live registering fiber still counts.
+      return false unless fiber.respond_to?(:backtrace_locations)
 
-      !build_state_on_stack?(0)
+      !build_state_on_stack?(0, fiber.backtrace_locations || [])
     end
 
     # Whether more than skip build_state frames are on this thread's stack.
     # Called only outside build_state's blocks, so each frame is one build.
-    def build_state_on_stack?(skip)
-      caller_locations.count { |location| location.path == __FILE__ && location.base_label == "build_state" } > skip
+    def build_state_on_stack?(skip, locations = caller_locations)
+      locations.count { |location| location.path == __FILE__ && location.base_label == "build_state" } > skip
     end
 
     def build_state_maps(data)
