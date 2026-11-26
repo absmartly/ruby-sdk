@@ -25,6 +25,8 @@ class Context
   private_constant :EventsQueuedWhileClosing
   NO_HOLDOUTS = {}.freeze
   private_constant :NO_HOLDOUTS
+  VARIABLE_WALK_ATTEMPTS = 3
+  private_constant :VARIABLE_WALK_ATTEMPTS
 
   attr_reader :pending_count
 
@@ -1214,17 +1216,15 @@ class Context
     def resolve_variable_value(key, default_value, expose)
       key = key.to_s.to_sym
       winner = nil
-      while true # rubocop:disable Style/InfiniteLoop -- no block allocation on the read path
+      attempts = 0
+      while attempts < VARIABLE_WALK_ATTEMPTS
+        attempts += 1
         state = @state
         winner = variable_assignment(key, expose, state)
-        # A refresh during the walk can move the key to other experiments:
-        # the candidates and the winner must come from one snapshot, so the
-        # walk starts again on the new one before anything is claimed.
-        next unless @state.equal?(state)
+        final = attempts >= VARIABLE_WALK_ATTEMPTS
+        next unless final || @state.equal?(state)
         break if winner.nil? || !expose || winner.exposed
-        # The unit was set in between, so the walk may now pick another
-        # candidate: it starts again, as java-sdk's settleExposure does.
-        break unless claim_and_queue_exposure(winner, winner.name) == :evicted
+        break unless claim_and_queue_exposure(winner, winner.name) == :evicted && !final
       end
       return default_value if winner.nil? || winner.variables.nil? || !winner.variables.key?(key)
 

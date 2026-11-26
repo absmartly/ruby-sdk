@@ -21,8 +21,9 @@ ADDITIONS = %i[ContextDataResult ContextPublisher DefaultContextPublisher Publis
                SemverLessThanOperator SemverLessThanOrEqualOperator SemverOperator TypeUtils].freeze
 
 def fingerprint(klass)
-  [klass.instance_methods(false).sort, klass.private_instance_methods(false).sort, klass.singleton_methods.sort,
-   klass.constants.sort, klass.ancestors.take_while { |mod| mod != Object },
+  own = klass.instance_methods(false) + klass.private_instance_methods(false)
+  [own.sort.map { |name| [name, klass.instance_method(name).source_location, klass.instance_method(name).original_name] },
+   klass.singleton_methods.sort, klass.constants.sort, klass.ancestors.take_while { |mod| mod != Object },
    klass.singleton_class.ancestors.take_while { |mod| mod != Object.singleton_class }]
 end
 
@@ -102,6 +103,7 @@ end
 # visibility change on a built-in (public :puts) moves a name between them.
 visibility = -> { EXTENDED.to_h { |mod| [mod, [mod.public_instance_methods.sort, mod.private_instance_methods.sort]] } }
 visibility_before = visibility.call
+ancestors_before = EXTENDED.to_h { |mod| [mod, [mod.ancestors, mod.singleton_class.ancestors]] }
 methods_before = method_lists.call
 before = Object.constants
 private_before = private_top_level
@@ -240,12 +242,19 @@ EXTENDED.each do |mod|
   end
 end
 # No SDK module mixed into a core class (an include adds no method there).
+# Any module added to a core class's ancestors since before require, named
+# or anonymous, that is the SDK's: named under it, or defining methods in lib.
 sdk_mixins = EXTENDED.flat_map do |klass|
-  (klass.ancestors + klass.singleton_class.ancestors).select { |mod| sdk_module.call(mod) && mod.name }
-                                                     .map { |mod| "#{klass}<#{mod}" }
+  added = (klass.ancestors - ancestors_before[klass][0]) + (klass.singleton_class.ancestors - ancestors_before[klass][1])
+  added.select do |mod|
+    (mod.name && sdk_module.call(mod)) ||
+      (mod.instance_methods(false) + mod.private_instance_methods(false)).any? do |method|
+        location = mod.instance_method(method).source_location&.first.to_s
+        location.start_with?(lib) || location.start_with?("(eval at #{lib}")
+      end
+  end.map { |mod| "#{klass}<#{mod.name || "anonymous"}" }
 end
-# Resolved as application code does (a bare name at top level), so a class
-# made private or replaced by the SDK no longer counts as intact.
+# Resolved as application code does, by bare name at top level.
 app_intact = app_classes.all? do |name, (klass, print)|
   TOPLEVEL_BINDING.eval(name.to_s).equal?(klass) && fingerprint(klass) == print
 rescue NameError
@@ -255,7 +264,8 @@ end
 puts JSON.generate(
   sdk_owned: sdk_owned.sort,
   unexpected: (sdk_owned - expected).sort,
-  missing: (expected - sdk_owned).sort,
+  # After use too: a constant 1.3.0 had must still resolve at the end.
+  missing: ((expected - sdk_owned) | expected.reject { |name| Object.const_defined?(name, false) }).sort,
   added_by_use: (Object.constants - after_require).sort,
   private_top_level_added: ((private_after_require - private_before) | (private_top_level - private_after_require)).sort,
   ancestors_changed: ancestors_changed,

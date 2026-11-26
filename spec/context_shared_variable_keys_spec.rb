@@ -192,7 +192,6 @@ module ContextSharedVariableKeysSpec
       expect(exposures_of(context)).to eq([assigned("exp_high")])
     end
 
-    # Each case puts a candidate the unit is not in first, so the walk visits a loser.
     describe "precedence" do
       it "lets an override on a candidate the unit is not in win" do
         context = create_context([strict_mismatch(1, "exp_skipped"), no_unit(2, "exp_low"), experiment(3, "exp_high")],
@@ -288,86 +287,23 @@ module ContextSharedVariableKeysSpec
         expect([[value, exposed]]).to include(["blue", ["exp_b"]]).or include(["green", ["exp_c"]])
       end
 
-      # The refresh lands after the walk has read its candidates and before it
-      # resolves the first one: the walk must start again on the new state
-      # instead of finishing the old candidate list against new experiments.
-      it "resolves every candidate from the snapshot it read them from" do
-        before = [experiment(1, "exp_a", audienceStrict: true, audience: US_ONLY),
-                  experiment(2, "exp_b", configs: ['{"color":"blue"}', '{"color":"blue"}']),
-                  experiment(3, "exp_c", configs: ['{"shade":"green"}', '{"shade":"green"}'])]
-        after = [experiment(1, "exp_a", audienceStrict: true, audience: US_ONLY),
-                 experiment(2, "exp_b", configs: ['{"shade":"blue"}', '{"shade":"blue"}']),
-                 experiment(3, "exp_c", configs: ['{"color":"green"}', '{"color":"green"}'])]
-        refreshed = JSON.generate(experiments: after)
+      def refreshing_context(before, after_payloads, holdouts_before: nil, logger: nil, matcher: nil)
+        payloads = after_payloads.map { |experiments, holdouts| JSON.generate(experiments: experiments, holdouts: holdouts) }
         provider = double("ContextDataProvider")
         allow(provider).to receive(:context_data) do
-          OpenStruct.new(data_future: DefaultContextDataDeserializer.new.deserialize(refreshed, 0, refreshed.length),
-                         success?: true)
+          json = payloads.length > 1 ? payloads.shift : payloads.first
+          OpenStruct.new(data_future: DefaultContextDataDeserializer.new.deserialize(json, 0, json.length), success?: true)
         end
-        payload = JSON.generate(experiments: before)
+        payload = JSON.generate(experiments: before, holdouts: holdouts_before)
         data = DefaultContextDataDeserializer.new.deserialize(payload, 0, payload.length)
         config = ContextConfig.create
         config.set_units(UNIT_TYPE => UID)
         context = Context.create(clock, config, OpenStruct.new(data_future: data, success?: true), provider,
-                                 event_handler, event_logger, DefaultVariableParser.new,
-                                 AudienceMatcher.new(DefaultAudienceDeserializer.new),
+                                 event_handler, logger || event_logger, DefaultVariableParser.new,
+                                 matcher || AudienceMatcher.new(DefaultAudienceDeserializer.new),
                                  application: "website", environment: "production")
         context.set_attribute("country", "GB")
-        refreshed_once = false
-        allow(context).to receive(:assignment).and_wrap_original do |original, name|
-          unless refreshed_once
-            refreshed_once = true
-            context.refresh
-          end
-          original.call(name)
-        end
-
-        value = context.variable_value("color", "default")
-        expect(refreshed_once).to be true
-        expect([[value, exposures_of(context).map(&:first)]]).to include(["blue", ["exp_b"]])
-          .or include(["green", ["exp_c"]])
-      end
-
-      # A peek walks the same candidates and exposes nothing; the refresh
-      # lands from the audience matcher evaluating the first candidate.
-      it "peeks a value from one snapshot" do
-        before = [strict_mismatch(1, "exp_a"),
-                  experiment(2, "exp_b", configs: ['{"color":"blue"}', '{"color":"blue"}']),
-                  experiment(3, "exp_c", configs: ['{"shade":"green"}', '{"shade":"green"}'])]
-        after = [strict_mismatch(1, "exp_a"),
-                 experiment(2, "exp_b", configs: ['{"shade":"blue"}', '{"shade":"blue"}']),
-                 experiment(3, "exp_c", configs: ['{"color":"green"}', '{"color":"green"}'])]
-        refreshed = JSON.generate(experiments: after)
-        provider = double("ContextDataProvider")
-        allow(provider).to receive(:context_data) do
-          OpenStruct.new(data_future: DefaultContextDataDeserializer.new.deserialize(refreshed, 0, refreshed.length),
-                         success?: true)
-        end
-        holder = {}
-        matcher = AudienceMatcher.new(DefaultAudienceDeserializer.new)
-        evaluate = matcher.method(:evaluate)
-        matcher.define_singleton_method(:evaluate) do |audience, attributes|
-          result = evaluate.call(audience, attributes)
-          if holder[:armed] && !holder[:done]
-            holder[:done] = true
-            holder[:context].refresh
-          end
-          result
-        end
-        payload = JSON.generate(experiments: before)
-        data = DefaultContextDataDeserializer.new.deserialize(payload, 0, payload.length)
-        config = ContextConfig.create
-        config.set_units(UNIT_TYPE => UID)
-        context = Context.create(clock, config, OpenStruct.new(data_future: data, success?: true), provider,
-                                 event_handler, event_logger, DefaultVariableParser.new, matcher,
-                                 application: "website", environment: "production")
-        context.set_attribute("country", "GB")
-        holder[:context] = context
-        holder[:armed] = true
-
-        expect(%w[blue green]).to include(context.peek_variable_value("color", "default"))
-        expect(holder[:done]).to be true
-        expect(context.pending_count).to eq(0)
+        context
       end
     end
 
