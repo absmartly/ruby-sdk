@@ -287,6 +287,48 @@ module ContextSharedVariableKeysSpec
         expect(holder[:done]).to be true
         expect([[value, exposed]]).to include(["blue", ["exp_b"]]).or include(["green", ["exp_c"]])
       end
+
+      # A peek walks the same candidates and exposes nothing; the refresh
+      # lands from the audience matcher evaluating the first candidate.
+      it "peeks a value from one snapshot" do
+        before = [strict_mismatch(1, "exp_a"),
+                  experiment(2, "exp_b", configs: ['{"color":"blue"}', '{"color":"blue"}']),
+                  experiment(3, "exp_c", configs: ['{"shade":"green"}', '{"shade":"green"}'])]
+        after = [strict_mismatch(1, "exp_a"),
+                 experiment(2, "exp_b", configs: ['{"shade":"blue"}', '{"shade":"blue"}']),
+                 experiment(3, "exp_c", configs: ['{"color":"green"}', '{"color":"green"}'])]
+        refreshed = JSON.generate(experiments: after)
+        provider = double("ContextDataProvider")
+        allow(provider).to receive(:context_data) do
+          OpenStruct.new(data_future: DefaultContextDataDeserializer.new.deserialize(refreshed, 0, refreshed.length),
+                         success?: true)
+        end
+        holder = {}
+        matcher = AudienceMatcher.new(DefaultAudienceDeserializer.new)
+        evaluate = matcher.method(:evaluate)
+        matcher.define_singleton_method(:evaluate) do |audience, attributes|
+          result = evaluate.call(audience, attributes)
+          if holder[:armed] && !holder[:done]
+            holder[:done] = true
+            holder[:context].refresh
+          end
+          result
+        end
+        payload = JSON.generate(experiments: before)
+        data = DefaultContextDataDeserializer.new.deserialize(payload, 0, payload.length)
+        config = ContextConfig.create
+        config.set_units(UNIT_TYPE => UID)
+        context = Context.create(clock, config, OpenStruct.new(data_future: data, success?: true), provider,
+                                 event_handler, event_logger, DefaultVariableParser.new, matcher,
+                                 application: "website", environment: "production")
+        context.set_attribute("country", "GB")
+        holder[:context] = context
+        holder[:armed] = true
+
+        expect(%w[blue green]).to include(context.peek_variable_value("color", "default"))
+        expect(holder[:done]).to be true
+        expect(context.pending_count).to eq(0)
+      end
     end
 
     describe "holdouts" do

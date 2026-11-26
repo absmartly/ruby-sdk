@@ -768,6 +768,64 @@ RSpec.describe "create_context_async" do
       end
     end
 
+    it "an in-flight publish removes only its own exposures after a failed-context clear and recovery" do
+      publish_in = Queue.new
+      publish_out = Queue.new
+      refresh_in = Queue.new
+      refresh_out = Queue.new
+      sent = []
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, event|
+        names = (event.exposures || []).map(&:name)
+        sent << names
+        if names.include?("exp_test_ab")
+          publish_in << true
+          publish_out.pop
+        end
+        OpenStruct.new(success?: true)
+      end
+      ready_data = data
+      fetches = 0
+      provider = Object.new
+      provider.define_singleton_method(:context_data) do
+        fetches += 1
+        if fetches > 1
+          refresh_in << true
+          refresh_out.pop
+        end
+        OpenStruct.new(data_future: ready_data, success?: true)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create_async(clock, context_config, provider, handler, event_logger,
+                                     variable_parser, audience_matcher)
+      context.set_data(provider.context_data)
+      context.treatment("exp_test_ab")
+      a = Thread.new { context.publish }
+      b = nil
+      begin
+        Timeout.timeout(5) { publish_in.pop }
+        b = Thread.new { context.refresh }
+        Timeout.timeout(5) { refresh_in.pop }
+        context.instance_variable_get(:@ready_mutex).synchronize { context.send(:set_data_failed, failure) }
+        context.publish
+        refresh_out << true
+        Timeout.timeout(5) { b.join }
+        context.treatment("exp_test_abc")
+        publish_out << true
+        Timeout.timeout(5) { a.join }
+
+        expect(context.pending_count).to eq(1)
+        context.publish
+        expect(sent).to eq([["exp_test_ab"], ["exp_test_abc"]])
+        expect(context.pending_count).to eq(0)
+      ensure
+        refresh_out << true
+        publish_out << true
+        [a, b].compact.each { |t| t.join(5) || t.kill }
+      end
+    end
+
     it "a goal tracked after recovery is never dropped by a failed-context clear" do
       sent = []
       handler = Object.new

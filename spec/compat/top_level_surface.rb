@@ -98,6 +98,10 @@ method_lists = lambda do
            mod.singleton_class.instance_methods(false) + mod.singleton_class.private_instance_methods(false)]]
   end
 end
+# Each core class's public and private method names, own and inherited: a
+# visibility change on a built-in (public :puts) moves a name between them.
+visibility = -> { EXTENDED.to_h { |mod| [mod, [mod.public_instance_methods.sort, mod.private_instance_methods.sort]] } }
+visibility_before = visibility.call
 methods_before = method_lists.call
 before = Object.constants
 private_before = private_top_level
@@ -222,6 +226,14 @@ EXTENDED.each do |mod|
 
       foreign_methods_from_lib << "#{mod}#{separator}#{method}"
     end
+  end
+end
+visibility_after = visibility.call
+EXTENDED.each do |mod|
+  public_before, private_before_names = visibility_before[mod]
+  public_after, private_after_names = visibility_after[mod]
+  ((public_after & private_before_names) + (private_after_names & public_before)).each do |method|
+    foreign_methods_from_lib << "#{mod}##{method} (visibility)"
   end
 end
 # No SDK module mixed into a core class (an include adds no method there).
