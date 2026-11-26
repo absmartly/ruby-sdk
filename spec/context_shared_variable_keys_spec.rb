@@ -44,7 +44,6 @@ module ContextSharedVariableKeysSpec
       logger
     end
 
-    # The key is defined in both variants unless configs are given.
     def experiment(id, name, configs: ['{"color":"control_%d"}', '{"color":"treatment_%d"}'], unit_type: UNIT_TYPE,
                    **extra)
       {
@@ -244,6 +243,52 @@ module ContextSharedVariableKeysSpec
 
     # java-sdk fires the applicable holdouts of every candidate visited on a
     # non-peek read, while only the winner gets its own exposure.
+    describe "a refresh that moves the key while a read walks the candidates" do
+      # The first candidate (strict mismatch) is covered by a holdout; its
+      # holdout exposure is logged mid-walk, and the logger refreshes there.
+      # The refresh moves "color" from exp_b to exp_c, so the read must return
+      # and expose as one snapshot alone would: blue from exp_b, or green from
+      # exp_c, never the default with an exp_b exposure.
+      it "returns a value and exposes an experiment from one snapshot" do
+        before = [strict_mismatch(1, "exp_a").merge(holdoutIds: [9]),
+                  experiment(2, "exp_b", configs: ['{"color":"blue"}', '{"color":"blue"}']),
+                  experiment(3, "exp_c", configs: ['{"shade":"green"}', '{"shade":"green"}'])]
+        after = [strict_mismatch(1, "exp_a").merge(holdoutIds: [9]),
+                 experiment(2, "exp_b", configs: ['{"shade":"blue"}', '{"shade":"blue"}']),
+                 experiment(3, "exp_c", configs: ['{"color":"green"}', '{"color":"green"}'])]
+        holdouts = [holdout(9, "holdout_a", NOT_HOLDING_OUT)]
+        refreshed = JSON.generate(experiments: after, holdouts: holdouts)
+        provider = double("ContextDataProvider")
+        allow(provider).to receive(:context_data) do
+          OpenStruct.new(data_future: DefaultContextDataDeserializer.new.deserialize(refreshed, 0, refreshed.length),
+                         success?: true)
+        end
+        holder = {}
+        logger = double("ContextEventLogger")
+        allow(logger).to receive(:handle_event) do |type, data|
+          if type == ContextEventLogger::EVENT_TYPE::EXPOSURE && data.name == "holdout_a" && !holder[:done]
+            holder[:done] = true
+            holder[:context].refresh
+          end
+        end
+        payload = JSON.generate(experiments: before, holdouts: holdouts)
+        data = DefaultContextDataDeserializer.new.deserialize(payload, 0, payload.length)
+        config = ContextConfig.create
+        config.set_units(UNIT_TYPE => UID)
+        context = Context.create(clock, config, OpenStruct.new(data_future: data, success?: true), provider,
+                                 event_handler, logger, DefaultVariableParser.new,
+                                 AudienceMatcher.new(DefaultAudienceDeserializer.new),
+                                 application: "website", environment: "production")
+        context.set_attribute("country", "GB")
+        holder[:context] = context
+
+        value = context.variable_value("color", "default")
+        exposed = exposures_of(context).map(&:first) - ["holdout_a"]
+        expect(holder[:done]).to be true
+        expect([[value, exposed]]).to include(["blue", ["exp_b"]]).or include(["green", ["exp_c"]])
+      end
+    end
+
     describe "holdouts" do
       it "exposes a visited loser's holdout but not the loser itself" do
         context = create_context([strict_mismatch(1, "exp_low").merge(holdoutIds: [11]), experiment(2, "exp_high")],

@@ -611,6 +611,7 @@ class Context
       begin
         result = @publish_mutex.synchronize do
           exposures = achievements = nil
+          sent = nil
           event_count = 0
           # Failure installation and recovery both take this lock. Keep the
           # decision and snapshot together, but never hold it across publishing.
@@ -621,6 +622,10 @@ class Context
                 exposures = @exposures.dup
                 achievements = @achievements.dup
                 event_count = exposures.size + achievements.size
+                # Which arrays were sent and how much of each: the queues only
+                # grow by appending or are replaced whole, so a handler that
+                # mutates its payload can't change what is removed.
+                sent = [@exposures, exposures.size, @achievements, achievements.size]
               end
             end
             failed_result
@@ -633,12 +638,6 @@ class Context
             Thread.handle_interrupt(Object => :never) { claimed = take_close_pending } unless sealing
             next nil
           end
-
-          # Captured before the handler runs, so a handler that mutates the
-          # payload it was given can't change which queued events are removed.
-          sent = {}.compare_by_identity
-          exposures.each { |sent_event| sent[sent_event] = true }
-          achievements.each { |sent_event| sent[sent_event] = true }
 
           event = PublishEvent.new
           event.hashed = true
@@ -711,12 +710,13 @@ class Context
       [true, sealing ? nil : @data_failed]
     end
 
-    # A failed-context publish can clear the queue while a request is in flight.
-    # Remove only the actual objects sent, never newer events at their positions.
-    def remove_published(sent)
+    # Removes the sent prefix of each queue, unless a failed-context publish
+    # replaced that queue while the request was in flight (then the batch is
+    # already gone and the new queue holds only newer events).
+    def remove_published((exposures, exposure_count, achievements, achievement_count))
       @queue_mutex.synchronize do
-        @exposures.delete_if { |event| sent.key?(event) }
-        @achievements.delete_if { |event| sent.key?(event) }
+        @exposures.shift(exposure_count) if @exposures.equal?(exposures)
+        @achievements.shift(achievement_count) if @achievements.equal?(achievements)
         @pending_count = @exposures.size + @achievements.size
       end
     end
@@ -796,7 +796,7 @@ class Context
       end
     end
 
-    # v1.3.0's close made these raise; finalize, like the JavaScript SDK, does not.
+    # After finalize these still work, as in the JavaScript SDK.
     def check_not_closed_by_close?
       check_not_closed? if @sealed_by == ContextEventLogger::EVENT_TYPE::CLOSE
     end
@@ -1215,7 +1215,12 @@ class Context
       key = key.to_s.to_sym
       winner = nil
       while true # rubocop:disable Style/InfiniteLoop -- no block allocation on the read path
-        winner = variable_assignment(key, expose)
+        state = @state
+        winner = variable_assignment(key, expose, state)
+        # A refresh during the walk can move the key to other experiments:
+        # the candidates and the winner must come from one snapshot, so the
+        # walk starts again on the new one before anything is claimed.
+        next unless @state.equal?(state)
         break if winner.nil? || !expose || winner.exposed
         # The unit was set in between, so the walk may now pick another
         # candidate: it starts again, as java-sdk's settleExposure does.
@@ -1226,8 +1231,8 @@ class Context
       winner.variables[key]
     end
 
-    def variable_assignment(key, expose)
-      candidates = @state.index_variables[key]
+    def variable_assignment(key, expose, state = @state)
+      candidates = state.index_variables[key]
       return nil if candidates.nil?
 
       suppressed_fallback = nil
@@ -1336,7 +1341,6 @@ class Context
     # building?), and the next build or wait drops one left behind.
     def build_state(data)
       thread = Thread.current
-      # Checked before entering a block, where a frame of this build would count.
       nested = build_state_on_stack?(1)
       registered = false
       begin
