@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "json"
 require "open3"
 require "rbconfig"
 require "a_b_smartly"
@@ -70,61 +71,25 @@ RSpec.describe "Backwards Compatibility" do
     ScheduledThreadPoolExecutor UnaryOperator Unit ValueOperator VarOperator VariableParser VariantAssigner
   ].freeze
 
-  it "defines exactly the published 1.3.0 top-level constants, with ContextDataResult and PublishError namespaced" do
-    lib = File.expand_path("../lib", __dir__)
-    out, err, status = run_ruby(<<~RUBY)
-      V1_3_0_NAMES = #{V1_3_0_TOP_LEVEL.inspect}.freeze
-      require "absmartly"
-      own = Object.constants.select do |name|
-        location = Object.const_source_location(name)
-        location && location.first && location.first.start_with?(#{lib.inspect})
-      end
-      puts own.sort.join(" ")
-      # Every SDK addition must stay unreachable at top level however it got
-      # there: public or private, through Kernel, eval or const_missing, and
-      # also after a client is built and has fetched (lazily defined names).
-      top_level = lambda do
-        Absmartly.constants(false).reject { |name| V1_3_0_NAMES.include?(name) }.select do |name|
-          Object.const_get(name)
-          true
-        rescue NameError
-          false
-        end
-      end
-      p top_level.call
-      client = ABSmartly.new("http://127.0.0.1:1", api_key: "k", application: "a", environment: "e")
-      begin
-        client.instance_variable_get(:@client).context_data
-      rescue StandardError
-        nil
-      end
-      p top_level.call
-      p [Absmartly::ContextDataResult.class, Absmartly::PublishError.ancestors.include?(StandardError)]
-    RUBY
-    expect(status.success?).to be(true), err
-    lines = out.lines
-    expect(lines[0].split.map(&:to_sym)).to eq(V1_3_0_TOP_LEVEL.sort)
-    expect(lines[1..]).to eq(["[]\n", "[]\n", "[Class, true]\n"])
-  end
-
-  # SDK first, then the application's own classes named like the SDK's
-  # additions, as an app that requires gems before its own code does.
-  it "lets an application define classes named like the SDK's additions after loading it" do
-    out, err, status = run_ruby(<<~RUBY)
-      require "absmartly"
-      class PublishError < RuntimeError; end
-      class ContextDataResult < Struct.new(:value); end
-      p [PublishError.superclass, ContextDataResult.new(1).value,
-         PublishError.equal?(Absmartly::PublishError), ContextDataResult.equal?(Absmartly::ContextDataResult)]
-      # Every other SDK addition too, as an application class of the same name.
-      clashes = (Absmartly.constants(false) - %i[PublishError ContextDataResult VERSION Error]).reject do |name|
-        Object.class_eval("class \#{name} < RuntimeError; end; \#{name}.superclass == RuntimeError", __FILE__, __LINE__)
-      rescue TypeError
-        false
-      end
-      p clashes
-    RUBY
-    expect([out, status.success?]).to eq(["[RuntimeError, 1, false, false]\n[]\n", true]), err
+  # spec/compat/top_level_surface.rb loads the SDK, drives every public entry
+  # point against a local collector (fetch, treatment, variables, track, an
+  # accepted and a rejected publish, refresh, async and pre-fetched contexts,
+  # close), then reports the top-level surface. Either load order must leave
+  # exactly the 1.3.0 names, add none on use, and leave an application's own
+  # classes and Object's ancestors untouched.
+  %w[sdk_first app_first].each do |mode|
+    it "keeps the published 1.3.0 top-level surface through real use (#{mode.tr("_", " ")})" do
+      lib = File.expand_path("../lib", __dir__)
+      script = File.expand_path("compat/top_level_surface.rb", __dir__)
+      out, err, status = Open3.capture3(RbConfig.ruby, "-W:no-deprecated", "-I", lib, script, lib, mode,
+                                        *V1_3_0_TOP_LEVEL.map(&:to_s))
+      expect(status.success?).to be(true), err
+      report = JSON.parse(out.lines.last)
+      expect(report).to eq(
+        "sdk_owned" => V1_3_0_TOP_LEVEL.map(&:to_s).sort, "unexpected" => [], "missing" => [],
+        "added_by_use" => [], "ancestors_changed" => false, "reachable" => [], "app_intact" => true
+      )
+    end
   end
 
   it "loads next to application classes named like the SDK's additions without replacing them" do
