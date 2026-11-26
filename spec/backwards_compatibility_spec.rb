@@ -75,8 +75,6 @@ RSpec.describe "Backwards Compatibility" do
     out, err, status = run_ruby(<<~RUBY)
       require "absmartly"
       own = Object.constants.select do |name|
-        next false if Object.autoload?(name)
-
         location = Object.const_source_location(name)
         location && location.first && location.first.start_with?(#{lib.inspect})
       end
