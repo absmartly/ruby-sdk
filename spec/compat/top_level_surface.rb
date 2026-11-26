@@ -80,6 +80,16 @@ Thread.new do
   end
 end
 
+# Classes the SDK could plausibly extend: their method lists before require
+# catch an alias of a built-in method, which has no source location.
+EXTENDED = [String, Array, Hash, Symbol, Integer, Float, Numeric, Comparable, Object, Kernel].freeze
+method_lists = lambda do
+  EXTENDED.to_h do |mod|
+    [mod, [mod.instance_methods(false) + mod.private_instance_methods(false),
+           mod.singleton_class.instance_methods(false) + mod.singleton_class.private_instance_methods(false)]]
+  end
+end
+methods_before = method_lists.call
 before = Object.constants
 object_ancestors_before = Object.ancestors.dup
 kernel_ancestors_before = Kernel.ancestors.dup
@@ -180,7 +190,22 @@ ObjectSpace.each_object(Module) do |mod|
 
   [[mod, "#"], [mod.singleton_class, "."]].each do |owner, separator|
     (owner.instance_methods(false) + owner.private_instance_methods(false)).each do |method|
-      next unless owner.instance_method(method).source_location&.first.to_s.start_with?(lib)
+      location = owner.instance_method(method).source_location&.first.to_s
+      # An eval'd definition counts as the SDK's when lib called the eval
+      # ("(eval at <file>:<line>)"; Ruby's json library defines some this way).
+      next unless location.start_with?(lib) || location.start_with?("(eval at #{lib}")
+
+      foreign_methods_from_lib << "#{mod}#{separator}#{method}"
+    end
+  end
+end
+# Methods with no Ruby source location (aliases of built-ins) added since
+# before require, on the classes the SDK could plausibly extend.
+methods_after = method_lists.call
+EXTENDED.each do |mod|
+  [[mod, "#", 0], [mod.singleton_class, ".", 1]].each do |owner, separator, index|
+    (methods_after[mod][index] - methods_before[mod][index]).each do |method|
+      next unless owner.instance_method(method).source_location.nil?
 
       foreign_methods_from_lib << "#{mod}#{separator}#{method}"
     end
