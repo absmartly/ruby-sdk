@@ -431,7 +431,9 @@ module ContextSharedVariableKeysSpec
             ])
             DefaultContextDataDeserializer.new.deserialize(json, 0, json.length)
           end
-          owners = %i[c b].cycle
+          # exp_b keeps the key: a walk that returned its last overtaken winner
+          # would give blue, so only the exhaustion default passes.
+          owners = %i[b b].cycle
           refreshes = 0
           provider = double("ContextDataProvider")
           allow(provider).to receive(:context_data) do
@@ -463,6 +465,67 @@ module ContextSharedVariableKeysSpec
           expect(refreshes).to eq(3)
           holder[:armed] = false
           expect(exposures_of(context)).to eq([])
+        end
+      end
+
+      # Two reads on one context, interleaved outside the locks: a
+      # variable_value collects exp_low's holdout and pauses before resolving
+      # exp_high, while a peek on another key runs whole (peek first), or the
+      # variable read finishes while the peek is paused (variable first).
+      # Each read's collected holdouts are its own: the variable read exposes
+      # its holdout before its winner, and the peek exposes nothing.
+      %i[peek_first variable_first].each do |order|
+        it "keeps each concurrent read's collected holdouts its own (#{order.to_s.tr("_", " ")})" do
+          # "size" is shared too, so the peek walks (and collects) as well.
+          experiments = [strict_mismatch(1, "exp_low").merge(holdoutIds: [11]),
+                         experiment(2, "exp_high"),
+                         experiment(3, "exp_size", configs: ['{"size":1}', '{"size":2}']),
+                         experiment(4, "exp_size_too", configs: ['{"size":3}', '{"size":4}'])]
+          context = create_context(experiments, holdouts: [holdout(11, "holdout_a", NOT_HOLDING_OUT)])
+          gates = { variable: [Queue.new, Queue.new], peek: [Queue.new, Queue.new] }
+          pause_at = { variable: "exp_high", peek: "exp_size" }
+          allow(context).to receive(:assignment).and_wrap_original do |original, name|
+            role = Thread.current[:role]
+            if role && name.to_s == pause_at[role] && !Thread.current[:paused]
+              Thread.current[:paused] = true
+              gates[role][0] << true
+              gates[role][1].pop
+            end
+            original.call(name)
+          end
+          read = Thread.new do
+            Thread.current[:role] = :variable
+            context.variable_value("color", "default")
+          end
+          peek = Thread.new do
+            Thread.current[:role] = :peek
+            context.peek_variable_value("size", 0)
+          end
+          pending_after_peek = nil
+          begin
+            Timeout.timeout(5) { gates[:variable][0].pop }
+            Timeout.timeout(5) { gates[:peek][0].pop }
+            if order == :peek_first
+              gates[:peek][1] << true
+              Timeout.timeout(5) { peek.join }
+              pending_after_peek = context.pending_count
+              gates[:variable][1] << true
+            else
+              gates[:variable][1] << true
+              Timeout.timeout(5) { read.join }
+              pending_after_peek = context.pending_count - 2
+              gates[:peek][1] << true
+            end
+            Timeout.timeout(5) { [read, peek].each(&:join) }
+          ensure
+            gates.each_value { |(_, go)| go << true }
+            [read, peek].each { |t| t.join(1) || t.kill }
+          end
+
+          expect(peek.value).to eq(2)
+          expect(read.value).to eq("treatment_2")
+          expect(pending_after_peek).to eq(0)
+          expect(exposures_of(context)).to eq([assigned("holdout_a"), assigned("exp_high")])
         end
       end
     end

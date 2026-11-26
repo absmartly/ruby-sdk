@@ -1225,15 +1225,18 @@ class Context
 
         attempts += 1
         state = @state
-        winner = variable_assignment(key, expose, state)
+        # Per read, not per context: concurrent reads never share it. Only a
+        # key with several candidates needs one; a single candidate's holdouts
+        # are queued as the walk meets them, as before.
+        candidates = state.index_variables[key]
+        visited = expose && candidates && candidates.length > 1 ? [] : nil
+        winner = variable_assignment(key, visited || expose, state)
         # A refresh during the walk can move the key to other experiments.
         # The candidates, the winner and the holdouts exposed must come from
         # one snapshot, so nothing is exposed until the walk stands.
         next unless @state.equal?(state)
 
-        visited = @walk_holdouts
-        @walk_holdouts = nil
-        unless visited.nil?
+        unless visited.nil? || visited.empty?
           i = 0
           # A holdout's logger callback may refresh; the walk then starts again
           # instead of exposing the rest of the old one.
@@ -1253,11 +1256,10 @@ class Context
       winner.variables[key]
     end
 
-    # When exposing, collects in @walk_holdouts each visited candidate whose
-    # holdouts are still to expose (the array only when there is one); the
-    # caller exposes them once the walk stands on its snapshot.
+    # expose is true to queue each visited candidate's holdouts as met, or an
+    # array to collect the candidates with a holdout still to expose instead;
+    # the caller exposes those once the walk stands.
     def variable_assignment(key, expose, state = @state)
-      @walk_holdouts = nil
       candidates = state.index_variables[key]
       return nil if candidates.nil?
 
@@ -1275,7 +1277,11 @@ class Context
         # or not yet exposed (see queue_holdout_exposures).
         if expose && !assignment.holdout_assignments.nil? &&
            (!assignment.exposed || (assignment.overridden && !assignment.send(:holdouts_done?)))
-          (@walk_holdouts ||= []) << assignment
+          if expose == true
+            queue_holdout_exposures(assignment)
+          elsif holdouts_pending?(assignment)
+            expose << assignment
+          end
         end
         return assignment if assignment.assigned || assignment.overridden || assignment.rule_override
 
@@ -1283,6 +1289,21 @@ class Context
         i += 1
       end
       suppressed_fallback
+    end
+
+    # Whether a candidate has a holdout arm still to expose (or, for an
+    # override, one still to resolve). A warm read past an exposed loser then
+    # collects nothing.
+    def holdouts_pending?(assignment)
+      arms = assignment.holdout_assignments
+      i = 0
+      while i < arms.length
+        arm = arms[i]
+        return true if arm.nil? ? assignment.overridden : !arm.exposed
+
+        i += 1
+      end
+      false
     end
 
     # Replaces the arms of an override still missing them, once its unit is
@@ -1571,7 +1592,6 @@ class Context
       @assignment_mutex = Mutex.new
       @failed_marked = false
       @exposing = {}.compare_by_identity
-      @walk_holdouts = nil
       @exposure_condvar = ConditionVariable.new
       @assignments = {}
       @clock = clock.is_a?(String) ? Time.iso8601(clock) : clock
