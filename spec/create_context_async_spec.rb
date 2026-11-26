@@ -826,6 +826,42 @@ RSpec.describe "create_context_async" do
       end
     end
 
+    it "keeps an exposure queued while a publish is in flight for the next publish" do
+      publish_in = Queue.new
+      publish_out = Queue.new
+      sent = []
+      handler = Object.new
+      handler.define_singleton_method(:publish) do |_context, event|
+        names = (event.exposures || []).map(&:name)
+        sent << names
+        if names.include?("exp_test_ab")
+          publish_in << true
+          publish_out.pop
+        end
+        OpenStruct.new(success?: true)
+      end
+      context_config = ContextConfig.create
+      context_config.set_units(units)
+      context = Context.create(clock, context_config, OpenStruct.new(data_future: data, success?: true),
+                               data_provider, handler, event_logger, variable_parser, audience_matcher)
+      context.treatment("exp_test_ab")
+      publisher = Thread.new { context.publish }
+      begin
+        Timeout.timeout(5) { publish_in.pop }
+        context.treatment("exp_test_abc")
+        publish_out << true
+        Timeout.timeout(5) { publisher.join }
+
+        expect(context.pending_count).to eq(1)
+        context.publish
+        expect(sent).to eq([["exp_test_ab"], ["exp_test_abc"]])
+        expect(context.pending_count).to eq(0)
+      ensure
+        publish_out << true
+        publisher.join(5) || publisher.kill
+      end
+    end
+
     it "a goal tracked after recovery is never dropped by a failed-context clear" do
       sent = []
       handler = Object.new

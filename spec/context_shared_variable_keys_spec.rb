@@ -288,6 +288,46 @@ module ContextSharedVariableKeysSpec
         expect([[value, exposed]]).to include(["blue", ["exp_b"]]).or include(["green", ["exp_c"]])
       end
 
+      # The refresh lands after the walk has read its candidates and before it
+      # resolves the first one, so a walk that rereads the live state would
+      # mix the old candidate list with the new experiments.
+      it "resolves every candidate from the snapshot it read them from" do
+        before = [experiment(1, "exp_a", audienceStrict: true, audience: US_ONLY),
+                  experiment(2, "exp_b", configs: ['{"color":"blue"}', '{"color":"blue"}']),
+                  experiment(3, "exp_c", configs: ['{"shade":"green"}', '{"shade":"green"}'])]
+        after = [experiment(1, "exp_a", audienceStrict: true, audience: US_ONLY),
+                 experiment(2, "exp_b", configs: ['{"shade":"blue"}', '{"shade":"blue"}']),
+                 experiment(3, "exp_c", configs: ['{"color":"green"}', '{"color":"green"}'])]
+        refreshed = JSON.generate(experiments: after)
+        provider = double("ContextDataProvider")
+        allow(provider).to receive(:context_data) do
+          OpenStruct.new(data_future: DefaultContextDataDeserializer.new.deserialize(refreshed, 0, refreshed.length),
+                         success?: true)
+        end
+        payload = JSON.generate(experiments: before)
+        data = DefaultContextDataDeserializer.new.deserialize(payload, 0, payload.length)
+        config = ContextConfig.create
+        config.set_units(UNIT_TYPE => UID)
+        context = Context.create(clock, config, OpenStruct.new(data_future: data, success?: true), provider,
+                                 event_handler, event_logger, DefaultVariableParser.new,
+                                 AudienceMatcher.new(DefaultAudienceDeserializer.new),
+                                 application: "website", environment: "production")
+        context.set_attribute("country", "GB")
+        refreshed_once = false
+        allow(context).to receive(:assignment).and_wrap_original do |original, name|
+          unless refreshed_once
+            refreshed_once = true
+            context.refresh
+          end
+          original.call(name)
+        end
+
+        value = context.variable_value("color", "default")
+        expect(refreshed_once).to be true
+        expect([[value, exposures_of(context).map(&:first)]]).to include(["blue", ["exp_b"]])
+          .or include(["green", ["exp_c"]])
+      end
+
       # A peek walks the same candidates and exposes nothing; the refresh
       # lands from the audience matcher evaluating the first candidate.
       it "peeks a value from one snapshot" do

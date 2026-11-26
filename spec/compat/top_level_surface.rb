@@ -213,16 +213,19 @@ ObjectSpace.each_object(Module) do |mod|
     end
   end
 end
-# Aliases of built-in methods (no Ruby source location) added since before
-# require, on the classes the SDK could plausibly extend.
+# Aliases of built-in methods added since before require, on the classes the
+# SDK could plausibly extend (an alias reports its original's location).
 methods_after = method_lists.call
 EXTENDED.each do |mod|
   [[mod, "#", 0], [mod.singleton_class, ".", 1]].each do |owner, separator, index|
     (methods_after[mod][index] - methods_before[mod][index]).each do |method|
       unbound = owner.instance_method(method)
-      # An alias keeps its original's name; a C extension method (date's
-      # Time#to_date, loaded by a dependency) is its own original.
-      next unless unbound.source_location.nil? && unbound.original_name != method
+      # An alias keeps its original's name, wherever the original is defined
+      # (C, or Ruby's <internal:> prelude); a C extension method such as
+      # date's Time#to_date, loaded by a dependency, is its own original.
+      next if unbound.original_name == method
+      next if unbound.source_location && unbound.source_location.first.to_s.start_with?("/") &&
+              !unbound.source_location.first.to_s.start_with?(lib)
 
       foreign_methods_from_lib << "#{mod}#{separator}#{method}"
     end
