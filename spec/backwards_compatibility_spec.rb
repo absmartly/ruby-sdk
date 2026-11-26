@@ -73,21 +73,38 @@ RSpec.describe "Backwards Compatibility" do
   it "defines exactly the published 1.3.0 top-level constants, with ContextDataResult and PublishError namespaced" do
     lib = File.expand_path("../lib", __dir__)
     out, err, status = run_ruby(<<~RUBY)
+      V1_3_0_NAMES = #{V1_3_0_TOP_LEVEL.inspect}.freeze
       require "absmartly"
       own = Object.constants.select do |name|
         location = Object.const_source_location(name)
         location && location.first && location.first.start_with?(#{lib.inspect})
       end
       puts own.sort.join(" ")
-      # const_defined? with inherit false also sees private constants, which
-      # Object.constants and defined? hide.
-      p [Object.const_defined?(:ContextDataResult, false), Object.const_defined?(:PublishError, false),
-         Absmartly::ContextDataResult.class, Absmartly::PublishError.ancestors.include?(StandardError)]
+      # Every SDK addition must stay unreachable at top level however it got
+      # there: public or private, through Kernel, eval or const_missing, and
+      # also after a client is built and has fetched (lazily defined names).
+      top_level = lambda do
+        Absmartly.constants(false).reject { |name| V1_3_0_NAMES.include?(name) }.select do |name|
+          Object.const_get(name)
+          true
+        rescue NameError
+          false
+        end
+      end
+      p top_level.call
+      client = ABSmartly.new("http://127.0.0.1:1", api_key: "k", application: "a", environment: "e")
+      begin
+        client.instance_variable_get(:@client).context_data
+      rescue StandardError
+        nil
+      end
+      p top_level.call
+      p [Absmartly::ContextDataResult.class, Absmartly::PublishError.ancestors.include?(StandardError)]
     RUBY
     expect(status.success?).to be(true), err
     lines = out.lines
-    expect(lines.first.split.map(&:to_sym)).to eq(V1_3_0_TOP_LEVEL.sort)
-    expect(lines.last).to eq("[false, false, Class, true]\n")
+    expect(lines[0].split.map(&:to_sym)).to eq(V1_3_0_TOP_LEVEL.sort)
+    expect(lines[1..]).to eq(["[]\n", "[]\n", "[Class, true]\n"])
   end
 
   # SDK first, then the application's own classes named like the SDK's
@@ -97,13 +114,17 @@ RSpec.describe "Backwards Compatibility" do
       require "absmartly"
       class PublishError < RuntimeError; end
       class ContextDataResult < Struct.new(:value); end
-      class SemverComparator; end
-      class ContextPublisher; end
-      class DefaultContextPublisher; end
-      p [PublishError.superclass, ContextDataResult.new(1).value, SemverComparator.class,
+      p [PublishError.superclass, ContextDataResult.new(1).value,
          PublishError.equal?(Absmartly::PublishError), ContextDataResult.equal?(Absmartly::ContextDataResult)]
+      # Every other SDK addition too, as an application class of the same name.
+      clashes = (Absmartly.constants(false) - %i[PublishError ContextDataResult VERSION Error]).reject do |name|
+        Object.class_eval("class \#{name} < RuntimeError; end; \#{name}.superclass == RuntimeError", __FILE__, __LINE__)
+      rescue TypeError
+        false
+      end
+      p clashes
     RUBY
-    expect([out, status.success?]).to eq(["[RuntimeError, 1, Class, false, false]\n", true]), err
+    expect([out, status.success?]).to eq(["[RuntimeError, 1, false, false]\n[]\n", true]), err
   end
 
   it "loads next to application classes named like the SDK's additions without replacing them" do
