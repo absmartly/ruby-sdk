@@ -81,13 +81,25 @@ RSpec.describe "Backwards Compatibility" do
     it "keeps the published 1.3.0 top-level surface through real use (#{mode.tr("_", " ")})" do
       lib = File.expand_path("../lib", __dir__)
       script = File.expand_path("compat/top_level_surface.rb", __dir__)
-      out, err, status = Open3.capture3(RbConfig.ruby, "-W:no-deprecated", "-I", lib, script, lib, mode,
-                                        *V1_3_0_TOP_LEVEL.map(&:to_s))
+      command = [RbConfig.ruby, "-W:no-deprecated", "-I", lib, script, lib, mode, *V1_3_0_TOP_LEVEL.map(&:to_s)]
+      out = err = status = nil
+      # A hang fails the example instead of stalling the run.
+      Open3.popen3(*command) do |stdin, stdout, stderr, wait|
+        stdin.close
+        readers = [Thread.new { stdout.read }, Thread.new { stderr.read }]
+        unless wait.join(60)
+          Process.kill("KILL", wait.pid)
+          raise "top_level_surface.rb did not finish within 60s"
+        end
+        out, err = readers.map(&:value)
+        status = wait.value
+      end
       expect(status.success?).to be(true), err
       report = JSON.parse(out.lines.last)
       expect(report).to eq(
         "sdk_owned" => V1_3_0_TOP_LEVEL.map(&:to_s).sort, "unexpected" => [], "missing" => [],
-        "added_by_use" => [], "ancestors_changed" => false, "reachable" => [], "app_intact" => true
+        "added_by_use" => [], "ancestors_changed" => false, "reachable" => [], "app_intact" => true,
+        "working" => true
       )
     end
   end

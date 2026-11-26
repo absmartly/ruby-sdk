@@ -3,13 +3,14 @@
 # Run in a fresh process: ruby -I <lib> top_level_surface.rb <lib> <app_first|sdk_first> <expected names...>
 #
 # Loads the SDK and drives every public entry point against a local fake
-# collector, then prints one JSON line describing the top-level constant
-# surface. In app_first mode the application has already defined a class for
-# every name the SDK keeps under Absmartly; those must come through untouched.
+# collector, then prints one JSON line describing the top-level surface. In
+# app_first mode the application has already defined a class for every name
+# the SDK keeps under Absmartly; those must come through untouched.
 require "json"
 require "socket"
 
-lib = File.expand_path(ARGV.shift)
+# The real path: Ruby reports where constants and methods were defined that way.
+lib = File.realpath(ARGV.shift)
 mode = ARGV.shift
 expected = ARGV.map(&:to_sym)
 app_first = mode == "app_first"
@@ -19,28 +20,38 @@ ADDITIONS = %i[ContextDataResult ContextPublisher DefaultContextPublisher Publis
                SemverEqualsOperator SemverGreaterThanOperator SemverGreaterThanOrEqualOperator
                SemverLessThanOperator SemverLessThanOrEqualOperator SemverOperator TypeUtils].freeze
 
+def fingerprint(klass)
+  [klass.instance_methods(false).sort, klass.private_instance_methods(false).sort, klass.singleton_methods.sort,
+   klass.constants.sort, klass.ancestors.take_while { |mod| mod != Object },
+   klass.singleton_class.ancestors.take_while { |mod| mod != Object.singleton_class }]
+end
+
 app_classes = {}
 if app_first
   ADDITIONS.each do |name|
     klass = Object.const_set(name, Class.new(RuntimeError) { def app_marker; :app; end })
-    app_classes[name] = [klass, klass.instance_methods(false).sort, klass.singleton_methods.sort]
+    app_classes[name] = [klass, fingerprint(klass)]
   end
 end
+
 payload = {
   experiments: [{ id: 1, name: "exp", unitType: "session_id", iteration: 1, seedHi: 1, seedLo: 2,
-                  split: [0.5, 0.5], trafficSeedHi: 3, trafficSeedLo: 4, trafficSplit: [0, 1],
+                  split: [0.0, 1.0], trafficSeedHi: 3, trafficSeedLo: 4, trafficSplit: [0, 1],
                   fullOnVariant: 0, applications: [{ name: "a" }],
                   audience: '{"filter":[{"semver_gt":[{"var":"v"},{"value":"1.0.0"}]}]}',
+                  customFieldValues: [{ name: "f", value: "x", type: "string" }],
                   variants: [{ name: "A", config: nil }, { name: "B", config: '{"x":1}' }] }]
 }.to_json
 server = TCPServer.new("127.0.0.1", 0)
 port = server.addr[1]
 put_status = 200
+requests = Hash.new(0)
 Thread.new do
   loop do
     Thread.new(server.accept) do |client|
       while (line = client.gets)
         method = line.split.first
+        requests[method] += 1
         length = 0
         while (header = client.gets) && header != "\r\n"
           length = header.split(":", 2)[1].to_i if header =~ /\Acontent-length:/i
@@ -58,14 +69,13 @@ Thread.new do
 end
 
 before = Object.constants
+object_ancestors_before = Object.ancestors.dup
+kernel_ancestors_before = Kernel.ancestors.dup
 require "absmartly"
 after_require = Object.constants
-# Ruby's own libraries (pp, json) extend Object; the SDK must not, on use either.
-ancestors = Object.ancestors.dup
-# A constant counts as the SDK's if it is located in lib or was eval'd.
+# A constant counts as the SDK's if it is located in lib or was eval'd. No
+# location means it was defined in C, and the SDK has no C code.
 sdk_owned = (after_require - before).select do |name|
-  # No location: defined in C (the SDK has no C code). An eval'd definition
-  # has a path that is not absolute, so it counts.
   path = Object.const_source_location(name)&.first
   path.is_a?(String) && (path.start_with?(lib) || !path.start_with?("/"))
 end
@@ -73,14 +83,21 @@ end
 # have loaded version.rb before this script, from another checkout.
 sdk_owned |= [:Absmartly] if Object.const_defined?(:Absmartly, false) && Absmartly.const_defined?(:VERSION, false)
 
+working = []
 sdk = ABSmartly.new("http://127.0.0.1:#{port}/v1", api_key: "k", application: "a", environment: "e")
 config = ContextConfig.create
 config.set_unit(:session_id, "u1")
 context = sdk.create_context(config)
 context.wait_until_ready
+working << (context.ready? && !context.failed?)
 context.set_attribute("v", "2.0.0")
-context.treatment("exp")
-context.variable_value("x", 0)
+working << (context.treatment("exp") == 1)
+working << (context.variable_value("x", 0) == 1)
+working << (context.peek_treatment("exp") == 1)
+working << (context.peek_variable_value("x", 0) == 1)
+working << (context.variable_keys[:x] == "exp")
+working << context.custom_field_keys.include?("f")
+working << (context.custom_field_value("exp", "f") == "x")
 context.track("goal", { a: 1 })
 context.publish
 put_status = 503
@@ -92,25 +109,52 @@ rescue StandardError
 end
 put_status = 200
 context.refresh
+context.set_override("exp", 0)
+context.set_custom_assignment("exp", 0)
 async = sdk.create_context_async(config)
 async.wait_until_ready
-async.treatment("exp")
+working << (async.treatment("exp") == 1)
 async.close
 with = sdk.create_context_with(config, sdk.context_data)
-with.treatment("exp")
+working << (with.treatment("exp") == 1)
 with.close
+context.finalize
 context.close
+Absmartly.configure_client do |client_config|
+  client_config.endpoint = "http://127.0.0.1:#{port}/v1"
+  client_config.api_key = "k"
+  client_config.application = "a"
+  client_config.environment = "e"
+end
+module_context = Absmartly.create_context(Absmartly.create_context_config.tap { |c| c.set_unit(:session_id, "u2") })
+module_context.wait_until_ready
+working << module_context.ready?
+module_context.close
+# A fetch that fails at transport level (nothing listens on port 1).
+unreachable = ABSmartly.new("http://127.0.0.1:1/v1", api_key: "k", application: "a", environment: "e", retries: 0)
+failed = unreachable.create_context(config)
+failed.wait_until_ready
+working << failed.failed?
+failed.close
 
 reachable = ADDITIONS.select do |name|
-  if app_first
-    Object.const_get(name).equal?(Absmartly.const_get(name))
-  else
-    Object.const_defined?(name)
+  resolved = begin
+    TOPLEVEL_BINDING.eval(name.to_s)
+  rescue NameError
+    nil
   end
+  app_first ? resolved.equal?(Absmartly.const_get(name)) : (Object.const_defined?(name) || !resolved.nil?)
 end
-app_intact = app_classes.all? do |name, (klass, instance_methods, singleton_methods)|
-  Object.const_get(name).equal?(klass) && klass.instance_methods(false).sort == instance_methods &&
-    klass.singleton_methods.sort == singleton_methods
+# Ruby's own libraries (pp, json) extend Object; a module that defines
+# methods in lib, or any change to Kernel's ancestors, is the SDK's doing.
+new_object_ancestors = Object.ancestors - object_ancestors_before
+ancestors_changed = Kernel.ancestors != kernel_ancestors_before || new_object_ancestors.any? do |mod|
+  (mod.instance_methods(false) + mod.private_instance_methods(false)).any? do |method|
+    mod.instance_method(method).source_location&.first.to_s.start_with?(lib)
+  end || mod == Absmartly
+end
+app_intact = app_classes.all? do |name, (klass, print)|
+  Object.const_get(name).equal?(klass) && fingerprint(klass) == print
 end
 
 puts JSON.generate(
@@ -118,7 +162,8 @@ puts JSON.generate(
   unexpected: (sdk_owned - expected).sort,
   missing: (expected - sdk_owned).sort,
   added_by_use: (Object.constants - after_require).sort,
-  ancestors_changed: Object.ancestors != ancestors,
+  ancestors_changed: ancestors_changed,
   reachable: reachable,
-  app_intact: app_intact
+  app_intact: app_intact,
+  working: working.all? && requests["GET"] >= 4 && requests["PUT"] >= 2
 )
