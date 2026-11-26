@@ -40,7 +40,19 @@ payload = {
                   fullOnVariant: 0, applications: [{ name: "a" }],
                   audience: '{"filter":[{"semver_gt":[{"var":"v"},{"value":"1.0.0"}]}]}',
                   customFieldValues: [{ name: "f", value: "x", type: "string" }],
-                  variants: [{ name: "A", config: nil }, { name: "B", config: '{"x":1}' }] }]
+                  variants: [{ name: "A", config: nil }, { name: "B", config: '{"x":1}' }] },
+                # 1.4.0's assignment rules and holdouts run too: a split rule and a covering holdout.
+                { id: 2, name: "ruled", unitType: "session_id", iteration: 1, seedHi: 1, seedLo: 2,
+                  split: [0.5, 0.5], trafficSeedHi: 3, trafficSeedLo: 4, trafficSplit: [0, 1],
+                  fullOnVariant: 0, applications: [{ name: "a" }], holdoutIds: [9],
+                  assignmentRules: JSON.generate(rules: [{ name: "split", type: "split", environments: [],
+                                                          conditions: { and: [{ eq: [{ var: "v" }, { value: "2.0.0" }] }] },
+                                                          percentages: "0/100" }]),
+                  variants: [{ name: "A", config: '{"y":0}' }, { name: "B", config: '{"y":1}' }] }],
+  holdouts: [{ id: 9, name: "holdout", unitType: "session_id", iteration: 1, seedHi: 5, seedLo: 6,
+               split: [0.0, 1.0], trafficSeedHi: 0, trafficSeedLo: 0, trafficSplit: [0.0, 1.0],
+               fullOnVariant: 0, applications: [], holdoutType: "full",
+               variants: [{ name: "A", config: nil }, { name: "B", config: nil }] }]
 }.to_json
 server = TCPServer.new("127.0.0.1", 0)
 port = server.addr[1]
@@ -71,6 +83,8 @@ end
 before = Object.constants
 object_ancestors_before = Object.ancestors.dup
 kernel_ancestors_before = Kernel.ancestors.dup
+# Core classes the SDK must not add methods to (1.3.0 already reopens String).
+CORE = [Object, Kernel, BasicObject, Module, Class, Object.singleton_class, Kernel.singleton_class].freeze
 require "absmartly"
 after_require = Object.constants
 # A constant counts as the SDK's if it is located in lib or was eval'd. No
@@ -98,6 +112,8 @@ working << (context.peek_variable_value("x", 0) == 1)
 working << (context.variable_keys[:x] == "exp")
 working << context.custom_field_keys.include?("f")
 working << (context.custom_field_value("exp", "f") == "x")
+working << (context.treatment("ruled") == 1)
+working << (context.variable_value("y", 0) == 1)
 context.track("goal", { a: 1 })
 context.publish
 put_status = 503
@@ -153,6 +169,11 @@ ancestors_changed = Kernel.ancestors != kernel_ancestors_before || new_object_an
     mod.instance_method(method).source_location&.first.to_s.start_with?(lib)
   end || mod == Absmartly
 end
+core_methods_from_lib = CORE.flat_map do |mod|
+  (mod.instance_methods(false) + mod.private_instance_methods(false)).select do |method|
+    mod.instance_method(method).source_location&.first.to_s.start_with?(lib)
+  end.map { |method| "#{mod}##{method}" }
+end
 app_intact = app_classes.all? do |name, (klass, print)|
   Object.const_get(name).equal?(klass) && fingerprint(klass) == print
 end
@@ -163,6 +184,7 @@ puts JSON.generate(
   missing: (expected - sdk_owned).sort,
   added_by_use: (Object.constants - after_require).sort,
   ancestors_changed: ancestors_changed,
+  core_methods_from_lib: core_methods_from_lib.sort,
   reachable: reachable,
   app_intact: app_intact,
   working: working.all? && requests["GET"] >= 4 && requests["PUT"] >= 2

@@ -72,11 +72,12 @@ RSpec.describe "Backwards Compatibility" do
   ].freeze
 
   # spec/compat/top_level_surface.rb loads the SDK, drives every public entry
-  # point against a local collector (fetch, treatment, variables, track, an
-  # accepted and a rejected publish, refresh, async and pre-fetched contexts,
-  # close), then reports the top-level surface. Either load order must leave
-  # exactly the 1.3.0 names, add none on use, and leave an application's own
-  # classes and Object's ancestors untouched.
+  # point against a local collector (reads, peeks, rules, holdouts, custom
+  # fields, track, accepted and rejected publishes, refresh, overrides, async
+  # and pre-fetched contexts, the Absmartly module API, a failed fetch,
+  # finalize, close), then reports the top-level surface. Either load order
+  # must leave exactly the 1.3.0 names, add none on use, add no methods or
+  # ancestors to Object or Kernel, and leave an application's classes as they were.
   %w[sdk_first app_first].each do |mode|
     it "keeps the published 1.3.0 top-level surface through real use (#{mode.tr("_", " ")})" do
       lib = File.expand_path("../lib", __dir__)
@@ -98,8 +99,8 @@ RSpec.describe "Backwards Compatibility" do
       report = JSON.parse(out.lines.last)
       expect(report).to eq(
         "sdk_owned" => V1_3_0_TOP_LEVEL.map(&:to_s).sort, "unexpected" => [], "missing" => [],
-        "added_by_use" => [], "ancestors_changed" => false, "reachable" => [], "app_intact" => true,
-        "working" => true
+        "added_by_use" => [], "ancestors_changed" => false, "core_methods_from_lib" => [], "reachable" => [],
+        "app_intact" => true, "working" => true
       )
     end
   end
