@@ -80,9 +80,18 @@ Thread.new do
   end
 end
 
-# Classes the SDK could plausibly extend: their method lists before require
-# catch an alias of a built-in method, which has no source location.
-EXTENDED = [String, Array, Hash, Symbol, Integer, Float, Numeric, Comparable, Object, Kernel].freeze
+# Core classes the SDK could plausibly extend or mix into. Their method lists
+# before require catch an alias of a built-in, which has no source location.
+EXTENDED = [Object, Kernel, BasicObject, Module, Class, String, Symbol, Array, Hash, Integer, Float, Numeric,
+            Comparable, Enumerable, NilClass, TrueClass, FalseClass, Time].freeze
+# Private top-level constants: Ruby lists only public ones, so probe every
+# constant-like symbol Ruby knows; const_defined? sees private ones too.
+def private_top_level
+  public_names = Object.constants
+  Symbol.all_symbols.select do |name|
+    name.match?(/\A[A-Z]\w*\z/) && !public_names.include?(name) && Object.const_defined?(name, false)
+  end
+end
 method_lists = lambda do
   EXTENDED.to_h do |mod|
     [mod, [mod.instance_methods(false) + mod.private_instance_methods(false),
@@ -91,10 +100,12 @@ method_lists = lambda do
 end
 methods_before = method_lists.call
 before = Object.constants
+private_before = private_top_level
 object_ancestors_before = Object.ancestors.dup
 kernel_ancestors_before = Kernel.ancestors.dup
 require "absmartly"
 after_require = Object.constants
+private_after_require = private_top_level
 # A constant counts as the SDK's if it is located in lib or was eval'd. No
 # location means it was defined in C, and the SDK has no C code.
 sdk_owned = (after_require - before).select do |name|
@@ -154,7 +165,6 @@ module_context = Absmartly.create_context(Absmartly.create_context_config.tap { 
 module_context.wait_until_ready
 working << module_context.ready?
 module_context.close
-# A fetch that fails at transport level (nothing listens on port 1).
 unreachable = ABSmartly.new("http://127.0.0.1:1/v1", api_key: "k", application: "a", environment: "e", retries: 0)
 failed = unreachable.create_context(config)
 failed.wait_until_ready
@@ -199,27 +209,32 @@ ObjectSpace.each_object(Module) do |mod|
     end
   end
 end
-# Methods with no Ruby source location (aliases of built-ins) added since
-# before require, on the classes the SDK could plausibly extend.
+# Aliases of built-in methods (no Ruby source location) added since before
+# require, on the classes the SDK could plausibly extend.
 methods_after = method_lists.call
 EXTENDED.each do |mod|
   [[mod, "#", 0], [mod.singleton_class, ".", 1]].each do |owner, separator, index|
     (methods_after[mod][index] - methods_before[mod][index]).each do |method|
-      next unless owner.instance_method(method).source_location.nil?
+      unbound = owner.instance_method(method)
+      # An alias keeps its original's name; a C extension method (date's
+      # Time#to_date, loaded by a dependency) is its own original.
+      next unless unbound.source_location.nil? && unbound.original_name != method
 
       foreign_methods_from_lib << "#{mod}#{separator}#{method}"
     end
   end
 end
 # No SDK module mixed into a core class (an include adds no method there).
-core_classes = [Object, Kernel, BasicObject, Module, Class, String, Symbol, Array, Hash, Integer, Float, Numeric,
-                Comparable, Enumerable, NilClass, TrueClass, FalseClass, Time]
-sdk_mixins = core_classes.flat_map do |klass|
+sdk_mixins = EXTENDED.flat_map do |klass|
   (klass.ancestors + klass.singleton_class.ancestors).select { |mod| sdk_module.call(mod) && mod.name }
                                                      .map { |mod| "#{klass}<#{mod}" }
 end
+# Resolved as application code does (a bare name at top level), so a class
+# made private or replaced by the SDK no longer counts as intact.
 app_intact = app_classes.all? do |name, (klass, print)|
-  Object.const_get(name).equal?(klass) && fingerprint(klass) == print
+  TOPLEVEL_BINDING.eval(name.to_s).equal?(klass) && fingerprint(klass) == print
+rescue NameError
+  false
 end
 
 puts JSON.generate(
@@ -227,6 +242,7 @@ puts JSON.generate(
   unexpected: (sdk_owned - expected).sort,
   missing: (expected - sdk_owned).sort,
   added_by_use: (Object.constants - after_require).sort,
+  private_top_level_added: ((private_after_require - private_before) | (private_top_level - private_after_require)).sort,
   ancestors_changed: ancestors_changed,
   foreign_methods_from_lib: foreign_methods_from_lib.sort.uniq,
   sdk_mixins: sdk_mixins.uniq,

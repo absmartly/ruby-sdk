@@ -71,21 +71,24 @@ RSpec.describe "Backwards Compatibility" do
     ScheduledThreadPoolExecutor UnaryOperator Unit ValueOperator VarOperator VariableParser VariantAssigner
   ].freeze
 
-  # spec/compat/top_level_surface.rb loads the SDK, drives every public entry
-  # point against a local collector (reads, peeks, rules, holdouts, custom
+  # spec/compat/top_level_surface.rb loads the SDK and drives its public entry
+  # points against a local collector (reads, peeks, rules, holdouts, custom
   # fields, track, accepted and rejected publishes, refresh, overrides, async
   # and pre-fetched contexts, the Absmartly module API, a failed fetch,
-  # finalize, close), then reports the top-level surface. Either load order
-  # must leave exactly the 1.3.0 names, add none on use, add no methods to
-  # classes it does not own beyond 1.3.0's, mix no SDK module into a core
-  # class, and leave an application's classes as they were.
+  # finalize, close). In both load orders it promises, from require through
+  # that use:
+  # - top-level constants: exactly 1.3.0's, public or private, none added by use;
+  # - no SDK addition reachable at top level by name;
+  # - methods lib defines on classes it doesn't own (including aliases of
+  #   built-ins on core classes): exactly 1.3.0's four;
+  # - no SDK module in a core class's ancestors, Object's or Kernel's;
+  # - an application's same-named classes still resolve as before, unchanged.
   %w[sdk_first app_first].each do |mode|
     it "keeps the published 1.3.0 top-level surface through real use (#{mode.tr("_", " ")})" do
       lib = File.expand_path("../lib", __dir__)
       script = File.expand_path("compat/top_level_surface.rb", __dir__)
       command = [RbConfig.ruby, "-W:no-deprecated", "-I", lib, script, lib, mode, *V1_3_0_TOP_LEVEL.map(&:to_s)]
       out = err = status = nil
-      # A hang fails the example instead of stalling the run.
       Open3.popen3(*command) do |stdin, stdout, stderr, wait|
         stdin.close
         readers = [Thread.new { stdout.read }, Thread.new { stderr.read }]
@@ -100,7 +103,7 @@ RSpec.describe "Backwards Compatibility" do
       report = JSON.parse(out.lines.last)
       expect(report).to eq(
         "sdk_owned" => V1_3_0_TOP_LEVEL.map(&:to_s).sort, "unexpected" => [], "missing" => [],
-        "added_by_use" => [], "ancestors_changed" => false,
+        "added_by_use" => [], "private_top_level_added" => [], "ancestors_changed" => false,
         "foreign_methods_from_lib" => ["Array.wrap", "String#compare_to", "String#get_char", "String#underscore"],
         "sdk_mixins" => [], "reachable" => [], "app_intact" => true, "working" => true
       )
