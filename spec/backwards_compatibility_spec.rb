@@ -53,6 +53,18 @@ RSpec.describe "Backwards Compatibility" do
     expect([out, status.success?]).to eq(["[Module, Object, [], true]\n", true]), err
   end
 
+  # Published 1.3.0 never defined these at top level (only unreleased main
+  # did), so 1.4.0 keeps them namespaced: a top-level alias would make an
+  # application's own `class PublishError < RuntimeError` fail.
+  it "defines ContextDataResult and PublishError only under Absmartly, as 1.3.0 defined neither" do
+    out, err, status = run_ruby(<<~RUBY)
+      require "absmartly"
+      p [defined?(::ContextDataResult), defined?(::PublishError),
+         Absmartly::ContextDataResult.class, Absmartly::PublishError.ancestors.include?(StandardError)]
+    RUBY
+    expect([out, status.success?]).to eq(["[nil, nil, Class, true]\n", true]), err
+  end
+
   it "loads next to application classes named like the SDK's additions without replacing them" do
     out, err, status = run_ruby(<<~RUBY)
       class PublishError < RuntimeError; end
