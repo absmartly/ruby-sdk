@@ -1309,7 +1309,6 @@ RSpec.describe "create_context_async" do
       Timeout.timeout(5) { reader.join }
 
       expect(old_assignment.instance_variable_get(:@failed_snapshot)).to be true
-      # The recovered assignment is cached and reused: repeated reads add no exposure.
       3.times { expect(context.variable_value("banner.size", "default")).to eq("large") }
       context.publish
       expect(exposures).to eq([["exp_test_ab", 0, 1], ["exp_test_ab", 1, 1]])

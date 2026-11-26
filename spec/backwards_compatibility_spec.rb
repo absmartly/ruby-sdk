@@ -79,13 +79,31 @@ RSpec.describe "Backwards Compatibility" do
         location && location.first && location.first.start_with?(#{lib.inspect})
       end
       puts own.sort.join(" ")
-      p [defined?(::ContextDataResult), defined?(::PublishError),
+      # const_defined? with inherit false also sees private constants, which
+      # Object.constants and defined? hide.
+      p [Object.const_defined?(:ContextDataResult, false), Object.const_defined?(:PublishError, false),
          Absmartly::ContextDataResult.class, Absmartly::PublishError.ancestors.include?(StandardError)]
     RUBY
     expect(status.success?).to be(true), err
     lines = out.lines
     expect(lines.first.split.map(&:to_sym)).to eq(V1_3_0_TOP_LEVEL.sort)
-    expect(lines.last).to eq("[nil, nil, Class, true]\n")
+    expect(lines.last).to eq("[false, false, Class, true]\n")
+  end
+
+  # SDK first, then the application's own classes named like the SDK's
+  # additions, as an app that requires gems before its own code does.
+  it "lets an application define classes named like the SDK's additions after loading it" do
+    out, err, status = run_ruby(<<~RUBY)
+      require "absmartly"
+      class PublishError < RuntimeError; end
+      class ContextDataResult < Struct.new(:value); end
+      class SemverComparator; end
+      class ContextPublisher; end
+      class DefaultContextPublisher; end
+      p [PublishError.superclass, ContextDataResult.new(1).value, SemverComparator.class,
+         PublishError.equal?(Absmartly::PublishError), ContextDataResult.equal?(Absmartly::ContextDataResult)]
+    RUBY
+    expect([out, status.success?]).to eq(["[RuntimeError, 1, Class, false, false]\n", true]), err
   end
 
   it "loads next to application classes named like the SDK's additions without replacing them" do

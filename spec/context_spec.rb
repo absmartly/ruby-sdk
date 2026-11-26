@@ -742,7 +742,6 @@ RSpec.describe Context do
         resume << true
         worker.join(1) || worker.kill
       end
-      # No retry may repair a partial state before these assertions.
       expect(context.closed?).to be true
       expect { context.set_override("exp_test_ab", 1) }.to raise_error(IllegalStateException)
       expect { context.experiments }.to raise_error(IllegalStateException)
