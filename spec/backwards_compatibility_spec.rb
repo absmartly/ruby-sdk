@@ -53,16 +53,41 @@ RSpec.describe "Backwards Compatibility" do
     expect([out, status.success?]).to eq(["[Module, Object, [], true]\n", true]), err
   end
 
-  # Published 1.3.0 never defined these at top level (only unreleased main
-  # did), so 1.4.0 keeps them namespaced: a top-level alias would make an
-  # application's own `class PublishError < RuntimeError` fail.
-  it "defines ContextDataResult and PublishError only under Absmartly, as 1.3.0 defined neither" do
+  # The top-level constants the SDK's own files define after `require
+  # "absmartly"`, exactly as the published 1.3.0 gem defined them. Additions
+  # live under Absmartly so they can't clash with an application's classes;
+  # ContextDataResult and PublishError were top-level only on unreleased main.
+  V1_3_0_TOP_LEVEL = %i[
+    ABSmartly ABSmartlyConfig Absmartly AndCombinator Assignment Attribute AudienceDeserializer AudienceMatcher
+    BinaryOperator BooleanCombinator Client ClientConfig Context ContextConfig ContextCustomFieldValues ContextData
+    ContextDataDeserializer ContextDataProvider ContextEventHandler ContextEventLogger ContextEventSerializer
+    CustomFieldValue DefaultAudienceDeserializer DefaultContextDataDeserializer DefaultContextDataProvider
+    DefaultContextEventHandler DefaultContextEventSerializer DefaultHttpClient DefaultHttpClientConfig
+    DefaultVariableParser EMPTY_LIST EMPTY_MAP EqualsOperator Evaluator Experiment ExperimentApplication
+    ExperimentVariables ExperimentVariant Exposure ExprEvaluator GoalAchievement GreaterThanOperator
+    GreaterThanOrEqualOperator Hashing HttpClient IllegalStateException InOperator JsonExpr LessThanOperator
+    LessThanOrEqualOperator MatchOperator NilOperator NotOperator OrCombinator PublishEvent
+    ScheduledThreadPoolExecutor UnaryOperator Unit ValueOperator VarOperator VariableParser VariantAssigner
+  ].freeze
+
+  it "defines exactly the published 1.3.0 top-level constants, with ContextDataResult and PublishError namespaced" do
+    lib = File.expand_path("../lib", __dir__)
     out, err, status = run_ruby(<<~RUBY)
       require "absmartly"
+      own = Object.constants.select do |name|
+        next false if Object.autoload?(name)
+
+        location = Object.const_source_location(name)
+        location && location.first && location.first.start_with?(#{lib.inspect})
+      end
+      puts own.sort.join(" ")
       p [defined?(::ContextDataResult), defined?(::PublishError),
          Absmartly::ContextDataResult.class, Absmartly::PublishError.ancestors.include?(StandardError)]
     RUBY
-    expect([out, status.success?]).to eq(["[nil, nil, Class, true]\n", true]), err
+    expect(status.success?).to be(true), err
+    lines = out.lines
+    expect(lines.first.split.map(&:to_sym)).to eq(V1_3_0_TOP_LEVEL.sort)
+    expect(lines.last).to eq("[nil, nil, Class, true]\n")
   end
 
   it "loads next to application classes named like the SDK's additions without replacing them" do
