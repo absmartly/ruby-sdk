@@ -83,8 +83,6 @@ end
 before = Object.constants
 object_ancestors_before = Object.ancestors.dup
 kernel_ancestors_before = Kernel.ancestors.dup
-# Core classes the SDK must not add methods to (1.3.0 already reopens String).
-CORE = [Object, Kernel, BasicObject, Module, Class, Object.singleton_class, Kernel.singleton_class].freeze
 require "absmartly"
 after_require = Object.constants
 # A constant counts as the SDK's if it is located in lib or was eval'd. No
@@ -169,10 +167,31 @@ ancestors_changed = Kernel.ancestors != kernel_ancestors_before || new_object_an
     mod.instance_method(method).source_location&.first.to_s.start_with?(lib)
   end || mod == Absmartly
 end
-core_methods_from_lib = CORE.flat_map do |mod|
-  (mod.instance_methods(false) + mod.private_instance_methods(false)).select do |method|
-    mod.instance_method(method).source_location&.first.to_s.start_with?(lib)
-  end.map { |method| "#{mod}##{method}" }
+# Methods lib defines on modules it does not own (core classes, gems).
+# 1.3.0 already added Array.wrap and String#compare_to, #get_char and
+# #underscore; anything beyond those is new.
+sdk_module = lambda do |mod|
+  root = mod.name.to_s.split("::").first
+  root.nil? || root.empty? || root == "Absmartly" || sdk_owned.include?(root.to_sym)
+end
+foreign_methods_from_lib = []
+ObjectSpace.each_object(Module) do |mod|
+  next if sdk_module.call(mod)
+
+  [[mod, "#"], [mod.singleton_class, "."]].each do |owner, separator|
+    (owner.instance_methods(false) + owner.private_instance_methods(false)).each do |method|
+      next unless owner.instance_method(method).source_location&.first.to_s.start_with?(lib)
+
+      foreign_methods_from_lib << "#{mod}#{separator}#{method}"
+    end
+  end
+end
+# No SDK module mixed into a core class (an include adds no method there).
+core_classes = [Object, Kernel, BasicObject, Module, Class, String, Symbol, Array, Hash, Integer, Float, Numeric,
+                Comparable, Enumerable, NilClass, TrueClass, FalseClass, Time]
+sdk_mixins = core_classes.flat_map do |klass|
+  (klass.ancestors + klass.singleton_class.ancestors).select { |mod| sdk_module.call(mod) && mod.name }
+                                                     .map { |mod| "#{klass}<#{mod}" }
 end
 app_intact = app_classes.all? do |name, (klass, print)|
   Object.const_get(name).equal?(klass) && fingerprint(klass) == print
@@ -184,7 +203,8 @@ puts JSON.generate(
   missing: (expected - sdk_owned).sort,
   added_by_use: (Object.constants - after_require).sort,
   ancestors_changed: ancestors_changed,
-  core_methods_from_lib: core_methods_from_lib.sort,
+  foreign_methods_from_lib: foreign_methods_from_lib.sort.uniq,
+  sdk_mixins: sdk_mixins.uniq,
   reachable: reachable,
   app_intact: app_intact,
   working: working.all? && requests["GET"] >= 4 && requests["PUT"] >= 2
