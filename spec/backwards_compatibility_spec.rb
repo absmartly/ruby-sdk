@@ -79,8 +79,8 @@ RSpec.describe "Backwards Compatibility" do
   # that use:
   # - top-level constants: exactly 1.3.0's, public or private, none added by use;
   # - no SDK addition reachable at top level by name;
-  # - methods lib defines on classes it doesn't own (including aliases of
-  #   built-ins on core classes): exactly 1.3.0's four;
+  # - methods lib defines on classes it doesn't own: exactly 1.3.0's four
+  #   (aliases of built-ins are checked on the core classes the script lists);
   # - no SDK module in a core class's ancestors, Object's or Kernel's;
   # - an application's same-named classes still resolve as before, unchanged.
   %w[sdk_first app_first].each do |mode|

@@ -289,8 +289,8 @@ module ContextSharedVariableKeysSpec
       end
 
       # The refresh lands after the walk has read its candidates and before it
-      # resolves the first one, so a walk that rereads the live state would
-      # mix the old candidate list with the new experiments.
+      # resolves the first one: the walk must start again on the new state
+      # instead of finishing the old candidate list against new experiments.
       it "resolves every candidate from the snapshot it read them from" do
         before = [experiment(1, "exp_a", audienceStrict: true, audience: US_ONLY),
                   experiment(2, "exp_b", configs: ['{"color":"blue"}', '{"color":"blue"}']),
