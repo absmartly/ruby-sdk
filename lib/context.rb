@@ -1217,21 +1217,47 @@ class Context
       key = key.to_s.to_sym
       winner = nil
       attempts = 0
-      while attempts < VARIABLE_WALK_ATTEMPTS
+      while true # rubocop:disable Style/InfiniteLoop -- no block allocation on the read path
+        # A refresh that keeps landing mid-walk (from a matcher or logger
+        # callback) can't make a read loop: after the last attempt it gives the
+        # default and exposes nothing, as no snapshot stood still for it.
+        return default_value if attempts >= VARIABLE_WALK_ATTEMPTS
+
         attempts += 1
         state = @state
         winner = variable_assignment(key, expose, state)
-        final = attempts >= VARIABLE_WALK_ATTEMPTS
-        next unless final || @state.equal?(state)
+        # A refresh during the walk can move the key to other experiments.
+        # The candidates, the winner and the holdouts exposed must come from
+        # one snapshot, so nothing is exposed until the walk stands.
+        next unless @state.equal?(state)
+
+        visited = @walk_holdouts
+        @walk_holdouts = nil
+        unless visited.nil?
+          i = 0
+          # A holdout's logger callback may refresh; the walk then starts again
+          # instead of exposing the rest of the old one.
+          while i < visited.length && @state.equal?(state)
+            queue_holdout_exposures(visited[i])
+            i += 1
+          end
+          next unless @state.equal?(state)
+        end
         break if winner.nil? || !expose || winner.exposed
-        break unless claim_and_queue_exposure(winner, winner.name) == :evicted && !final
+        # The unit was set in between, so the walk may now pick another
+        # candidate: it starts again, as java-sdk's settleExposure does.
+        break unless claim_and_queue_exposure(winner, winner.name) == :evicted
       end
       return default_value if winner.nil? || winner.variables.nil? || !winner.variables.key?(key)
 
       winner.variables[key]
     end
 
+    # When exposing, collects in @walk_holdouts each visited candidate whose
+    # holdouts are still to expose (the array only when there is one); the
+    # caller exposes them once the walk stands on its snapshot.
     def variable_assignment(key, expose, state = @state)
+      @walk_holdouts = nil
       candidates = state.index_variables[key]
       return nil if candidates.nil?
 
@@ -1249,7 +1275,7 @@ class Context
         # or not yet exposed (see queue_holdout_exposures).
         if expose && !assignment.holdout_assignments.nil? &&
            (!assignment.exposed || (assignment.overridden && !assignment.send(:holdouts_done?)))
-          queue_holdout_exposures(assignment)
+          (@walk_holdouts ||= []) << assignment
         end
         return assignment if assignment.assigned || assignment.overridden || assignment.rule_override
 
@@ -1545,6 +1571,7 @@ class Context
       @assignment_mutex = Mutex.new
       @failed_marked = false
       @exposing = {}.compare_by_identity
+      @walk_holdouts = nil
       @exposure_condvar = ConditionVariable.new
       @assignments = {}
       @clock = clock.is_a?(String) ? Time.iso8601(clock) : clock
