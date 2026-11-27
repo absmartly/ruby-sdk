@@ -25,8 +25,7 @@ class Context
   private_constant :EventsQueuedWhileClosing
   NO_HOLDOUTS = {}.freeze
   private_constant :NO_HOLDOUTS
-  # Walks a read may restart after a refresh overtook it (java-sdk's
-  # MAX_EXPOSURE_ATTEMPTS); then it returns the default and exposes nothing.
+  # After this many overtaken walks a read returns the default, exposing nothing.
   VARIABLE_WALK_ATTEMPTS = 3
   private_constant :VARIABLE_WALK_ATTEMPTS
 
@@ -1227,8 +1226,7 @@ class Context
         winner = variable_assignment(key, expose, state)
         visited = nil
         winner, visited = winner if winner.is_a?(Array)
-        # Value and exposures come from one snapshot: nothing is exposed until
-        # the walk stands, and a refresh (even from a holdout's logger) restarts it.
+        # A refresh, even one from a holdout's logger, restarts the walk.
         next unless @state.equal?(state)
 
         unless visited.nil?
