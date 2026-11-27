@@ -734,6 +734,22 @@ module ContextSharedVariableKeysSpec
           expect(exposures_of(context).map(&:first)).to eq(%w[overridden holdout_user])
         end
       end
+
+      # An override's holdout arm whose unit is never set: once read, later
+      # reads have nothing to expose for it and skip the holdout path. And an
+      # override of an experiment with no unit type at all still reads.
+      [["user_id", "never set"], [nil, "no unit type"]].each do |unit_type, label|
+        it "reads an override with holdouts whose unit is #{label} without entering the holdout path again" do
+          late = holdout(11, "holdout_user", NOT_HOLDING_OUT).merge(unitType: "user_id")
+          context = create_context([experiment(1, "overridden", unit_type: unit_type, holdoutIds: [11]),
+                                    experiment(2, "other")],
+                                   holdouts: [late], overrides: { "overridden" => 1 })
+          expect(context.variable_value("color", "default")).to eq("treatment_1")
+
+          expect(context).not_to receive(:queue_holdout_exposures)
+          2.times { expect(context.variable_value("color", "default")).to eq("treatment_1") }
+        end
+      end
     end
   end
 end
