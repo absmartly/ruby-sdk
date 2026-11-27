@@ -1277,8 +1277,7 @@ class Context
         # has exposed them, unless it is an override with an arm still missing
         # or not yet exposed (see queue_holdout_exposures).
         if expose && !assignment.holdout_assignments.nil? &&
-           (!assignment.exposed || (assignment.overridden && !assignment.send(:holdouts_done?))) &&
-           holdouts_pending?(assignment)
+           (!assignment.exposed || assignment.overridden) && holdouts_pending?(assignment)
           (visited ||= []) << assignment
         end
         if assignment.assigned || assignment.overridden || assignment.rule_override
@@ -1299,8 +1298,13 @@ class Context
       i = 0
       while i < arms.length
         arm = arms[i]
-        # A missing arm is pending only for an override whose unit is now set.
-        return true if arm.nil? ? assignment.overridden && unit_now_set?(assignment) : !arm.exposed
+        if arm.nil?
+          # A missing arm is pending only for an override whose unit is now set.
+          unit_type = assignment.unit_type
+          return true if assignment.overridden && !unit_type.nil? && !@units[unit_type.to_sym].nil?
+        elsif !arm.exposed
+          return true
+        end
 
         i += 1
       end
@@ -1341,15 +1345,7 @@ class Context
       return if holdout_assignments.nil?
 
       # Checked again under the lock; this keeps warm reads off the clock and lock.
-      if holdout_assignments.all? { |holdout_assignment| holdout_assignment.nil? || holdout_assignment.exposed }
-        # An exposed override with every arm resolved and exposed has nothing
-        # left to expose: later reads skip this call (a rebuilt assignment,
-        # after a refresh, starts without the flag).
-        if assignment.overridden && assignment.exposed && !holdout_assignments.include?(nil)
-          assignment.send(:holdouts_done=, true)
-        end
-        return
-      end
+      return if holdout_assignments.all? { |holdout_assignment| holdout_assignment.nil? || holdout_assignment.exposed }
 
       exposed_at = @clock.to_i
       holdout_exposures = nil
@@ -1703,14 +1699,7 @@ class Assignment
     # Private: set by the context on an assignment built from a failed load's
     # empty snapshot. Initialized so every assignment keeps one layout.
     @failed_snapshot = false
-    # Private: an exposed override whose holdout arms are all exposed.
-    @holdouts_done = false
   end
-
-  private
-    attr_accessor :holdouts_done
-
-    alias holdouts_done? holdouts_done
 end
 
 class ExperimentVariables

@@ -748,6 +748,7 @@ module ContextSharedVariableKeysSpec
 
           expect(context).not_to receive(:queue_holdout_exposures)
           2.times { expect(context.variable_value("color", "default")).to eq("treatment_1") }
+          expect(exposures_of(context)).to eq([["overridden", 1, false, true, false]])
         end
       end
     end
