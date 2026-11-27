@@ -751,6 +751,15 @@ module ContextSharedVariableKeysSpec
           expect(exposures_of(context)).to eq([["overridden", 1, false, true, false]])
         end
       end
+
+      it "does not check pending holdouts on warm reads of an exposed, not overridden winner" do
+        context = create_context([experiment(1, "exp_low", holdoutIds: [11]), experiment(2, "exp_high", holdoutIds: [11])],
+                                 holdouts: [holdout(11, "holdout_a", NOT_HOLDING_OUT)])
+        context.variable_value("color", "default")
+
+        expect(context).not_to receive(:holdouts_pending?)
+        2.times { expect(context.variable_value("color", "default")).to eq("treatment_1") }
+      end
     end
   end
 end
