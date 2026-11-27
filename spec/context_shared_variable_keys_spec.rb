@@ -369,10 +369,8 @@ module ContextSharedVariableKeysSpec
         expect(context.pending_count).to eq(0)
       end
 
-      # Round 33 replay: the refresh lands from the audience matcher while the
-      # walk evaluates exp_a, and also gives exp_b a holdout of its own. The
-      # walk is discarded before anything is exposed, so b_only, which no
-      # standing walk visits, is never exposed.
+      # The refresh (from the matcher, mid-walk) gives exp_b a holdout no
+      # standing walk visits.
       it "exposes no holdout of a candidate visited only by a discarded walk" do
         holdouts_before = [holdout(9, "holdout_a", NOT_HOLDING_OUT)]
         before = [strict_mismatch(1, "exp_a").merge(holdoutIds: [9]),
@@ -415,13 +413,9 @@ module ContextSharedVariableKeysSpec
         expect([[value, exposures_of(context).map(&:first)]]).to include(["green", %w[holdout_a exp_c]])
       end
 
-      # A matcher that refreshes on every evaluation, with data alternating so
-      # every walk is overtaken: the read stops after three attempts, returns
-      # the default and exposes nothing, rather than refetching forever.
       %i[variable_value peek_variable_value].each do |read|
         it "#{read} stops after three walks a refresh overtook" do
-          # Each refresh bumps exp_a's iteration, so every walk resolves it (and
-          # evaluates its audience) again.
+          # A new iteration per refresh makes every walk re-evaluate exp_a.
           snapshot = lambda do |owner, iteration|
             json = JSON.generate(holdouts: [holdout(9, "holdout_a", NOT_HOLDING_OUT)], experiments: [
               strict_mismatch(1, "exp_a").merge(holdoutIds: [9], iteration: iteration),
@@ -467,12 +461,8 @@ module ContextSharedVariableKeysSpec
         end
       end
 
-      # Two reads on one context, interleaved outside the locks: a
-      # variable_value collects exp_low's holdout and pauses before resolving
-      # exp_high, while a peek on another key runs whole (peek first), or the
-      # variable read finishes while the peek is paused (variable first).
-      # Each read's collected holdouts are its own: the variable read exposes
-      # its holdout before its winner, and the peek exposes nothing.
+      # The variable read pauses before exp_high and the peek before
+      # exp_size; then one finishes first, then the other.
       %i[peek_first variable_first].each do |order|
         it "keeps each concurrent read's collected holdouts its own (#{order.to_s.tr("_", " ")})" do
           # "size" is shared too, so the peek walks several candidates.

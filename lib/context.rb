@@ -25,6 +25,8 @@ class Context
   private_constant :EventsQueuedWhileClosing
   NO_HOLDOUTS = {}.freeze
   private_constant :NO_HOLDOUTS
+  # Walks a read may restart after a refresh overtook it (java-sdk's
+  # MAX_EXPOSURE_ATTEMPTS); then it returns the default and exposes nothing.
   VARIABLE_WALK_ATTEMPTS = 3
   private_constant :VARIABLE_WALK_ATTEMPTS
 
@@ -1218,28 +1220,19 @@ class Context
       winner = nil
       attempts = 0
       while true # rubocop:disable Style/InfiniteLoop -- no block allocation on the read path
-        # A refresh that keeps landing mid-walk (from a matcher or logger
-        # callback) can't make a read loop: after the last attempt it gives the
-        # default and exposes nothing, as no snapshot stood still for it.
         return default_value if attempts >= VARIABLE_WALK_ATTEMPTS
 
         attempts += 1
         state = @state
-        # The holdouts to expose are collected per read, never per context,
-        # so concurrent reads can't share them; the list is created only at
-        # the first candidate with a holdout still to expose.
         winner = variable_assignment(key, expose, state)
         visited = nil
         winner, visited = winner if winner.is_a?(Array)
-        # A refresh during the walk can move the key to other experiments.
-        # The candidates, the winner and the holdouts exposed must come from
-        # one snapshot, so nothing is exposed until the walk stands.
+        # Value and exposures come from one snapshot: nothing is exposed until
+        # the walk stands, and a refresh (even from a holdout's logger) restarts it.
         next unless @state.equal?(state)
 
         unless visited.nil?
           i = 0
-          # A holdout's logger callback may refresh; the walk then starts again
-          # instead of exposing the rest of the old one.
           while i < visited.length && @state.equal?(state)
             queue_holdout_exposures(visited[i])
             i += 1
@@ -1271,11 +1264,7 @@ class Context
         # Resolved from the state current under the assignment lock, so a read
         # that a refresh overtook can't reinstall an old assignment.
         assignment = assignment(candidates[i].data.name)
-        # As in java-sdk, each visited candidate's holdouts, the winner's
-        # included, are queued before the winner's own exposure.
-        # Inline guard: most candidates have no holdouts, and an exposed one
-        # has exposed them, unless it is an override with an arm still missing
-        # or not yet exposed (see queue_holdout_exposures).
+        # As in java-sdk, visited candidates' holdouts precede the winner's exposure.
         if expose && !assignment.holdout_assignments.nil? &&
            (!assignment.exposed || assignment.overridden) && holdouts_pending?(assignment)
           (visited ||= []) << assignment
@@ -1299,7 +1288,6 @@ class Context
       while i < arms.length
         arm = arms[i]
         if arm.nil?
-          # A missing arm is pending only for an override whose unit is now set.
           unit_type = assignment.unit_type
           return true if assignment.overridden && !unit_type.nil? && !@units[unit_type.to_sym].nil?
         elsif !arm.exposed
