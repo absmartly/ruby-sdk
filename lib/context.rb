@@ -1225,18 +1225,18 @@ class Context
 
         attempts += 1
         state = @state
-        # Per read, not per context: concurrent reads never share it. Only a
-        # key with several candidates needs one; a single candidate's holdouts
-        # are queued as the walk meets them, as before.
-        candidates = state.index_variables[key]
-        visited = expose && candidates && candidates.length > 1 ? [] : nil
-        winner = variable_assignment(key, visited || expose, state)
+        # The holdouts to expose are collected per read, never per context,
+        # so concurrent reads can't share them; the list is created only at
+        # the first candidate with a holdout still to expose.
+        winner = variable_assignment(key, expose, state)
+        visited = nil
+        winner, visited = winner if winner.is_a?(Array)
         # A refresh during the walk can move the key to other experiments.
         # The candidates, the winner and the holdouts exposed must come from
         # one snapshot, so nothing is exposed until the walk stands.
         next unless @state.equal?(state)
 
-        unless visited.nil? || visited.empty?
+        unless visited.nil?
           i = 0
           # A holdout's logger callback may refresh; the walk then starts again
           # instead of exposing the rest of the old one.
@@ -1256,13 +1256,14 @@ class Context
       winner.variables[key]
     end
 
-    # expose is true to queue each visited candidate's holdouts as met, or an
-    # array to collect the candidates with a holdout still to expose instead;
-    # the caller exposes those once the walk stands.
+    # Returns the winner, or, when exposing and a visited candidate still has
+    # a holdout to expose, [winner, those candidates] (only then allocated);
+    # the caller exposes them once the walk stands.
     def variable_assignment(key, expose, state = @state)
       candidates = state.index_variables[key]
       return nil if candidates.nil?
 
+      visited = nil
       suppressed_fallback = nil
       i = 0
       # An index loop, not each: no block frame per candidate on the read path.
@@ -1276,19 +1277,18 @@ class Context
         # has exposed them, unless it is an override with an arm still missing
         # or not yet exposed (see queue_holdout_exposures).
         if expose && !assignment.holdout_assignments.nil? &&
-           (!assignment.exposed || (assignment.overridden && !assignment.send(:holdouts_done?)))
-          if expose == true
-            queue_holdout_exposures(assignment)
-          elsif holdouts_pending?(assignment)
-            expose << assignment
-          end
+           (!assignment.exposed || (assignment.overridden && !assignment.send(:holdouts_done?))) &&
+           holdouts_pending?(assignment)
+          (visited ||= []) << assignment
         end
-        return assignment if assignment.assigned || assignment.overridden || assignment.rule_override
+        if assignment.assigned || assignment.overridden || assignment.rule_override
+          return visited ? [assignment, visited] : assignment
+        end
 
         suppressed_fallback ||= assignment if assignment.suppressed
         i += 1
       end
-      suppressed_fallback
+      visited ? [suppressed_fallback, visited] : suppressed_fallback
     end
 
     # Whether a candidate has a holdout arm still to expose (or, for an

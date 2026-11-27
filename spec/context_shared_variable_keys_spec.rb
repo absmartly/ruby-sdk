@@ -476,7 +476,7 @@ module ContextSharedVariableKeysSpec
       # its holdout before its winner, and the peek exposes nothing.
       %i[peek_first variable_first].each do |order|
         it "keeps each concurrent read's collected holdouts its own (#{order.to_s.tr("_", " ")})" do
-          # "size" is shared too, so the peek walks (and collects) as well.
+          # "size" is shared too, so the peek walks several candidates.
           experiments = [strict_mismatch(1, "exp_low").merge(holdoutIds: [11]),
                          experiment(2, "exp_high"),
                          experiment(3, "exp_size", configs: ['{"size":1}', '{"size":2}']),
@@ -527,6 +527,86 @@ module ContextSharedVariableKeysSpec
           expect(pending_after_peek).to eq(0)
           expect(exposures_of(context)).to eq([assigned("holdout_a"), assigned("exp_high")])
         end
+      end
+
+      # Two exposing reads on two shared keys, interleaved outside the locks:
+      # each collects and exposes its own loser's holdout.
+      it "keeps each of two concurrent variable_value reads' collected holdouts its own" do
+        experiments = [strict_mismatch(1, "a_low").merge(holdoutIds: [11]), experiment(2, "a_high"),
+                       experiment(3, "b_low", configs: ['{"size":1}', '{"size":1}'], audienceStrict: true,
+                                              audience: US_ONLY, holdoutIds: [12]),
+                       experiment(4, "b_high", configs: ['{"size":2}', '{"size":2}'])]
+        context = create_context(experiments, holdouts: [holdout(11, "h_a", NOT_HOLDING_OUT),
+                                                         holdout(12, "h_b", NOT_HOLDING_OUT)])
+        paused = Queue.new
+        resume = Queue.new
+        allow(context).to receive(:assignment).and_wrap_original do |original, name|
+          if Thread.current[:role] == :a && name.to_s == "a_high" && !Thread.current[:paused]
+            Thread.current[:paused] = true
+            paused << true
+            resume.pop
+          end
+          original.call(name)
+        end
+        first = Thread.new do
+          Thread.current[:role] = :a
+          context.variable_value("color", "default")
+        end
+        begin
+          Timeout.timeout(5) { paused.pop }
+          second = Thread.new { context.variable_value("size", 0) }
+          Timeout.timeout(5) { second.join }
+        ensure
+          resume << true
+          first.join(5) || first.kill
+        end
+
+        expect([first.value, second.value]).to eq(%w[treatment_2] + [2])
+        expect(exposures_of(context).map(&:first).sort).to eq(%w[a_high b_high h_a h_b])
+      end
+
+      # The refresh lands from the audience matcher while the walk evaluates a
+      # key's only candidate, and moves the key to another experiment: the
+      # walk restarts, so the old candidate's holdout is never exposed.
+      it "exposes no holdout of a single candidate a refresh overtook" do
+        before = [experiment(1, "only_a", configs: ['{"color":1}', '{"color":1}'],
+                                          audience: US_ONLY, holdoutIds: [11]),
+                  experiment(2, "only_b", configs: ['{"shade":2}', '{"shade":2}'])]
+        after = [experiment(1, "only_a", configs: ['{"shade":1}', '{"shade":1}'],
+                                         audience: US_ONLY, holdoutIds: [11]),
+                 experiment(2, "only_b", configs: ['{"color":2}', '{"color":2}'])]
+        holdouts = [holdout(11, "h_a", NOT_HOLDING_OUT)]
+        refreshed = JSON.generate(experiments: after, holdouts: holdouts)
+        provider = double("ContextDataProvider")
+        allow(provider).to receive(:context_data) do
+          OpenStruct.new(data_future: DefaultContextDataDeserializer.new.deserialize(refreshed, 0, refreshed.length),
+                         success?: true)
+        end
+        holder = {}
+        matcher = AudienceMatcher.new(DefaultAudienceDeserializer.new)
+        evaluate = matcher.method(:evaluate)
+        matcher.define_singleton_method(:evaluate) do |audience, attributes|
+          result = evaluate.call(audience, attributes)
+          if holder[:armed] && !holder[:done]
+            holder[:done] = true
+            holder[:context].refresh
+          end
+          result
+        end
+        payload = JSON.generate(experiments: before, holdouts: holdouts)
+        data = DefaultContextDataDeserializer.new.deserialize(payload, 0, payload.length)
+        config = ContextConfig.create
+        config.set_units(UNIT_TYPE => UID)
+        context = Context.create(clock, config, OpenStruct.new(data_future: data, success?: true), provider,
+                                 event_handler, event_logger, DefaultVariableParser.new, matcher,
+                                 application: "website", environment: "production")
+        context.set_attribute("country", "GB")
+        holder[:context] = context
+        holder[:armed] = true
+
+        expect(context.variable_value("color", 0)).to eq(2)
+        expect(holder[:done]).to be true
+        expect(exposures_of(context).map(&:first)).to eq(["only_b"])
       end
     end
 
@@ -628,6 +708,32 @@ module ContextSharedVariableKeysSpec
 
         expect(context.peek_variable_value("color", "default")).to eq("treatment_2")
         expect(context.pending_count).to eq(0)
+      end
+
+      it "does not enter the holdout path on warm reads past an exposed loser" do
+        context = create_context([strict_mismatch(1, "exp_low").merge(holdoutIds: [11]), experiment(2, "exp_high")],
+                                 holdouts: [holdout(11, "holdout_a", NOT_HOLDING_OUT)])
+        context.variable_value("color", "default")
+
+        expect(context).not_to receive(:queue_holdout_exposures)
+        3.times { expect(context.variable_value("color", "default")).to eq("treatment_2") }
+      end
+
+      # The override's holdout arm can't be computed before its unit is set;
+      # the next read after set_unit exposes it (as java-sdk), also when the
+      # key is shared with another experiment.
+      [1, 2].each do |count|
+        it "exposes an override's late holdout arm on a #{count}-candidate key" do
+          experiments = [experiment(1, "overridden", unit_type: "user_id", holdoutIds: [11])]
+          experiments << experiment(2, "other") if count == 2
+          late = holdout(11, "holdout_user", NOT_HOLDING_OUT).merge(unitType: "user_id")
+          context = create_context(experiments, holdouts: [late], overrides: { "overridden" => 1 })
+          expect(context.variable_value("color", "default")).to eq("treatment_1")
+          context.set_unit("user_id", "u9")
+          expect(context.variable_value("color", "default")).to eq("treatment_1")
+
+          expect(exposures_of(context).map(&:first)).to eq(%w[overridden holdout_user])
+        end
       end
     end
   end
