@@ -34,7 +34,7 @@ RSpec.describe "Context system attributes" do
 
   let(:publish_future) { OpenStruct.new(success?: true) }
   let(:event_handler) do
-    ev = double("ContextPublisher")
+    ev = double("Absmartly::ContextPublisher")
     allow(ev).to receive(:publish).and_return(publish_future)
     ev
   end
@@ -302,5 +302,30 @@ RSpec.describe "ABSmartly system attributes wiring" do
 
     expect(context.peek_treatment("exp_env")).to eq(1)
     expect(context.peek_treatment("exp_app")).to eq(1)
+  end
+
+  it "reads the application and environment from a real Client on every creation path" do
+    client_config = ClientConfig.new
+    client_config.endpoint = "https://localhost/v1"
+    client_config.api_key = "key"
+    client_config.application = "website"
+    client_config.environment = "production"
+    http_client = instance_double(HttpClient)
+    allow(http_client).to receive(:get)
+      .and_return(DefaultHttpClient.default_response(200, "OK", "application/json", json))
+    config = ABSmartlyConfig.create
+    config.client = Client.new(client_config, http_client)
+    sdk = ABSmartly.create(config)
+    context_config = ContextConfig.create
+    context_config.set_unit(:session_id, "e791e240fcd3df7d238cfc285f475e8152fcc0ec")
+
+    contexts = {
+      create_context: sdk.create_context(context_config),
+      create_context_with: sdk.create_context_with(context_config, data_result),
+      create_context_async: sdk.create_context_async(context_config).wait_until_ready(5)
+    }
+    contexts.each do |path, context|
+      expect([path, context.peek_treatment("exp_env"), context.peek_treatment("exp_app")]).to eq([path, 1, 1])
+    end
   end
 end

@@ -17,7 +17,7 @@ RSpec.describe ABSmartlyConfig do
   end
 
   it ".context_event_handler" do
-    handler = ContextPublisher.new
+    handler = Absmartly::ContextPublisher.new
     config = described_class.create
     config.context_event_handler = handler
     expect(handler).to eq(config.context_event_handler)
@@ -45,7 +45,7 @@ RSpec.describe ABSmartlyConfig do
   end
 
   it "set all" do
-    handler = ContextPublisher.new
+    handler = Absmartly::ContextPublisher.new
     provider = ContextDataProvider.new
     parser = VariableParser.new
     scheduler = ScheduledExecutorService.new

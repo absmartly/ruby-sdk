@@ -130,6 +130,12 @@ RSpec.describe AudienceMatcher, "assignment rules" do
     expect(evaluate([split(".5/99.5")])).to eq(split_of(0.005, 0.995))
   end
 
+  it "skips the ECMAScript white space before a split value, and nothing else" do
+    expect(evaluate([split("\uFEFF50/\u00A050")])).to eq(split_of(0.5, 0.5))
+    expect(evaluate([split("\u202850/\u300050")])).to eq(split_of(0.5, 0.5))
+    expect(evaluate([split("\u008550/50"), assign(2)])).to eq(assigned(2))
+  end
+
   it "skips splits that are not a string or have invalid values" do
     expect(evaluate([split(nil), assign(2)])).to eq(assigned(2))
     expect(evaluate([split([50, 50]), assign(2)])).to eq(assigned(2))

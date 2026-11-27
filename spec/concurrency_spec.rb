@@ -36,7 +36,7 @@ RSpec.describe "Concurrent Operations" do
 
   let(:publish_future) { OpenStruct.new(success?: true) }
   let(:event_handler) do
-    ev = instance_double(ContextPublisher)
+    ev = instance_double(Absmartly::ContextPublisher)
     allow(ev).to receive(:publish).and_return(publish_future)
     ev
   end
@@ -191,7 +191,7 @@ RSpec.describe "Concurrent Operations" do
     it "includes each queued event in at most one publish" do
       sent = []
       sent_mutex = Mutex.new
-      handler = instance_double(ContextPublisher)
+      handler = instance_double(Absmartly::ContextPublisher)
       allow(handler).to receive(:publish) do |_ctx, event|
         sleep 0.02
         sent_mutex.synchronize { sent.concat((event.goals || []).map(&:name)) }
@@ -247,7 +247,7 @@ RSpec.describe "Concurrent Operations" do
 
     it "does not strand events when a PUBLISH callback queues an event and closes" do
       sent = []
-      handler = instance_double(ContextPublisher)
+      handler = instance_double(Absmartly::ContextPublisher)
       allow(handler).to receive(:publish) do |_ctx, event|
         sent.concat((event.goals || []).map(&:name))
         publish_future

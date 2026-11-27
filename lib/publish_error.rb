@@ -5,5 +5,7 @@
 # recover from an operational failure with an ordinary `rescue => e` /
 # `rescue StandardError` around close, finalize or publish, rather than being
 # forced to rescue Ruby's base Exception.
-class PublishError < StandardError
+module Absmartly
+  class PublishError < StandardError
+  end
 end

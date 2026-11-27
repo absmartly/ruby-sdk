@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+# Fiber.current and Fiber#alive? before Ruby 3.1.
+require "fiber"
 require_relative "hashing"
 require_relative "type_utils"
 require_relative "variant_assigner"
@@ -17,8 +19,15 @@ class Context
   # readers see either the complete old or the complete new state.
   State = Struct.new(:data, :index, :index_variables, :custom_fields)
   NO_RULES = ""
+  SEAL_FLUSH_PASSES = 2
+  private_constant :SEAL_FLUSH_PASSES
+  class EventsQueuedWhileClosing < StandardError; end
+  private_constant :EventsQueuedWhileClosing
   NO_HOLDOUTS = {}.freeze
   private_constant :NO_HOLDOUTS
+  # After this many overtaken walks a read returns the default, exposing nothing.
+  VARIABLE_WALK_ATTEMPTS = 3
+  private_constant :VARIABLE_WALK_ATTEMPTS
 
   attr_reader :pending_count
 
@@ -47,7 +56,7 @@ class Context
                 variable_parser, audience_matcher, application, environment)
 
     if data_future.success?
-      assign_data(data_future.data_future)
+      @state = build_state(data_future.data_future)
       log_event(ContextEventLogger::EVENT_TYPE::READY, data_future.data_future)
     else
       set_data_failed(data_future.exception)
@@ -58,27 +67,36 @@ class Context
   def set_data(data_future)
     ready_data = nil
     failure = nil
+    # Skip building a payload a refresh has already superseded; ready? is
+    # rechecked under the lock before a built snapshot is installed.
+    state = data_future.success? && !ready? ? build_state(data_future.data_future) : nil
     @ready_mutex.synchronize do
-      if data_future.success?
-        assign_data(data_future.data_future)
-        ready_data = data_future.data_future
+      # A refresh may already have installed data while the initial fetch was
+      # in flight: keep it, so a late success doesn't replace newer data and
+      # a late failure is only logged.
+      if ready?
+        failure = data_future.exception unless data_future.success?
+      elsif state
+        @state = state
       else
-        set_data_failed(data_future.exception)
         failure = data_future.exception
+        set_data_failed(failure)
       end
+      ready_data = @state.data unless @failed
       @ready_condvar.broadcast
     end
 
     # User callbacks run outside the readiness lock so they may call
     # wait_until_ready.
-    if failure.nil?
-      log_event(ContextEventLogger::EVENT_TYPE::READY, ready_data)
-    else
-      log_error(failure)
-    end
+    log_error(failure) unless failure.nil?
+    log_event(ContextEventLogger::EVENT_TYPE::READY, ready_data) unless ready_data.nil?
   end
 
   def wait_until_ready(timeout = nil)
+    # Called from a variable parser while this thread builds the data that
+    # would make the context ready: waiting here could never finish.
+    return self if building?
+
     @ready_mutex.synchronize do
       unless ready? || failed?
         if timeout
@@ -113,7 +131,7 @@ class Context
   end
 
   def finalizing?
-    !@closed && @closing
+    !@closed && @sealing.positive?
   end
 
   attr_reader :ready_error
@@ -135,24 +153,25 @@ class Context
   end
 
   def get_attributes
-    result = {}
-    @attributes.each do |attr|
-      result[attr.name] = attr.value
-    end
-    result
+    user_attributes
   end
 
   def experiments
     check_ready?(false)
+    check_not_closed_by_close?
 
     @state.data.experiments.map(&:name)
   end
 
   def set_override(experiment_name, variant)
+    check_not_closed_by_close?
+
     @overrides[experiment_name.to_s.to_sym] = variant
   end
 
   def set_overrides(overrides)
+    check_not_closed_by_close?
+
     @overrides.merge!(overrides.transform_keys(&:to_sym))
   end
 
@@ -183,27 +202,30 @@ class Context
   def set_unit(unit_type, uid)
     check_not_closed?
 
-    if uid.nil?
-      raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
-    elsif Absmartly::TypeUtils.numeric?(uid)
+    if Absmartly::TypeUtils.numeric?(uid)
       trimmed = uid
     else
       # Like v1.3.0, any other value (Symbol, session id, UUID object) is
       # stored as its to_s text.
       uid = uid.respond_to?(:to_str) ? uid.to_str : uid.to_s
-      trimmed = Hashing.to_utf8(uid).strip
-      if trimmed.empty?
-        raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
-      end
+      trimmed = uid.strip
     end
 
     previous = @units[unit_type.to_sym]
-    if !previous.nil? && previous != trimmed
+    # Compared as text, so 123456 and "123456" are the same unit, as in v1.3.0.
+    if !previous.nil? && previous.to_s != trimmed.to_s
       raise IllegalStateException.new("Unit '#{unit_type}' already set.")
     end
 
-    @units[unit_type.to_sym] = trimmed
-    invalidate_assignments_missing_unit(unit_type.to_s)
+    if trimmed.is_a?(String) && trimmed.empty?
+      raise IllegalStateException.new("Unit '#{unit_type}' UID must not be blank.")
+    end
+
+    if previous.nil?
+      @units[unit_type.to_sym] = trimmed
+      invalidate_assignments_missing_unit(unit_type.to_s)
+    end
+    trimmed.to_s
   end
 
   def set_units(units)
@@ -228,9 +250,12 @@ class Context
   def treatment(experiment_name)
     check_ready?(true)
 
-    assignment = assignment(experiment_name)
-    queue_exposure(assignment)
-    assignment.variant
+    while true # rubocop:disable Style/InfiniteLoop -- no block allocation on the read path
+      assignment = assignment(experiment_name)
+      # set_unit may evict it between the lookup and the exposure claim:
+      # then it is resolved again, so the variant served is the one exposed.
+      return assignment.variant unless claim_and_queue_exposure(assignment, experiment_name) == :evicted
+    end
   end
 
   # A held-out experiment publishes no exposure of its own, unless an override
@@ -238,30 +263,9 @@ class Context
   # in id order, from the arms pinned when the assignment was made, so a
   # refresh in between can't publish another holdout epoch (as in JS).
   def queue_exposure(assignment)
-    exposure = nil
-    holdout_exposures = nil
-    @queue_mutex.synchronize do
-      # Checked under the queue lock so an exposure cannot slip in after close
-      # sealed the queue and be stranded.
-      check_not_closed?
-
-      unless assignment.exposed
-        assignment.exposed = true
-
-        if !assignment.suppressed || assignment.overridden || assignment.rule_override
-          exposure = enqueue_exposure(assignment.name, assignment)
-        end
-        assignment.holdout_assignments&.each_with_index do |holdout_assignment, i|
-          next if holdout_assignment.nil? || holdout_assignment.exposed
-
-          holdout_assignment.exposed = true
-          (holdout_exposures ||= []) << enqueue_exposure(assignment.holdouts[i].name, holdout_assignment)
-        end
-      end
-    end
-    # User callbacks run outside the lock so they can call publish/track.
-    log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposure) unless exposure.nil?
-    holdout_exposures&.each { |e| log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, e) }
+    result = nil
+    claim_and_queue_exposure(assignment) { |logged| result = logged }
+    result
   end
 
   def peek_treatment(experiment_name)
@@ -272,8 +276,9 @@ class Context
 
   alias peek peek_treatment
 
-  # Maps each variable key to the name of the experiment whose value
-  # variable_value returns for it, as in v1.3.0.
+  # Maps each variable key to one experiment name, as in v1.3.0: the
+  # lowest-id experiment defining it, which is not necessarily the one whose
+  # value variable_value returns (see variable_keys_list).
   def variable_keys
     check_ready?(true)
 
@@ -365,34 +370,48 @@ class Context
   end
 
   def publish
-    check_ready?(true)
+    check_not_closed?
 
     flush
   end
 
   def refresh
-    check_ready?(true)
+    check_not_closed?
     return nil if @failed
 
     data_future = @data_provider.context_data
     if data_future.success?
-      assign_data(data_future.data_future)
+      state = build_state(data_future.data_future)
+      # Committed under the readiness lock, so a waiter on a context created
+      # asynchronously wakes, and an initial fetch that failed while this
+      # refresh was in flight no longer leaves the context failed.
+      Thread.handle_interrupt(Object => :never) do
+        @ready_mutex.synchronize do
+          @state = state
+          @failed = false
+          @data_failed = nil
+          @ready_error = nil
+          @ready_condvar.broadcast
+        end
+      end
       log_event(ContextEventLogger::EVENT_TYPE::REFRESH, data_future.data_future)
-      nil
     else
       log_error(data_future.exception)
-      data_future.exception
     end
   end
 
-  # Publishes pending events, then seals the context. If the final publish
-  # fails the context stays open with the events queued and the failure is
-  # raised, so close can be retried. Logs the "close" event only once the
-  # context is sealed; finalize does the same but logs "finalize".
+  # Publishes pending events, then seals the context and logs "close", as in
+  # v1.3.0: a publish the collector rejects is logged as an error and the
+  # context is still sealed. A publisher that raises propagates the error and
+  # leaves the context open with the events queued.
   def close
     seal(ContextEventLogger::EVENT_TYPE::CLOSE)
   end
 
+  # Like close, but as the JavaScript SDK does: if the final publish fails, the
+  # failure is raised and the context stays open with the events queued, so
+  # finalize can be retried. Logs "finalize" once sealed, and set_override,
+  # set_overrides and experiments keep working afterwards.
   def finalize
     seal(ContextEventLogger::EVENT_TYPE::FINALIZE)
   end
@@ -408,49 +427,182 @@ class Context
   end
 
   private
+    # SDK reads check the cache under the assignment lock; a direct
+    # queue_exposure call has nothing to check and may already hold it (from a
+    # custom matcher), so it skips it.
+    def with_assignment_lock_if(locked, &block)
+      locked ? @assignment_mutex.synchronize(&block) : yield
+    end
+
+    # Claims and queues assignment's exposure. With experiment_name, the claim
+    # is taken only while the assignment is still the cached one for that
+    # experiment (checked under the assignment lock, which set_unit also
+    # takes to evict), and a no-unit split assignment whose unit has since
+    # been set counts as stale; then nothing is queued and :evicted is
+    # returned so the caller resolves it again. Returns nil otherwise, never
+    # the logger's result (that is passed to the block).
+    def claim_and_queue_exposure(assignment, experiment_name = nil)
+      return if assignment.exposed
+
+      claimed = false
+      begin
+        loop do
+          status = nil
+          # Waiting for the assignment lock stays interruptible; only the claim
+          # bookkeeping under it is masked.
+          with_assignment_lock_if(experiment_name) do
+            Thread.handle_interrupt(Object => :never) do
+              @queue_mutex.synchronize do
+                check_not_closed?
+                owner = @exposing[assignment]
+                status =
+                  if owner
+                    # Another thread's exposure is in flight; this thread's own
+                    # (a reentrant read from its clock) uses the outer one.
+                    owner.equal?(Thread.current) ? :reentered : :waiting
+                  elsif assignment.exposed
+                    :exposed
+                  # On the SDK's read paths (experiment_name given), a no-unit
+                  # split assignment whose unit has since been set is stale too
+                  # (a failed exposure left it cached): resolved again. A
+                  # direct queue_exposure call queues what it is given.
+                  elsif experiment_name.nil? ||
+                        (@assignment_cache[experiment_name.to_s].equal?(assignment) && !unit_now_set?(assignment))
+                    @exposing[assignment] = Thread.current
+                    claimed = true
+                    :claimed
+                  else
+                    :evicted
+                  end
+              end
+            end
+          end
+          return :evicted if status == :evicted
+          break unless status == :waiting
+
+          @queue_mutex.synchronize do
+            owner = @exposing[assignment]
+            @exposure_condvar.wait(@queue_mutex) if owner && !owner.equal?(Thread.current)
+          end
+        end
+        return unless claimed
+
+        # Only this assignment is claimed, without holding a lock over the
+        # supplied clock; distinct nested or concurrent exposures can proceed.
+        exposed_at = @clock.to_i
+        exposure = nil
+        holdout_exposures = nil
+        @queue_mutex.synchronize do
+          # Checked under the queue lock so an exposure cannot slip in after close
+          # sealed the queue and be stranded.
+          check_not_closed?
+
+          unless assignment.exposed
+            assignment.exposed = true
+
+            # A held-out experiment publishes no exposure of its own, unless an
+            # override or rule chose its variant. The holdouts covering it then
+            # expose once each, in id order, from the arms pinned when the
+            # assignment was made (as in JS).
+            if !assignment.suppressed || assignment.overridden || assignment.rule_override
+              exposure = enqueue_exposure(assignment.name, assignment, exposed_at)
+            end
+            assignment.holdout_assignments&.each_with_index do |holdout_assignment, i|
+              next if holdout_assignment.nil? || holdout_assignment.exposed
+
+              holdout_assignment.exposed = true
+              (holdout_exposures ||= []) << enqueue_exposure(assignment.holdouts[i].name, holdout_assignment, exposed_at)
+            end
+          end
+        end
+      ensure
+        # Only the claim is released here (no assignment lock, so an unwinding
+        # timeout is not held up). A no-unit assignment left unexposed after its
+        # unit was set is rebuilt by the next read (see cached_or_new_assignment).
+        if claimed
+          Thread.handle_interrupt(Object => :never) do
+            @queue_mutex.synchronize do
+              @exposing.delete(assignment)
+              @exposure_condvar.broadcast
+            end
+          end
+        end
+      end
+      # User callbacks run outside the lock so they can call publish/track.
+      logged = log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, exposure) unless exposure.nil?
+      holdout_exposures&.each { |e| log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, e) }
+      yield logged if block_given? && !exposure.nil?
+      nil
+    end
+
     def seal(event_type)
       return nil if @closed
 
       # Called from a logger callback while a publish is in flight: defer so the
-      # events queued by the callback are still sent before finalizing.
+      # events queued by the callback are still sent before finalizing. A seal
+      # that is already running does not claim it, so the request survives if
+      # that seal fails or gives up.
       if @publish_mutex.owned?
-        @close_pending = event_type
+        @deferred_mutex.synchronize do
+          @close_pending = event_type
+          @close_requests += 1
+        end
         return nil
       end
 
-      @closing = true
+      close = event_type == ContextEventLogger::EVENT_TYPE::CLOSE
+      registered = false
       begin
-        loop do
-          result = flush
-          raise_publish_failure(result) if !@failed && publish_failed?(result)
+        Thread.handle_interrupt(Object => :never) do
+          @queue_mutex.synchronize { @sealing += 1 }
+          registered = true
+        end
+        # One extra pass sends events a logger callback queued during the
+        # first publish; after that raise with the remaining events queued,
+        # so a callback can't keep close publishing forever or lose events.
+        SEAL_FLUSH_PASSES.times do |pass|
+          # close drops a batch the collector rejected, as in v1.3.0, but only
+          # that batch; anything queued meanwhile is still sent or kept.
+          result = flush(sealing: true, drop_rejected: close)
+          last_pass = pass == SEAL_FLUSH_PASSES - 1
+          raise_publish_failure(result) if !close && publish_failed?(result)
 
           sealed = @queue_mutex.synchronize do
             next :done if @closed
-            next :retry unless @exposures.empty? && @achievements.empty?
 
-            @closed = true
+            unless @exposures.empty? && @achievements.empty?
+              raise EventsQueuedWhileClosing.new("Events queued while closing; retry close or finalize") if last_pass
+
+              next :retry
+            end
+
+            Thread.handle_interrupt(Object => :never) do
+              @sealed_by = event_type
+              @closed = true
+            end
             :sealed
           end
           return nil if sealed == :done
           next if sealed == :retry
 
-          log_event(event_type, nil)
-          return nil
+          logged = log_event(event_type, nil)
+          return close ? logged : nil
         end
+        nil
       ensure
-        @closing = false
+        if registered
+          Thread.handle_interrupt(Object => :never) do
+            @queue_mutex.synchronize { @sealing -= 1 }
+          end
+        end
       end
     end
 
-    def flush
-      if @failed
-        @queue_mutex.synchronize do
-          @exposures = []
-          @achievements = []
-          @pending_count = 0
-        end
-        return @data_failed
-      end
+    # sealing: this flush is a seal's own pass, so it neither starts another
+    # seal nor claims a deferred one. Any other publish (on any thread) may.
+    def flush(sealing: false, drop_rejected: false)
+      dropped, failure = @failed ? @ready_mutex.synchronize { drop_if_failed(sealing) } : [false, nil]
+      return failure if dropped
 
       # Serialize publishes so a queued event is part of at most one in-flight
       # request; on failure the events stay queued for the next attempt.
@@ -458,63 +610,146 @@ class Context
       # deadlock or re-send the in-flight snapshot; the outer call owns it.
       return nil if @publish_mutex.owned?
 
-      result = @publish_mutex.synchronize do
-        exposures = achievements = nil
-        event_count = 0
-        @queue_mutex.synchronize do
-          exposures = @exposures.dup
-          achievements = @achievements.dup
-          event_count = exposures.size + achievements.size
-        end
-
-        next nil unless event_count > 0
-
-        event = PublishEvent.new
-        event.hashed = true
-        event.published_at = @clock.to_i
-        event.units = @units.map do |key, value|
-          Unit.new(key.to_s, unit_hash(key, value))
-        end
-        event.exposures = exposures unless exposures.empty?
-        event.attributes = @attributes unless @attributes.empty?
-        event.goals = achievements unless achievements.empty?
-        # Like the JavaScript SDK, the publish event is logged once the batch is
-        # delivered; a failed delivery logs an error event instead.
-        begin
-          response = @event_handler.publish(self, event)
-        rescue StandardError => e
-          log_error(e)
-          raise
-        end
-
-        if response.is_a?(Exception)
-          log_error(response)
-          response
-        elsif response.respond_to?(:exception) && response.exception
-          log_error(response.exception)
-          response
-        elsif response.respond_to?(:success?) && !response.success?
-          log_error(StandardError.new("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})"))
-          response
-        else
-          log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
-          # Remove only the events that were published; others may have been
-          # queued concurrently while the request was in flight.
-          @queue_mutex.synchronize do
-            @exposures.shift(exposures.size)
-            @achievements.shift(achievements.size)
-            @pending_count = [@pending_count - event_count, 0].max
+      claimed = nil
+      begin
+        result = @publish_mutex.synchronize do
+          exposures = achievements = nil
+          sent = nil
+          event_count = 0
+          # Failure installation and recovery both take this lock. Keep the
+          # decision and snapshot together, but never hold it across publishing.
+          dropped, failure = @ready_mutex.synchronize do
+            failed_result = drop_if_failed(sealing)
+            unless failed_result.first
+              @queue_mutex.synchronize do
+                exposures = @exposures.dup
+                achievements = @achievements.dup
+                event_count = exposures.size + achievements.size
+                # Which arrays were sent and how much of each: the queues only
+                # grow by appending or are replaced whole, so a handler that
+                # mutates its payload can't change what is removed.
+                sent = [@exposures, exposures.size, @achievements, achievements.size]
+              end
+            end
+            failed_result
           end
-          response
+          next failure if dropped
+
+          if event_count.zero?
+            # Assigned under the mask, so an interrupt can't land between
+            # clearing the request and recording that this publish holds it.
+            Thread.handle_interrupt(Object => :never) { claimed = take_close_pending } unless sealing
+            next nil
+          end
+
+          event = PublishEvent.new
+          event.hashed = true
+          event.published_at = @clock.to_i
+          event.units = @units.map do |key, value|
+            Unit.new(key.to_s, unit_hash(key, value))
+          end
+          event.exposures = exposures unless exposures.empty?
+          event.attributes = @attributes unless @attributes.empty?
+          event.goals = achievements unless achievements.empty?
+          # Like the JavaScript SDK, the publish event is logged once the batch is
+          # delivered; a failed delivery logs an error event instead.
+          begin
+            response = @event_handler.publish(self, event)
+          rescue StandardError => e
+            log_error(e)
+            raise
+          end
+
+          if publish_failed?(response)
+            if response.is_a?(Exception)
+              log_error(response)
+            elsif response.respond_to?(:exception) && response.exception
+              log_error(response.exception)
+            else
+              log_error(StandardError.new("Publish failed (status=#{response.respond_to?(:status) ? response.status : 'unknown'})"))
+            end
+            remove_published(sent) if drop_rejected
+            response
+          else
+            log_event(ContextEventLogger::EVENT_TYPE::PUBLISH, event)
+            remove_published(sent)
+            # Claim a deferred close while still holding the lock, so only this
+            # successful publish can carry it out; a request made by another
+            # thread after a rejected publish waits for its own success.
+            # Assigned under the mask, so an interrupt can't land between
+            # clearing the request and recording that this publish holds it.
+            Thread.handle_interrupt(Object => :never) { claimed = take_close_pending } unless sealing
+            response
+          end
+        end
+
+        if claimed
+          claimed = nil if run_deferred_seal(claimed)
+        end
+        result
+      ensure
+        # A deferred seal claimed by this publish that did not finish stays
+        # pending for the next successful publish: one not started (an
+        # interrupt landed after the claim), one that left events queued, or
+        # one whose own publish was rejected, raised or was interrupted (a
+        # Timeout or Thread#kill). Any error still propagates.
+        restore_close_pending(claimed) if claimed
+      end
+    end
+
+    # A failed context drops its queued events. Called under the readiness
+    # lock, which a recovering refresh also holds while it clears @failed, so
+    # goals tracked after recovery are never dropped by a publish that saw the
+    # context failed. publish gets the load error, as in v1.3.0; a seal's own
+    # pass gets nil, since dropping them is not a publish failure.
+    def drop_if_failed(sealing)
+      return [false, nil] unless @failed
+
+      @queue_mutex.synchronize do
+        @exposures = []
+        @achievements = []
+        @pending_count = 0
+      end
+      [true, sealing ? nil : @data_failed]
+    end
+
+    # Removes the sent prefix of each queue, unless a failed-context publish
+    # replaced that queue while the request was in flight (then the batch is
+    # already gone and the new queue holds only newer events).
+    def remove_published((exposures, exposure_count, achievements, achievement_count))
+      @queue_mutex.synchronize do
+        @exposures.shift(exposure_count) if @exposures.equal?(exposures)
+        @achievements.shift(achievement_count) if @achievements.equal?(achievements)
+        @pending_count = @exposures.size + @achievements.size
+      end
+    end
+
+    def take_close_pending
+      @deferred_mutex.synchronize do
+        next nil unless @close_pending
+
+        claimed = [@close_pending, @close_requests]
+        @close_pending = false
+        claimed
+      end
+    end
+
+    # True once the seal finished; false when events were still queued.
+    def run_deferred_seal(claimed)
+      seal(claimed.first)
+      true
+    rescue EventsQueuedWhileClosing
+      false
+    end
+
+    # Unless the context sealed or a newer request was made meanwhile (even
+    # one another publish has already claimed).
+    def restore_close_pending((event_type, request))
+      Thread.handle_interrupt(Object => :never) do
+        @deferred_mutex.synchronize do
+          @close_pending = event_type unless @closed || @close_requests != request
         end
       end
-
-      if @close_pending
-        event_type = @close_pending
-        @close_pending = false
-        seal(event_type) unless @closed || publish_failed?(result)
-      end
-      result
     end
 
     def publish_failed?(result)
@@ -524,23 +759,27 @@ class Context
     end
 
     def raise_publish_failure(result)
-      if result.is_a?(Exception)
+      if result.is_a?(StandardError)
         raise result
+      elsif result.is_a?(Exception)
+        raise StandardError.new(result.message), cause: result
       elsif result.respond_to?(:exception) && result.exception
-        raise result.exception
+        raise_publish_failure(result.exception)
       else
         status = result.respond_to?(:status) ? result.status : "unknown"
         raise StandardError.new("Publish failed (status=#{status})")
       end
     end
 
-    def enqueue_exposure(name, assignment)
+    # Called under the queue lock; exposed_at is read before taking it, since a
+    # supplied clock may call back into the context.
+    def enqueue_exposure(name, assignment, exposed_at)
       exposure = Exposure.new
       exposure.id = assignment.id || 0
       exposure.name = name
       exposure.unit = assignment.unit_type
       exposure.variant = assignment.variant
-      exposure.exposed_at = @clock.to_i
+      exposure.exposed_at = exposed_at
       exposure.assigned = assignment.assigned
       exposure.eligible = assignment.eligible
       exposure.overridden = assignment.overridden
@@ -558,6 +797,11 @@ class Context
       if @closed
         raise IllegalStateException.new("ABSmartly Context is closed")
       end
+    end
+
+    # After finalize these still work, as in the JavaScript SDK.
+    def check_not_closed_by_close?
+      check_not_closed? if @sealed_by == ContextEventLogger::EVENT_TYPE::CLOSE
     end
 
     def check_ready?(expect_not_closed)
@@ -586,22 +830,92 @@ class Context
     # when set after the context was created (the @attrs_seq bump re-evaluates
     # the cached assignment). Empty system values were skipped at init, so a
     # missing config leaves the key out rather than matching on "".
+    # The latest value per name, keyed as the caller set it. Private so an
+    # override of the public get_attributes doesn't change matcher inputs.
+    def user_attributes
+      result = {}
+      @attributes.each { |attr| result[attr.name] = attr.value }
+      result
+    end
+
     def attributes_map
-      attrs = @system_attributes.dup
+      # User attributes keep the caller's key, as v1.3.0 passed them to custom
+      # matchers. A system entry is added only when no user attribute has that
+      # name as a String or Symbol, the forms audience conditions can read.
+      user = user_attributes
+      attrs = {}
+      @system_attributes.each do |name, value|
+        attrs[name] = value unless user.key?(name) || user.key?(name.to_sym)
+      end
+      attrs.merge!(user)
+    end
+
+    # The built-in evaluator reads a name as a String or a Symbol, so it gets
+    # one entry per name: the latest value set under either spelling.
+    def evaluator_attributes
+      attrs = {}
+      @system_attributes.each { |name, value| attrs[name] = value }
       @attributes.each { |attr| attrs[attr.name.to_s] = attr.value }
       attrs
     end
 
+    # Custom matchers get the caller's keys (as in v1.3.0); the built-in one
+    # gets the latest value per name.
+    def matcher_attributes(matcher)
+      matcher.instance_of?(AudienceMatcher) ? evaluator_attributes : attributes_map
+    end
+
+    # A built-in audience matcher is also the rule matcher, and the evaluator
+    # never changes its input, so the map built for the rules is reused.
+    def audience_attributes(rule_attrs)
+      return rule_attrs if !rule_attrs.nil? && @audience_matcher.instance_of?(AudienceMatcher)
+
+      matcher_attributes(@audience_matcher)
+    end
+
     # A split rule or a holdout resolved while its unit was missing gave the
-    # no-unit result; once the unit is set, unexposed ones are rebuilt. Exposed
-    # ones stay, so the user never switches variant or gets a second exposure.
+    # no-unit result; once the unit is set, unexposed ones are rebuilt. Exposed ones
+    # stay, so the user never switches variant or gets a second exposure.
+    # One being exposed right now (its clock is running) is kept: it is
+    # about to be queued with its variant, so evicting it would serve one
+    # variant and expose two. If that exposure fails, the next read or claim
+    # finds it stale and resolves it again.
     def invalidate_assignments_missing_unit(unit_type)
       @assignment_mutex.synchronize do
+        exposing = @queue_mutex.synchronize { @exposing.dup }
         @assignment_cache.delete_if do |_name, assignment|
-          assignment.unit_type.to_s == unit_type && !assignment.exposed &&
-            (assignment.rule_missing_unit || assignment.holdout_assignments&.include?(nil))
+          assignment.unit_type.to_s == unit_type && !assignment.exposed && missing_unit?(assignment) &&
+            !exposing.key?(assignment)
         end
       end
+    end
+
+    # A no-unit split assignment whose unit has since been set, that is not
+    # exposed and not being exposed: set_unit skipped evicting it because its
+    # exposure was in progress, and that exposure did not complete.
+    def stale_missing_unit?(assignment)
+      return false unless unit_now_set?(assignment)
+
+      !exposed_or_exposing?(assignment)
+    end
+
+    # Read together under the queue lock: an exposure completing sets exposed
+    # and releases its claim under that lock, so a reader can't see neither.
+    def exposed_or_exposing?(assignment)
+      # exposed only moves false -> true: the positive result is stable.
+      return true if assignment.exposed
+
+      @queue_mutex.synchronize { assignment.exposed || @exposing.key?(assignment) }
+    end
+
+    # Resolved while its unit was missing: a no-unit split rule, or a holdout
+    # whose arm could not be computed yet.
+    def missing_unit?(assignment)
+      assignment.rule_missing_unit || (!assignment.holdout_assignments.nil? && assignment.holdout_assignments.include?(nil))
+    end
+
+    def unit_now_set?(assignment)
+      missing_unit?(assignment) && !assignment.unit_type.nil? && !@units[assignment.unit_type.to_sym].nil?
     end
 
     # Arm 0 always holds the unit out. In a 3-arm holdout arm 1 is "full-on
@@ -671,11 +985,13 @@ class Context
       return false if key_changed && key.empty? && assignment.rule_override
 
       if @attrs_seq > (assignment.attrs_seq || 0) || key_changed
-        attrs = attributes_map
-
+        rule_attrs = nil
         unless key.empty?
-          pinned_missing = assignment.exposed && assignment.rule_missing_unit
-          rule = resolve_rule(entry, attrs, pinned_missing)
+          # Exposed, or being exposed right now (its clock may set the unit):
+          # the no-unit variant stays, so a unit arriving can't switch it.
+          pinned_missing = assignment.rule_missing_unit && exposed_or_exposing?(assignment)
+          rule_attrs = matcher_attributes(rule_matcher)
+          rule = resolve_rule(entry, rule_attrs, pinned_missing)
           return false if rule&.first != assignment.rule_variant
 
           assignment.rule_missing_unit = rule ? rule.last : false
@@ -685,7 +1001,7 @@ class Context
         # evaluated here either; only a rule can take it out of suppression.
         if !assignment.rule_override && !assignment.suppressed &&
            !experiment.audience.nil? && experiment.audience.size > 0
-          match = @audience_matcher.evaluate(experiment.audience, attrs)
+          match = @audience_matcher.evaluate(experiment.audience, audience_attributes(rule_attrs))
           # An indeterminate result (no filter, bad JSON) keeps the cached flag.
           new_audience_mismatch = match.nil? ? assignment.audience_mismatch : !match.result
 
@@ -747,6 +1063,23 @@ class Context
       override = @overrides[exp_key]
       experiment = experiment(experiment_name.to_s, state)
 
+      # Built from the empty snapshot of a failed context that a refresh has
+      # since recovered with the experiment: resolved again against the
+      # recovered data. The marker stays on the old assignment, so a rebuild
+      # that raises leaves it ineligible for reuse.
+      # (The failed snapshot has no experiments, so a read on it never matches.)
+      if @failed_marked && !assignment.nil? && !experiment.nil? &&
+         assignment.instance_variable_get(:@failed_snapshot)
+        assignment = nil
+      end
+      # Inline guard: only an unexposed no-unit result can be stale, and the
+      # check itself takes the queue lock.
+      if !assignment.nil? && !assignment.exposed &&
+         (assignment.rule_missing_unit || assignment.holdout_assignments&.include?(nil)) &&
+         stale_missing_unit?(assignment)
+        assignment = nil
+      end
+
       if !assignment.nil?
         if !override.nil?
           if assignment.overridden && assignment.variant == override &&
@@ -756,7 +1089,7 @@ class Context
         elsif experiment.nil?
           # A rule-won assignment came from the experiment's rules, so it is
           # rebuilt once the experiment is gone.
-          return assignment if !assignment.assigned && !assignment.rule_override
+          return assignment if !assignment.assigned && !assignment.rule_override && !assignment.overridden
         elsif (custom.nil? || assignment.rule_override || assignment.suppressed ||
                (custom == assignment.variant && (assignment.custom || assignment.exposed))) &&
               experiment_matches(experiment.data, assignment) &&
@@ -803,7 +1136,8 @@ class Context
         assignment.traffic_split = data.traffic_split
         assignment.full_on_variant = data.full_on_variant
         assignment.rule_key = experiment.rule_key
-        rule = assignment.rule_key.empty? ? nil : resolve_rule(experiment, attributes_map, false)
+        rule_attrs = assignment.rule_key.empty? ? nil : matcher_attributes(rule_matcher)
+        rule = rule_attrs.nil? ? nil : resolve_rule(experiment, rule_attrs, false)
         assignment.rule_variant = rule&.first
         assignment.rule_missing_unit = rule ? rule.last : false
 
@@ -816,7 +1150,7 @@ class Context
           assignment.variant = 0
         else
           if !data.audience.nil? && data.audience.size > 0
-            match = @audience_matcher.evaluate(data.audience, attributes_map)
+            match = @audience_matcher.evaluate(data.audience, audience_attributes(rule_attrs))
             assignment.audience_mismatch = true if match && !match.result
           end
 
@@ -853,36 +1187,164 @@ class Context
         assignment.variables = experiment.variables[assignment.variant] || {}
       end
 
+      failed_built = state.equal?(@failed_state)
+      # A read that finishes after a refresh recovered the context must not
+      # replace what was resolved against the recovered data, unless that
+      # data lacks the experiment too and would resolve it the same way.
+      if failed_built && !@state.equal?(@failed_state) && !experiment(experiment_name.to_s).nil?
+        return assignment
+      end
+
+      # Provenance belongs to the new assignment before the single cache
+      # write. An interrupted replacement leaves the old assignment marked;
+      # a marker on an uncached replacement has no effect on later reads.
+      if failed_built
+        assignment.instance_variable_set(:@failed_snapshot, true)
+        @failed_marked = true
+      end
       @assignment_cache[experiment_name.to_s] = assignment
       assignment
     end
 
-    # Like the JavaScript SDK, a key shared by several experiments reads from
-    # the first one, in experiment id order, that the unit is assigned to or
-    # overridden in; each experiment visited on the way is exposed. When none
-    # wins, a held-out unit reads the control value of the first held-out
-    # experiment rather than the default.
+    # As java-sdk Context.getVariableAssignment resolves a key shared by
+    # several experiments: the first one, in experiment id order, that the
+    # unit is assigned to, overridden in or rule-assigned in wins, and only
+    # that one is exposed. A winner whose variant lacks the key gives the
+    # default; the walk never moves past it. When none wins, a held-out unit
+    # reads the first held-out experiment (control, or the default if its
+    # control lacks the key). A non-peek read still exposes the holdouts of
+    # each candidate it visits, as java-sdk does.
     def resolve_variable_value(key, default_value, expose)
-      state = @state
       key = key.to_s.to_sym
-      suppressed_fallback = nil
-      (state.index_variables[key] || []).each do |experiment|
-        assignment = assignment(experiment.data.name)
-        next if assignment.variables.nil?
+      winner = nil
+      attempts = 0
+      while true # rubocop:disable Style/InfiniteLoop -- no block allocation on the read path
+        return default_value if attempts >= VARIABLE_WALK_ATTEMPTS
 
-        queue_exposure(assignment) if expose
-        if assignment.variables.key?(key) && (assignment.assigned || assignment.overridden || assignment.rule_override)
-          return assignment.variables[key]
+        attempts += 1
+        state = @state
+        winner = variable_assignment(key, expose, state)
+        visited = nil
+        winner, visited = winner if winner.is_a?(Array)
+        # A refresh, even one from a holdout's logger, restarts the walk.
+        next unless @state.equal?(state)
+
+        unless visited.nil?
+          i = 0
+          while i < visited.length && @state.equal?(state)
+            queue_holdout_exposures(visited[i])
+            i += 1
+          end
+          next unless @state.equal?(state)
+        end
+        break if winner.nil? || !expose || winner.exposed
+        # The unit was set in between, so the walk may now pick another
+        # candidate: it starts again, as java-sdk's settleExposure does.
+        break unless claim_and_queue_exposure(winner, winner.name) == :evicted
+      end
+      return default_value if winner.nil? || winner.variables.nil? || !winner.variables.key?(key)
+
+      winner.variables[key]
+    end
+
+    # Returns the winner, or, when exposing and a visited candidate still has
+    # a holdout to expose, [winner, those candidates] (only then allocated);
+    # the caller exposes them once the walk stands.
+    def variable_assignment(key, expose, state = @state)
+      candidates = state.index_variables[key]
+      return nil if candidates.nil?
+
+      visited = nil
+      suppressed_fallback = nil
+      i = 0
+      # An index loop, not each: no block frame per candidate on the read path.
+      while i < candidates.length
+        # Resolved from the state current under the assignment lock, so a read
+        # that a refresh overtook can't reinstall an old assignment.
+        assignment = assignment(candidates[i].data.name)
+        # As in java-sdk, visited candidates' holdouts precede the winner's exposure.
+        if expose && !assignment.holdout_assignments.nil? &&
+           (!assignment.exposed || assignment.overridden) && holdouts_pending?(assignment)
+          (visited ||= []) << assignment
+        end
+        if assignment.assigned || assignment.overridden || assignment.rule_override
+          return visited ? [assignment, visited] : assignment
         end
 
-        if assignment.suppressed && !assignment.overridden && !assignment.rule_override
-          suppressed_fallback ||= assignment.variables
+        suppressed_fallback ||= assignment if assignment.suppressed
+        i += 1
+      end
+      visited ? [suppressed_fallback, visited] : suppressed_fallback
+    end
+
+    # Whether a candidate has a holdout arm still to expose (or, for an
+    # override, one still to resolve). A warm read past an exposed loser then
+    # collects nothing.
+    def holdouts_pending?(assignment)
+      arms = assignment.holdout_assignments
+      i = 0
+      while i < arms.length
+        arm = arms[i]
+        if arm.nil?
+          unit_type = assignment.unit_type
+          return true if assignment.overridden && !unit_type.nil? && !@units[unit_type.to_sym].nil?
+        elsif !arm.exposed
+          return true
+        end
+
+        i += 1
+      end
+      false
+    end
+
+    # Replaces the arms of an override still missing them, once its unit is
+    # set; the holdout arm cache is written under the assignment lock.
+    def resolve_late_holdout_arms(assignment)
+      arms = assignment.holdout_assignments
+      return unless unit_now_set?(assignment) && arms.include?(nil)
+
+      @assignment_mutex.synchronize do
+        arms = assignment.holdout_assignments
+        # The live holdouts (a refresh's equivalent list, if any): the arms are
+        # decided now, so they and their exposures' names come from those, as
+        # java-sdk resolves an override's holdouts against the installed data.
+        holdouts = assignment.matched_holdouts || assignment.holdouts
+        if arms.include?(nil)
+          assignment.holdout_assignments = arms.each_with_index.map do |arm, i|
+            arm || holdout_assignment(holdouts[i], assignment.unit_type)
+          end
+          assignment.holdouts = holdouts
         end
       end
+    end
 
-      return suppressed_fallback[key] if !suppressed_fallback.nil? && suppressed_fallback.key?(key)
+    # Exposes the holdouts covering a visited candidate, from the arms pinned
+    # in its assignment, without exposing the candidate itself.
+    def queue_holdout_exposures(assignment)
+      return if assignment.exposed && !assignment.overridden
 
-      default_value
+      # As java-sdk resolves an override's holdouts live on each visit, an
+      # arm an override could not get before its unit was set is resolved
+      # once the unit is, so its holdout is exposed even after the override.
+      resolve_late_holdout_arms(assignment) if assignment.overridden
+      holdout_assignments = assignment.holdout_assignments
+      return if holdout_assignments.nil?
+
+      # Checked again under the lock; this keeps warm reads off the clock and lock.
+      return if holdout_assignments.all? { |holdout_assignment| holdout_assignment.nil? || holdout_assignment.exposed }
+
+      exposed_at = @clock.to_i
+      holdout_exposures = nil
+      @queue_mutex.synchronize do
+        check_not_closed?
+        holdout_assignments.each_with_index do |holdout_assignment, i|
+          next if holdout_assignment.nil? || holdout_assignment.exposed
+
+          holdout_assignment.exposed = true
+          (holdout_exposures ||= []) << enqueue_exposure(assignment.holdouts[i].name, holdout_assignment, exposed_at)
+        end
+      end
+      holdout_exposures&.each { |e| log_event(ContextEventLogger::EVENT_TYPE::EXPOSURE, e) }
     end
 
     def experiment(experiment, state = @state)
@@ -897,7 +1359,86 @@ class Context
       @assigners[unit_type] ||= VariantAssigner.new(unit_hash)
     end
 
-    def assign_data(data)
+    # Builds the snapshot for data, calling the variable parser; callers run
+    # it outside the readiness lock so a parser may call wait_until_ready.
+    # The membership bookkeeping defers asynchronous interrupts (Timeout,
+    # Thread#raise), so one landing while it waits for the lock can't leave
+    # this thread registered or unbalanced. The parsing keeps the caller's
+    # interrupt mask: interruptible by default, deferred if the caller masked.
+    # Ruby can't run the parse under the caller's mask inside a masked
+    # cleanup, so an interrupt landing as the cleanup starts can skip it; a
+    # registration only counts while the thread is inside build_state (see
+    # building?), and the next build or wait drops one left behind.
+    def build_state(data)
+      thread = Thread.current
+      nested = build_state_on_stack?(1)
+      registered = false
+      begin
+        Thread.handle_interrupt(Object => :never) do
+          @ready_mutex.synchronize do
+            # [count, fiber that registered first]. A count left by an
+            # interrupted cleanup in this fiber, with no build of it still
+            # running further up the stack, is dropped first.
+            entry = @building_threads[thread]
+            # (The stack is checked above, before entering these blocks.)
+            entry = nil if entry && (entry[1].equal?(Fiber.current) ? !nested : !entry[1].alive?)
+            @building_threads[thread] = entry ? [entry[0] + 1, entry[1]] : [1, Fiber.current]
+          end
+          registered = true
+        end
+        build_state_maps(data)
+      ensure
+        if registered
+          Thread.handle_interrupt(Object => :never) do
+            @ready_mutex.synchronize do
+              entry = @building_threads[thread]
+              if entry && entry[0] > 1
+                @building_threads[thread] = [entry[0] - 1, entry[1]]
+              elsif entry
+                @building_threads.delete(thread)
+              end
+            end
+          end
+        end
+      end
+    end
+
+    # True while this thread is building a snapshot (a variable parser calling
+    # back). A registration whose build has unwound without its cleanup is
+    # dropped here, so the thread waits like any other.
+    def building?
+      thread = Thread.current
+      entry = @ready_mutex.synchronize { @building_threads[thread] }
+      return false if entry.nil?
+      return true unless stale_build_entry?(entry)
+
+      Thread.handle_interrupt(Object => :never) do
+        @ready_mutex.synchronize { @building_threads.delete(thread) if @building_threads[thread].equal?(entry) }
+      end
+      false
+    end
+
+    # A backtrace covers only the current fiber, so the stack is checked only
+    # from the fiber that registered; a parser that waits from a nested fiber
+    # still counts as building. A registering fiber that has ended is stale.
+    def stale_build_entry?(entry)
+      fiber = entry[1]
+      return !build_state_on_stack?(0) if fiber.equal?(Fiber.current)
+      return true unless fiber.alive?
+      # Ruby 3.0+ can read the registering fiber's stack from a fiber it
+      # resumed; 2.7 cannot, so there a live registering fiber still counts.
+      return false unless fiber.respond_to?(:backtrace_locations)
+
+      !build_state_on_stack?(0, fiber.backtrace_locations || [])
+    end
+
+    # Whether more than skip build_state frames are on this thread's stack.
+    # Called only outside build_state's blocks, so each frame is one build.
+    def build_state_on_stack?(skip, locations = caller_locations)
+      locations.count { |location| location.path == __FILE__ && location.base_label == "build_state" } > skip
+    end
+
+    def build_state_maps(data)
       index = {}
       index_variables = {}
       custom_fields = {}
@@ -989,8 +1530,7 @@ class Context
         end
       end
 
-      # Publish the fully built snapshot; the maps are never mutated after this.
-      @state = State.new(data, index, index_variables, custom_fields)
+      State.new(data, index, index_variables, custom_fields)
     end
 
     # Collector IDs are integers; integral floats and canonical decimal text
@@ -1006,7 +1546,7 @@ class Context
     def set_data_failed(exception)
       @data_failed = exception
       @ready_error = exception
-      @state = State.new(ContextData.new, {}, {}, {})
+      @state = @failed_state = State.new(ContextData.new, {}, {}, {})
       @failed = true
     end
 
@@ -1033,6 +1573,9 @@ class Context
       @assignment_cache = {}
       @holdout_assignments = nil
       @assignment_mutex = Mutex.new
+      @failed_marked = false
+      @exposing = {}.compare_by_identity
+      @exposure_condvar = ConditionVariable.new
       @assignments = {}
       @clock = clock.is_a?(String) ? Time.iso8601(clock) : clock
       @publish_delay = config.publish_delay
@@ -1044,9 +1587,11 @@ class Context
       @audience_matcher = audience_matcher
       @environment = environment
       @closed = false
-      @closing = false
+      @sealing = 0
       @failed = false
       @ready_error = nil
+      @sealed_by = nil
+      @building_threads = {}
 
       # System attributes (application/environment names from the client
       # config) seed the audience evaluation map. The collector already
@@ -1069,7 +1614,9 @@ class Context
       @ready_condvar = ConditionVariable.new
       @queue_mutex = Mutex.new
       @publish_mutex = Mutex.new
+      @deferred_mutex = Mutex.new
       @close_pending = false
+      @close_requests = 0
 
       set_units(config.units) if config.units
       set_attributes(config.attributes) if config.attributes
@@ -1135,6 +1682,9 @@ class Assignment
     @attrs_seq = 0
     @holdouts = nil
     @matched_holdouts = nil
+    # Private: set by the context on an assignment built from a failed load's
+    # empty snapshot. Initialized so every assignment keeps one layout.
+    @failed_snapshot = false
   end
 end
 

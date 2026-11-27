@@ -72,7 +72,7 @@ class Client
       # A routine collector rejection must stay catchable with a normal
       # `rescue StandardError` when close/finalize raises it, so use a
       # StandardError subclass rather than Ruby's base Exception.
-      return PublishError.new(response.body)
+      return Absmartly::PublishError.new(response.body)
     end
 
     response
@@ -95,17 +95,17 @@ class Client
       begin
         promise = @http_client.get(@url, @query, @headers)
       rescue StandardError => e
-        return ContextDataResult.failure(e)
+        return Absmartly::ContextDataResult.failure(e)
       end
 
       unless promise.success?
-        return ContextDataResult.failure(Exception.new(promise.body), promise)
+        return Absmartly::ContextDataResult.failure(Exception.new(promise.body), promise)
       end
 
       content = (promise.body || {}).to_s
       data = @deserializer.deserialize(content, 0, content.size)
-      return ContextDataResult.failure(StandardError.new("Failed to deserialize context data"), promise) if data.nil?
+      return Absmartly::ContextDataResult.failure(StandardError.new("Failed to deserialize context data"), promise) if data.nil?
 
-      ContextDataResult.new(data, nil, promise)
+      Absmartly::ContextDataResult.new(data, nil, promise)
     end
 end

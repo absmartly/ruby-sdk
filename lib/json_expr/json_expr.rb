@@ -38,11 +38,11 @@ class JsonExpr
       "gte": GreaterThanOrEqualOperator.new,
       "lt": LessThanOperator.new,
       "lte": LessThanOrEqualOperator.new,
-      "semver_eq": SemverEqualsOperator.new,
-      "semver_gt": SemverGreaterThanOperator.new,
-      "semver_gte": SemverGreaterThanOrEqualOperator.new,
-      "semver_lt": SemverLessThanOperator.new,
-      "semver_lte": SemverLessThanOrEqualOperator.new
+      "semver_eq": Absmartly::SemverEqualsOperator.new,
+      "semver_gt": Absmartly::SemverGreaterThanOperator.new,
+      "semver_gte": Absmartly::SemverGreaterThanOrEqualOperator.new,
+      "semver_lt": Absmartly::SemverLessThanOperator.new,
+      "semver_lte": Absmartly::SemverLessThanOrEqualOperator.new
     }
   end
 

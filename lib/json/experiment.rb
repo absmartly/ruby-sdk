@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require_relative "../string"
 require_relative "../type_utils"
 require_relative "experiment_application"
 require_relative "experiment_variant"

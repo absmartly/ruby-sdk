@@ -881,13 +881,14 @@ module ContextHoldoutsSpec
       end
 
       # variable_value walks the key's candidates from the state it started
-      # with; a logger callback on the first candidate's exposure refreshes
-      # and exposes the second one under the new data before the walk reaches
-      # it, the interleaving of a read overlapping a refresh.
+      # with. exp_a fails its strict audience, so it loses but the walk still
+      # exposes its holdout_g; a logger callback on that exposure refreshes
+      # and exposes exp_b under the new data before the walk reaches it, the
+      # interleaving of a read overlapping a refresh.
       def overlapping_read(context, steps)
         fired = false
         allow(event_logger).to receive(:handle_event) do |_type, data|
-          next if fired || !(data.is_a?(Exposure) && data.id == 1)
+          next if fired || !(data.is_a?(Exposure) && data.id == 12)
 
           fired = true
           steps.call
@@ -895,52 +896,57 @@ module ContextHoldoutsSpec
         context.variable_value("color", "default")
       end
 
-      def shared_key_experiments
-        first = experiment(1, "exp_a")
-        first[:variants] = [{ name: "A", config: '{"color":"a_control"}' }, { name: "B", config: '{"other":"x"}' }]
-        [first, with_variables(experiment(2, "exp_b", holdout_ids: [11]), "color")]
+      def shared_key_experiments(covered: true)
+        first = with_variables(experiment(1, "exp_a", holdout_ids: [12], audienceStrict: true,
+                                                      audience: '{"filter":[{"gte":[{"var":"age"},{"value":20}]}]}'),
+                               "color")
+        second = with_variables(experiment(2, "exp_b", holdout_ids: covered ? [11] : nil), "color")
+        [first, second]
+      end
+
+      def shared_key_holdouts(seeds, iteration: 1)
+        [holdout(11, "holdout_h", seeds, iteration: iteration), holdout(12, "holdout_g", HOLDOUT_B)]
       end
 
       it "does not let a read that started before a refresh expose the new arm again" do
-        context = create_context(data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_B)]))
+        context = create_context(data_of(shared_key_experiments, shared_key_holdouts(HOLDOUT_B)))
         result = overlapping_read(context, lambda {
-          refresh(context, data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_A, iteration: 2)]))
+          refresh(context, data_of(shared_key_experiments, shared_key_holdouts(HOLDOUT_A, iteration: 2)))
           expect(context.treatment("exp_b")).to eq(0)
         })
         context.treatment("exp_b")
 
         expect(result).to eq("control")
-        expect(exposures_of(context)).to eq([own_exposure(1, "exp_a", NORMAL_VARIANT), holdout_exposure(11, "holdout_h", 0)])
+        expect(exposures_of(context)).to eq([holdout_exposure(12, "holdout_g", 1), holdout_exposure(11, "holdout_h", 0)])
       end
 
       it "does not expose an experiment again when a read meets a non-suppressing new arm" do
-        context = create_context(data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_A)]))
+        context = create_context(data_of(shared_key_experiments, shared_key_holdouts(HOLDOUT_A)))
         result = overlapping_read(context, lambda {
-          refresh(context, data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_B, iteration: 2)]))
+          refresh(context, data_of(shared_key_experiments, shared_key_holdouts(HOLDOUT_B, iteration: 2)))
           expect(context.treatment("exp_b")).to eq(NORMAL_VARIANT)
         })
         context.treatment("exp_b")
 
         expect(result).to eq("treatment")
-        expect(exposures_of(context)).to eq([own_exposure(1, "exp_a", NORMAL_VARIANT),
+        expect(exposures_of(context)).to eq([holdout_exposure(12, "holdout_g", 1),
                                              own_exposure(2, "exp_b", NORMAL_VARIANT), holdout_exposure(11, "holdout_h", 1)])
       end
 
       it "does not expose an old arm again when a read resumes after the holdout is removed" do
-        context = create_context(data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_A)]))
+        context = create_context(data_of(shared_key_experiments, shared_key_holdouts(HOLDOUT_A)))
         expect(context.treatment("exp_b")).to eq(0)
-        uncovered = shared_key_experiments.tap { |e| e[1].delete(:holdoutIds) }
         result = overlapping_read(context, lambda {
-          refresh(context, data_of(shared_key_experiments, [holdout(11, "holdout_h", HOLDOUT_B, iteration: 2)]))
+          refresh(context, data_of(shared_key_experiments, shared_key_holdouts(HOLDOUT_B, iteration: 2)))
           expect(context.treatment("exp_b")).to eq(NORMAL_VARIANT)
-          refresh(context, data_of(uncovered, []))
+          refresh(context, data_of(shared_key_experiments(covered: false), shared_key_holdouts(HOLDOUT_B, iteration: 2)))
         })
         context.treatment("exp_b")
 
         expect(result).to eq("treatment")
         # Removing the coverage re-resolves exp_b once (scenario 225); the
         # iteration 1 arm is never exposed again.
-        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_h", 0), own_exposure(1, "exp_a", NORMAL_VARIANT),
+        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_h", 0), holdout_exposure(12, "holdout_g", 1),
                                              own_exposure(2, "exp_b", NORMAL_VARIANT), holdout_exposure(11, "holdout_h", 1),
                                              own_exposure(2, "exp_b", NORMAL_VARIANT)])
       end
@@ -1032,6 +1038,100 @@ module ContextHoldoutsSpec
                                              holdout_exposure(11, "holdout_user_id", 1, unit: "user_id")])
       end
 
+      it "keeps the no-unit holdout result when the unit is set during that exposure's clock" do
+        holder = {}
+        clock_object = Object.new
+        clock_object.define_singleton_method(:to_i) do
+          if holder[:arm]
+            holder[:arm] = false
+            holder[:context].set_unit("user_id", UID)
+          end
+          1_620_000_000
+        end
+        config = ContextConfig.create
+        data = data_of([experiment(1, "exp_mid", unit_type: "user_id", full_on_variant: 2, holdout_ids: [11])],
+                       [holdout(11, "holdout_user_id", HOLDOUT_B, unit_type: "user_id")])
+        context = Context.create(clock_object, config, OpenStruct.new(data_future: data, success?: true), data_provider,
+                                 event_handler, event_logger, variable_parser, audience_matcher)
+        holder[:context] = context
+        holder[:arm] = true
+
+        expect(context.treatment("exp_mid")).to eq(2)
+        expect(context.treatment("exp_mid")).to eq(2)
+        expect(context.pending_count).to eq(1)
+      end
+
+      it "a direct queue_exposure of a held-out assignment queues only its holdout exposure" do
+        context = create_context(data_of([experiment(1, "exp_direct", holdout_ids: [10])],
+                                         [holdout(10, "holdout_a", HOLDOUT_A)]))
+        assignment = context.send(:assignment, "exp_direct")
+        expect(assignment.suppressed).to be true
+
+        context.queue_exposure(assignment)
+        expect(context.queue_exposure(assignment)).to be_nil
+        expect(exposures_of(context).map { |e| e[1] }).to eq(["holdout_a"])
+      end
+
+      it "rebuilds a held-out no-unit result whose exposure failed after its clock set the unit" do
+        holder = {}
+        clock_object = Object.new
+        clock_object.define_singleton_method(:to_i) do
+          if holder[:arm]
+            holder[:arm] = false
+            holder[:context].set_unit("user_id", UID)
+            raise "clock failed"
+          end
+          1_620_000_000
+        end
+        config = ContextConfig.create
+        data = data_of([experiment(1, "exp_fail", unit_type: "user_id", holdout_ids: [11])],
+                       [holdout(11, "holdout_user_id", HOLDOUT_A, unit_type: "user_id")])
+        context = Context.create(clock_object, config, OpenStruct.new(data_future: data, success?: true), data_provider,
+                                 event_handler, event_logger, variable_parser, audience_matcher)
+        holder[:context] = context
+        holder[:arm] = true
+
+        expect { Timeout.timeout(5) { context.treatment("exp_fail") } }.to raise_error("clock failed")
+        expect(Timeout.timeout(5) { context.treatment("exp_fail") }).to eq(0)
+        expect(exposures_of(context).map { |e| e[1] }).to eq(["holdout_user_id"])
+      end
+
+      it "stamps an experiment and its holdout exposures with one clock read" do
+        reads = []
+        holder = {}
+        clock_object = Object.new
+        clock_object.define_singleton_method(:to_i) do
+          holder[:context]&.set_unit("user_id", UID) unless holder[:context]&.get_unit("user_id")
+          reads << (1_620_000_000 + reads.size)
+          reads.last
+        end
+        config = ContextConfig.create
+        config.set_unit(UNIT_TYPE, UID_NOT_HELD_OUT)
+        data = data_of([experiment(2, "exp_two", holdout_ids: [11])],
+                       [holdout(11, "h11", HOLDOUT_A)])
+        context = Context.create(clock_object, config, OpenStruct.new(data_future: data, success?: true), data_provider,
+                                 event_handler, event_logger, variable_parser, audience_matcher)
+        holder[:context] = context
+        reads.clear
+
+        Timeout.timeout(5) { context.treatment("exp_two") }
+        context.publish
+        sent = published.flat_map { |event| event.exposures || [] }
+        expect(sent.map(&:name)).to eq(%w[exp_two h11])
+        expect(sent.map(&:exposed_at).uniq.size).to eq(1)
+      end
+
+      it "skips the stale no-unit check on warm reads of an exposed holdout-covered experiment" do
+        context = create_context(data_of([experiment(2, "exp_warm", holdout_ids: [11])], [holdout(11, "h11", HOLDOUT_A)]))
+        context.treatment("exp_warm")
+        allow(context).to receive(:stale_missing_unit?).and_call_original
+        5.times do
+          context.treatment("exp_warm")
+          context.peek_treatment("exp_warm")
+        end
+        expect(context).not_to have_received(:stale_missing_unit?)
+      end
+
       it "keeps an exposed assignment so the experiment is not exposed twice" do
         context = create_context(data_of([experiment(1, "exp_exposed", unit_type: "user_id", full_on_variant: 2,
                                                                          holdout_ids: [11])],
@@ -1072,6 +1172,9 @@ module ContextHoldoutsSpec
         expect(context.pending_count).to eq(2)
 
         context.set_unit("user_id", UID)
+        cache = context.instance_variable_get(:@assignment_cache)
+        expect(cache).not_to have_key("exp_late")
+        expect(cache).to have_key("exp_present")
 
         expect(context.treatment("exp_late")).to eq(2)
         expect(context.pending_count).to eq(4)
@@ -1194,6 +1297,108 @@ module ContextHoldoutsSpec
                                              holdout_exposure(11, "holdout_override_late", 1, unit: "user_id")])
       end
 
+      # As java-sdk: an override has no pinned holdout arms; each non-peek
+      # variable read resolves them live, so the first one after set_unit
+      # exposes the holdout. treatment does not, once the override is exposed.
+      it "exposes an exposed override's holdout on the next variable read after its unit arrives" do
+        exp = with_variables(experiment(1, "exp_override_var", unit_type: "user_id", holdout_ids: [11]), "my_var")
+        context = create_context(data_of([exp], [holdout(11, "holdout_override_var", HOLDOUT_B, unit_type: "user_id")]),
+                                 units: { UNIT_TYPE => UID }, overrides: { "exp_override_var" => 1 })
+
+        # Read twice while the unit is unset: the exposed override's missing
+        # arm must not mark its holdouts done.
+        2.times { expect(context.variable_value("my_var", "default")).to eq("treatment") }
+        own = own_exposure(1, "exp_override_var", 1, unit: "user_id", assigned: false, overridden: true)
+        expect(exposures_of(context)).to eq([own])
+
+        context.set_unit("user_id", UID)
+        expect(context.treatment("exp_override_var")).to eq(1)
+        expect(context.peek_variable_value("my_var", "default")).to eq("treatment")
+        expect(context.pending_count).to eq(0)
+
+        2.times { expect(context.variable_value("my_var", "default")).to eq("treatment") }
+        expect(exposures_of(context)).to eq([own, holdout_exposure(11, "holdout_override_var", 1, unit: "user_id")])
+      end
+
+      it "stops entering the holdout path once an exposed override's holdouts are all exposed" do
+        exp = with_variables(experiment(1, "exp_override_warm", unit_type: "user_id", holdout_ids: [11]), "my_var")
+        context = create_context(data_of([exp], [holdout(11, "holdout_override_warm", HOLDOUT_B, unit_type: "user_id")]),
+                                 units: {}, overrides: { "exp_override_warm" => 1 })
+        context.variable_value("my_var", "default")
+        context.set_unit("user_id", UID)
+        context.variable_value("my_var", "default")
+        context.variable_value("my_var", "default")
+
+        expect(context).not_to receive(:queue_holdout_exposures)
+        3.times { expect(context.variable_value("my_var", "default")).to eq("treatment") }
+        expect(exposures_of(context).size).to eq(2)
+      end
+
+      it "does not resolve an override's missing holdout arms while its unit is still unset" do
+        exp = with_variables(experiment(1, "exp_override_nounit", unit_type: "user_id", holdout_ids: [11]), "my_var")
+        context = create_context(data_of([exp], [holdout(11, "holdout_override_nounit", HOLDOUT_B, unit_type: "user_id")]),
+                                 units: {}, overrides: { "exp_override_nounit" => 1 })
+        context.variable_value("my_var", "default")
+
+        arms = context.instance_variable_get(:@assignment_cache)["exp_override_nounit"].holdout_assignments
+        expect(context).not_to receive(:holdout_assignment)
+        3.times { expect(context.variable_value("my_var", "default")).to eq("treatment") }
+        expect(context.instance_variable_get(:@assignment_cache)["exp_override_nounit"].holdout_assignments).to equal(arms)
+      end
+
+      # Only an override's arms are resolved late, as java-sdk only resolves
+      # holdouts live for an override: an exposed assignment that was not
+      # overridden keeps the no-unit decision it was exposed with.
+      it "does not expose the holdout of an exposed, not overridden experiment after its unit arrives" do
+        exp = with_variables(experiment(1, "exp_plain_late", unit_type: "user_id", holdout_ids: [11]), "my_var")
+        context = create_context(data_of([exp], [holdout(11, "holdout_plain_late", HOLDOUT_B, unit_type: "user_id")]),
+                                 units: { UNIT_TYPE => UID })
+
+        # treatment exposes the no-unit assignment (variant 0, not assigned);
+        # set_unit then keeps it, and later variable reads find it exposed.
+        expect(context.treatment("exp_plain_late")).to eq(0)
+        context.set_unit("user_id", UID)
+        2.times { expect(context.variable_value("my_var", "default")).to eq("default") }
+
+        expect(exposures_of(context)).to eq([own_exposure(1, "exp_plain_late", 0, unit: "user_id", assigned: false)])
+      end
+
+      # A refresh with the same holdout iteration keeps the override cached;
+      # its late arm is decided after it, so it uses the live seeds and name.
+      [["renamed", { name: "holdout_renamed" }, "holdout_renamed", 1],
+       ["reseeded", { seedHi: HOLDOUT_A[0], seedLo: HOLDOUT_A[1] }, "holdout_override_live", 0]].each do |label, edit, name, arm|
+        it "decides an override's late holdout arm from the #{label} live holdout, as java-sdk" do
+          exp = with_variables(experiment(1, "exp_override_live", unit_type: "user_id", holdout_ids: [11]), "my_var")
+          original = holdout(11, "holdout_override_live", HOLDOUT_B, unit_type: "user_id")
+          context = create_context(data_of([exp], [original]), units: {}, overrides: { "exp_override_live" => 1 })
+
+          expect(context.variable_value("my_var", "default")).to eq("treatment")
+          refresh(context, data_of([exp], [original.merge(edit)]))
+          context.set_unit("user_id", UID)
+          expect(context.variable_value("my_var", "default")).to eq("treatment")
+
+          expect(exposures_of(context)).to eq([own_exposure(1, "exp_override_live", 1, unit: "user_id", assigned: false,
+                                                                                        overridden: true),
+                                               holdout_exposure(11, name, arm, unit: "user_id")])
+        end
+      end
+
+      it "exposes a treatment-exposed override's holdout on the next variable read after its unit arrives" do
+        exp = with_variables(experiment(1, "exp_override_tr", unit_type: "user_id", holdout_ids: [11, 12]), "my_var")
+        context = create_context(data_of([exp], [holdout(11, "holdout_a", HOLDOUT_A, unit_type: "user_id"),
+                                                 holdout(12, "holdout_b", HOLDOUT_B, unit_type: "user_id")]),
+                                 units: {}, overrides: { "exp_override_tr" => 1 })
+
+        expect(context.treatment("exp_override_tr")).to eq(1)
+        context.set_unit("user_id", UID)
+        expect(context.variable_value("my_var", "default")).to eq("treatment")
+
+        expect(exposures_of(context)).to eq([own_exposure(1, "exp_override_tr", 1, unit: "user_id", assigned: false,
+                                                                                    overridden: true),
+                                             holdout_exposure(11, "holdout_a", 0, unit: "user_id"),
+                                             holdout_exposure(12, "holdout_b", 1, unit: "user_id")])
+      end
+
       it "applies a custom assignment once the unit arrives" do
         context = create_context(data_of([experiment(1, "exp_custom_late", unit_type: "user_id", holdout_ids: [11])],
                                          [holdout(11, "holdout_custom_late", HOLDOUT_B, unit_type: "user_id")]),
@@ -1282,24 +1487,24 @@ module ContextHoldoutsSpec
         expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_a", 0)])
       end
 
-      it "skips an overridden held-out experiment when picking the control fallback" do
+      it "lets an overridden held-out experiment win, giving the default when its variant lacks the key" do
         first = experiment(1, "exp_ov", holdout_ids: [11])
         first[:variants] = [{ name: "A", config: '{"color":"ov_control"}' }, { name: "B", config: '{"other":"x"}' }]
         second = with_variables(experiment(2, "exp_second", holdout_ids: [11]), "color")
         context = create_context(data_of([first, second], [holdout(11, "holdout_a", HOLDOUT_A)]),
                                  overrides: { "exp_ov" => 1 })
 
-        expect(context.peek_variable_value("color", "default")).to eq("control")
+        expect(context.peek_variable_value("color", "default")).to eq("default")
       end
 
-      it "skips a rule-won held-out experiment when picking the control fallback" do
+      it "lets a rule-won held-out experiment win, giving the default when its variant lacks the key" do
         first = experiment(1, "exp_rule", holdout_ids: [11], assignmentRules: US_RULE)
         first[:variants] = [{ name: "A", config: '{"color":"rule_control"}' }, { name: "B", config: '{"other":"x"}' }]
         second = with_variables(experiment(2, "exp_second", holdout_ids: [11]), "color")
         context = create_context(data_of([first, second], [holdout(11, "holdout_a", HOLDOUT_A)]))
         context.set_attribute("country", "US")
 
-        expect(context.peek_variable_value("color", "default")).to eq("control")
+        expect(context.peek_variable_value("color", "default")).to eq("default")
       end
 
       it "keeps the first suppressed experiment's control even when it lacks the key" do
@@ -1317,8 +1522,9 @@ module ContextHoldoutsSpec
         context.set_attribute("country", "US")
 
         expect(context.variable_value("color", "default")).to eq("treatment")
-        expect(exposures_of(context)).to eq([own_exposure(1, "exp_holdout_rules", 1, assigned: false, rule_override: true),
-                                             holdout_exposure(11, "holdout_rules_suppression", 0)])
+        # java-sdk variableValueOnHeldOutRuleWonExperiment: the holdout first.
+        expect(exposures_of(context)).to eq([holdout_exposure(11, "holdout_rules_suppression", 0),
+                                             own_exposure(1, "exp_holdout_rules", 1, assigned: false, rule_override: true)])
       end
 
       it "prefers a rule-won experiment over a suppressed one" do
