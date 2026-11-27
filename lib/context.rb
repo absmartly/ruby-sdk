@@ -1299,7 +1299,8 @@ class Context
       i = 0
       while i < arms.length
         arm = arms[i]
-        return true if arm.nil? ? assignment.overridden : !arm.exposed
+        # A missing arm is pending only for an override whose unit is now set.
+        return true if arm.nil? ? assignment.overridden && !@units[assignment.unit_type.to_sym].nil? : !arm.exposed
 
         i += 1
       end

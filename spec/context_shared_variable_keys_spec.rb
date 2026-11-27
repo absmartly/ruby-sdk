@@ -287,7 +287,6 @@ module ContextSharedVariableKeysSpec
         expect([[value, exposed]]).to include(["blue", %w[holdout_a exp_b]]).or include(["green", %w[holdout_a exp_c]])
       end
 
-
       # The refresh lands after the walk has read its candidates and before it
       # resolves the first one: the walk must start again on the new state
       # instead of finishing the old candidate list against new experiments.
